@@ -20,10 +20,30 @@ func (c *Collection) compactLoop() {
 		case <-c.closed:
 			return
 		case <-ticker.C:
+			if c.isClosed() {
+				return
+			}
 			_ = c.compact()
 		case <-c.compactC:
+			if c.isClosed() {
+				return
+			}
 			_ = c.compact()
 		}
+	}
+}
+
+// isClosed reports whether the collection has been closed. Once closed, the
+// compactor must never start a new compaction: a select that observes both a
+// ready compactC signal and a closed channel picks a case at random, so a
+// late compaction could otherwise race with Close() (which closes the active
+// segment and persists the index) and corrupt the on-disk segment layout.
+func (c *Collection) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
 	}
 }
 
