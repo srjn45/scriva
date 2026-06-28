@@ -1,0 +1,64 @@
+# FileDB v2 — sample configuration
+#
+# Copy this file to filedb.yaml and pass it with:
+#
+#   filedb serve --config filedb.yaml
+#
+# Every key is optional; omitted keys fall back to the built-in defaults shown
+# below. CLI flags always override values set here.
+
+# --- Storage ----------------------------------------------------------------
+
+# Directory where collection segment files and indexes are stored.
+data_dir: ./data
+
+# --- Network ----------------------------------------------------------------
+
+# gRPC (TCP) listen address.
+grpc_addr: ":5433"
+
+# REST gateway listen address.
+rest_addr: ":8080"
+
+# Unix socket path; the local CLI prefers this over TCP when available.
+unix_socket: /tmp/filedb.sock
+
+# Prometheus metrics listen address. Leave empty to disable metrics.
+metrics_addr: ":9090"
+
+# --- TLS (optional) ---------------------------------------------------------
+# Both tls_cert and tls_key must be set to enable TLS on the gRPC listener.
+
+# Path to the PEM-encoded certificate file.
+tls_cert: ""
+
+# Path to the PEM-encoded private key file.
+tls_key: ""
+
+# --- Auth -------------------------------------------------------------------
+
+# API key required from clients. Empty disables authentication.
+# Prefer the FILEDB_API_KEY environment variable in production.
+api_key: ""
+
+# --- Engine tuning ----------------------------------------------------------
+
+# Maximum size of a segment file in bytes before it is sealed (default: 4 MiB).
+segment_max_size: 4194304
+
+# How often the background compactor runs (Go duration, e.g. "5m", "1h30m").
+compact_interval: 5m
+
+# Dirty ratio (0–1) that triggers compaction of a collection (default: 0.30).
+compact_dirty_pct: 0.30
+
+# --- Durability -------------------------------------------------------------
+
+# Fsync policy:
+#   none     — rely on OS flush (fastest, largest crash-loss window)
+#   always   — fsync on every write (safest, slowest)
+#   interval — fsync on a timer (see sync_interval)
+sync_mode: none
+
+# Flush cadence when sync_mode is "interval" (Go duration, e.g. "1s", "500ms").
+sync_interval: 1s
