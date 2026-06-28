@@ -14,11 +14,37 @@ import (
 	"github.com/srjn45/filedbv2/internal/store"
 )
 
+// SyncMode controls how aggressively writes are flushed to stable storage.
+type SyncMode string
+
+const (
+	// SyncModeNone never calls fsync explicitly; durability is left to the OS
+	// page-cache flush. Fastest, but a power loss can lose recently
+	// acknowledged writes. This is the default.
+	SyncModeNone SyncMode = "none"
+	// SyncModeAlways fsyncs after every write before the write is acknowledged.
+	// Strongest durability, lowest throughput.
+	SyncModeAlways SyncMode = "always"
+	// SyncModeInterval fsyncs the active segment on a fixed timer. A crash can
+	// lose at most one interval's worth of writes — a middle ground between
+	// none and always.
+	SyncModeInterval SyncMode = "interval"
+)
+
+// DefaultSyncInterval is the flush cadence used by SyncModeInterval when no
+// interval is configured.
+const DefaultSyncInterval = time.Second
+
 // CollectionConfig holds tunable parameters for a single collection.
 type CollectionConfig struct {
 	SegmentMaxSize  int64         // default: DefaultSegmentMaxSize
 	CompactInterval time.Duration // default: 5m
 	CompactDirtyPct float64       // default: 0.30 (30%)
+
+	// SyncMode selects the durability policy. Default: SyncModeNone.
+	SyncMode SyncMode
+	// SyncInterval is the flush cadence for SyncModeInterval. Default: 1s.
+	SyncInterval time.Duration
 
 	// OnCompaction is called after each successful compaction run with the
 	// collection name and elapsed wall-clock duration. May be nil.
@@ -30,6 +56,8 @@ func defaultConfig() CollectionConfig {
 		SegmentMaxSize:  DefaultSegmentMaxSize,
 		CompactInterval: 5 * time.Minute,
 		CompactDirtyPct: 0.30,
+		SyncMode:        SyncModeNone,
+		SyncInterval:    DefaultSyncInterval,
 	}
 }
 
@@ -78,6 +106,24 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		return nil, fmt.Errorf("collection: mkdir %q: %w", dir, err)
 	}
 
+	// Normalize config so a zero-valued CollectionConfig is safe to use.
+	def := defaultConfig()
+	if cfg.SegmentMaxSize <= 0 {
+		cfg.SegmentMaxSize = def.SegmentMaxSize
+	}
+	if cfg.CompactInterval <= 0 {
+		cfg.CompactInterval = def.CompactInterval
+	}
+	if cfg.CompactDirtyPct <= 0 {
+		cfg.CompactDirtyPct = def.CompactDirtyPct
+	}
+	if cfg.SyncMode == "" {
+		cfg.SyncMode = SyncModeNone
+	}
+	if cfg.SyncInterval <= 0 {
+		cfg.SyncInterval = DefaultSyncInterval
+	}
+
 	c := &Collection{
 		name:     name,
 		dir:      dir,
@@ -94,7 +140,28 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	go c.compactLoop()
+	if c.cfg.SyncMode == SyncModeInterval {
+		go c.syncLoop()
+	}
 	return c, nil
+}
+
+// syncLoop periodically fsyncs the active segment when SyncModeInterval is
+// configured. It exits when the collection is closed.
+func (c *Collection) syncLoop() {
+	t := time.NewTicker(c.cfg.SyncInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-t.C:
+			c.mu.RLock()
+			active := c.active
+			c.mu.RUnlock()
+			_ = active.Sync()
+		}
+	}
 }
 
 // load reads existing segments from disk, restores the index, and opens
@@ -207,6 +274,15 @@ func (c *Collection) load() error {
 	return nil
 }
 
+// syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
+// The caller must hold c.mu so the active segment pointer is stable.
+func (c *Collection) syncActiveLocked() error {
+	if c.cfg.SyncMode != SyncModeAlways {
+		return nil
+	}
+	return c.active.Sync()
+}
+
 // Insert adds a new record and returns its assigned id.
 func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 	id := c.idSeq.Add(1)
@@ -222,6 +298,10 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
 	c.sidxIndexEntry(id, data)
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
+	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -256,6 +336,10 @@ func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
 	c.sidxUpdateEntry(id, data)
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return time.Time{}, fmt.Errorf("collection: update: %w", err)
+	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -282,6 +366,10 @@ func (c *Collection) Delete(id uint64) error {
 	}
 	c.index.Delete(id)
 	c.sidxRemoveEntry(id)
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("collection: delete: %w", err)
+	}
 	c.mu.Unlock()
 
 	c.emit(WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts})
@@ -556,6 +644,10 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		}
 	}
 
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("tx commit: sync: %w", err)
+	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
