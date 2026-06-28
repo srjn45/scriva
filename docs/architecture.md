@@ -179,11 +179,36 @@ Staged operations bypass the normal single-operation write path; the write lock 
 
 ---
 
+## Durability
+
+Writes are appended to the active segment with a single `write(2)`. Whether that
+write is flushed to stable storage (via `fsync(2)`) before the operation is
+acknowledged is controlled by the **sync mode** (`--sync`):
+
+| Mode | Behaviour | Crash-loss window | Throughput |
+|---|---|---|---|
+| `none` (default) | Never fsyncs explicitly; relies on the OS page-cache flush | All not-yet-flushed writes | Highest |
+| `interval` | A per-collection goroutine fsyncs the active segment every `--sync-interval` (default 1s) | At most one interval | High |
+| `always` | fsyncs after every write, before acknowledging it | Zero (for acknowledged writes) | Lowest |
+
+`always` holds the collection write lock across the fsync, so it serializes
+durable writes — correct, but the slowest option. `interval` is the recommended
+middle ground for most workloads. Sealing a segment and `Close()` always fsync
+regardless of mode.
+
+> Pick the mode that matches your data's value. `none` is appropriate for caches
+> and rebuildable data; `always` for data you cannot afford to lose on power loss.
+
 ## Crash Safety
 
 - **Partial write recovery**: on segment open, the last line is validated. Any partial line (from a crash mid-write) is detected and truncated before the segment is used.
 - **Index recovery**: on startup, both the primary index and each secondary index checksum are verified. A mismatch triggers a full rebuild by replaying all segment entries.
 - **Atomic segment swap**: compaction uses `os.Rename` which is atomic on POSIX filesystems. The old segments are only deleted after the new ones are in place.
+
+Note that partial-line recovery protects against *torn* writes (an incomplete
+final line), not against *lost* writes — a write acknowledged under `--sync=none`
+can still be lost if the machine loses power before the OS flushes its page
+cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that window.
 
 ---
 

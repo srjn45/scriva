@@ -63,6 +63,8 @@ All flags and their defaults:
 | `--segment-size` | `4194304` | Max segment file size in bytes (4 MiB) |
 | `--compact-interval` | `5m` | Compaction interval |
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
+| `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
+| `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -82,6 +84,8 @@ metrics_addr: :9090
 segment_max_size: 4194304   # 4 MiB
 compact_interval: 5m
 compact_dirty_pct: 0.30
+sync_mode: none             # none | always | interval
+sync_interval: 1s           # used when sync_mode: interval
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -91,6 +95,30 @@ filedb serve --config filedb.yaml
 ```
 
 CLI flags always override the config file. Omitted keys fall back to defaults.
+
+---
+
+## Durability
+
+FileDB lets you trade write throughput against how much you can lose on a crash:
+
+```bash
+filedb serve --data ./data --sync none        # fastest; OS decides when to flush
+filedb serve --data ./data --sync interval --sync-interval 1s  # lose ≤ 1s on power loss
+filedb serve --data ./data --sync always       # fsync every write; lose nothing acknowledged
+```
+
+| Mode | What it does | You can lose | Speed |
+|---|---|---|---|
+| `none` (default) | No explicit fsync; relies on OS page-cache flush | All un-flushed writes on power loss | Fastest |
+| `interval` | Background fsync every `--sync-interval` | At most one interval | Fast |
+| `always` | fsync before acknowledging each write | Nothing acknowledged | Slowest |
+
+Note: `none` is **not** lossless — partial-line recovery on restart fixes torn
+writes, but a write acknowledged under `none` can still vanish if power is lost
+before the OS flushes. Use `interval` or `always` when that matters. See
+[architecture.md](architecture.md#durability) for details. Benchmark the
+trade-off on your own hardware with `make bench`.
 
 ---
 
@@ -203,6 +231,33 @@ curl -X PUT http://localhost:8080/v1/users/records/1 \
 curl -X DELETE http://localhost:8080/v1/users/records/1 \
   -H "x-api-key: my-secret-key"
 ```
+
+---
+
+## OpenAPI spec (use from any language)
+
+The REST gateway is described by an OpenAPI (Swagger 2.0) spec generated from the
+proto, checked in at [`docs/openapi/filedb.swagger.json`](openapi/filedb.swagger.json).
+Regenerate it after changing `proto/filedb.proto`:
+
+```bash
+make openapi   # requires the buf CLI
+```
+
+Because every operation is in the spec, you can generate a typed client for almost
+any language without hand-writing one — e.g. with
+[openapi-generator](https://openapi-generator.tech/):
+
+```bash
+openapi-generator generate \
+  -i docs/openapi/filedb.swagger.json \
+  -g python \
+  -o clients/python-generated
+```
+
+This is the quickest path to language coverage; the hand-written SDKs under
+`clients/` (JavaScript, Java) exist where a more ergonomic, idiomatic wrapper is
+worth the maintenance.
 
 ---
 
