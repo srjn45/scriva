@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -105,22 +104,40 @@ func (f *FieldFilter) Match(record map[string]any) bool {
 	return false
 }
 
+// Comparison semantics (eq/neq/gt/gte/lt/lte)
+//
+// Both the stored field value and the filter comparison value carry their
+// JSON type: numbers decode to float64, strings to string. The operators
+// honour those types rather than blindly stringifying:
+//
+//   - Both values are numbers  -> compared NUMERICALLY.
+//     So `age gt 9` matches a record with age 10 (10 > 9), instead of the
+//     lexicographic surprise where "10" < "9".
+//   - Both values are strings  -> compared LEXICOGRAPHICALLY (byte order).
+//     A numeric-looking string such as "10" is NOT coerced to a number; if
+//     you stored a field as a string it keeps string ordering.
+//   - The types differ (one number, one string) -> the two values are
+//     compared lexicographically by their string representation. This is
+//     deterministic but rarely meaningful; comparing a number against a
+//     string is a query mistake, so we degrade predictably rather than
+//     guessing an intended coercion.
+
 // equal performs a type-aware equality check between a record field value
 // (which may be float64 from JSON decode) and a comparison value.
 func equal(a, b any) bool {
-	// Normalise numbers to float64 for comparison.
-	af, aIsNum := toFloat(a)
-	bf, bIsNum := toFloat(b)
+	af, aIsNum := asNumber(a)
+	bf, bIsNum := asNumber(b)
 	if aIsNum && bIsNum {
 		return af == bf
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
-// compare returns -1, 0, or 1 for a < b, a == b, a > b.
+// compare returns -1, 0, or 1 for a < b, a == b, a > b following the
+// comparison semantics documented above.
 func compare(a, b any) int {
-	af, aIsNum := toFloat(a)
-	bf, bIsNum := toFloat(b)
+	af, aIsNum := asNumber(a)
+	bf, bIsNum := asNumber(b)
 	if aIsNum && bIsNum {
 		switch {
 		case af < bf:
@@ -135,7 +152,11 @@ func compare(a, b any) int {
 	return strings.Compare(as, bs)
 }
 
-func toFloat(v any) (float64, bool) {
+// asNumber reports whether v is a JSON/Go numeric value and returns it as a
+// float64. Numeric-looking strings are deliberately NOT treated as numbers:
+// a value's JSON type determines whether numeric or lexicographic comparison
+// applies, so a string field always keeps string ordering.
+func asNumber(v any) (float64, bool) {
 	switch x := v.(type) {
 	case float64:
 		return x, true
@@ -143,10 +164,12 @@ func toFloat(v any) (float64, bool) {
 		return float64(x), true
 	case int:
 		return float64(x), true
+	case int32:
+		return float64(x), true
 	case int64:
 		return float64(x), true
-	case string:
-		if f, err := strconv.ParseFloat(x, 64); err == nil {
+	case json.Number:
+		if f, err := x.Float64(); err == nil {
 			return f, true
 		}
 	}
