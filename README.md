@@ -61,6 +61,7 @@ Key properties:
 - **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
 - **OpenAPI spec** — `docs/openapi/filedb.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
+- **Official client SDKs** — idiomatic, hand-written libraries for 7 languages (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, C#/.NET) under `clients/`
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
@@ -79,6 +80,28 @@ FileDB v2 is the right tool when:
 - You want a simple HTTP/gRPC API you can call from any language
 
 It is **not** the right tool for multi-node replication, complex joins, or datasets too large to compact on a single machine.
+
+---
+
+## Client SDKs
+
+Idiomatic, hand-written client libraries are available for seven languages. Each
+wraps the same gRPC API, takes the same connection config (`host`, `port`,
+`api_key`, optional TLS CA cert), and exposes every RPC including the streaming
+`Find` and `Watch` calls.
+
+| Language | Install | Reference |
+|---|---|---|
+| Python | `pip install filedbv2` | [clients/python](clients/python/README.md) |
+| JavaScript / TypeScript | `npm install filedbv2` | [clients/js](clients/js/README.md) |
+| PHP | `composer require srjn45/filedbv2` | [clients/php](clients/php/README.md) |
+| Java | `com.srjn45:filedbv2-client` (Maven Central) | [clients/java](clients/java/README.md) |
+| Ruby | `gem install filedbv2` | [clients/ruby](clients/ruby/README.md) |
+| Rust | `cargo add filedbv2` | [clients/rust](clients/rust/README.md) |
+| C# / .NET | `dotnet add package FileDBv2.Client` | [clients/csharp](clients/csharp/README.md) |
+
+Prefer to generate your own? The checked-in [OpenAPI spec](docs/openapi/filedb.swagger.json)
+covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
 
 ---
 

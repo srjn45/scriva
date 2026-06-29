@@ -411,10 +411,10 @@ docs(clients/python): add README and getting-started entry
 
 ## Final Steps (after all 7 clients)
 
-- [ ] Update ROADMAP.md table for all 7 clients — mark as done
-- [ ] Update `docs/getting-started.md` — add "SDK Quick Reference" table linking all 7 READMEs
-- [ ] Update root `README.md` — add client SDKs section
-- [ ] Commit: `docs: mark all language clients complete in ROADMAP and README`
+- [x] Update ROADMAP.md table for all 7 clients — mark as done
+- [x] Update `docs/getting-started.md` — add "SDK Quick Reference" table linking all 7 READMEs
+- [x] Update root `README.md` — add client SDKs section
+- [x] Commit: `docs: mark all language clients complete in ROADMAP and README`
 
 ---
 
