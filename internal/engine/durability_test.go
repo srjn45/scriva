@@ -19,7 +19,6 @@ func syncCfg(mode SyncMode) CollectionConfig {
 // and verifies records remain correct and durable across a reopen.
 func TestCRUDUnderEachSyncMode(t *testing.T) {
 	for _, mode := range []SyncMode{SyncModeNone, SyncModeAlways, SyncModeInterval} {
-		mode := mode
 		t.Run(string(mode), func(t *testing.T) {
 			dir := t.TempDir()
 			col, err := OpenCollection("users", dir, syncCfg(mode))
