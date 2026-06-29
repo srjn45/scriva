@@ -774,6 +774,67 @@ See [clients/rust/README.md](../clients/rust/README.md) for the full API referen
 
 ---
 
+## C# / .NET SDK
+
+Install:
+
+```bash
+dotnet add package FileDBv2.Client --version 0.1.0
+```
+
+```csharp
+using FileDBv2.Client;
+
+await using var db = new FileDB("localhost", 5433, "dev-key");
+
+await db.CreateCollectionAsync("users");
+
+ulong id = await db.InsertAsync("users", new()
+{
+    ["name"] = "Alice",
+    ["age"]  = 30,
+});
+
+var record = await db.FindByIdAsync("users", id);
+
+// Streaming find — results arrive one by one via IAsyncEnumerable
+await foreach (var r in db.FindAsync("users",
+    filter:  new() { ["field"] = "role", ["op"] = "eq", ["value"] = "admin" },
+    orderBy: "name"))
+{
+    Console.WriteLine(r["name"]);
+}
+
+// Or collect all results at once
+var admins = await db.FindAllAsync("users",
+    filter: new() { ["field"] = "role", ["op"] = "eq", ["value"] = "admin" });
+
+await db.UpdateAsync("users", id, new() { ["name"] = "Alice", ["age"] = 31 });
+await db.DeleteAsync("users", id);
+await db.DropCollectionAsync("users");
+```
+
+`FileDB` implements both `IAsyncDisposable` (`await using`) and `IDisposable` (`using`). Watch returns an `IAsyncEnumerable<WatchEventResult>`:
+
+```csharp
+using var cts = new CancellationTokenSource();
+await foreach (var evt in db.WatchAsync("users", ct: cts.Token))
+{
+    Console.WriteLine($"{evt.Op} id={evt.RecordId}");
+}
+cts.Cancel(); // stop the stream
+```
+
+With TLS:
+
+```csharp
+var db = new FileDB("myserver.example.com", 5433, "api-key", "/path/to/ca.crt");
+```
+
+See [clients/csharp/README.md](../clients/csharp/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## Prometheus metrics
 
 When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
