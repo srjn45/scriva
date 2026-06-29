@@ -256,8 +256,9 @@ openapi-generator generate \
 ```
 
 This is the quickest path to language coverage; the hand-written SDKs under
-`clients/` (JavaScript, Java) exist where a more ergonomic, idiomatic wrapper is
-worth the maintenance.
+`clients/` (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, and C#) exist
+where a more ergonomic, idiomatic wrapper is worth the maintenance — see the
+[Client SDKs](#client-sdks) reference below.
 
 ---
 
@@ -450,6 +451,30 @@ npm run build
 ```
 
 Serve `dist/` with any static file server; point it at a running FileDB REST gateway.
+
+---
+
+## Client SDKs
+
+FileDB ships hand-written, idiomatic client libraries for seven languages. Every
+SDK wraps the same gRPC API (`proto/filedb.proto`), takes the same connection
+config (`host`, `port`, `api_key`, optional TLS CA cert), and exposes every RPC —
+including the streaming `Find` and `Watch` calls in each language's native
+iterator/stream style.
+
+| Language | Install | Reference |
+|---|---|---|
+| Python | `pip install filedbv2` | [clients/python](../clients/python/README.md) |
+| JavaScript / TypeScript | `npm install filedbv2` | [clients/js](../clients/js/README.md) |
+| PHP | `composer require srjn45/filedbv2` | [clients/php](../clients/php/README.md) |
+| Java | `com.srjn45:filedbv2-client` (Maven Central) | [clients/java](../clients/java/README.md) |
+| Ruby | `gem install filedbv2` | [clients/ruby](../clients/ruby/README.md) |
+| Rust | `cargo add filedbv2` | [clients/rust](../clients/rust/README.md) |
+| C# / .NET | `dotnet add package FileDBv2.Client` | [clients/csharp](../clients/csharp/README.md) |
+
+The per-language sections below cover install and basic usage; each client's
+`README.md` has the full API reference, filter syntax, watch streaming, and
+transaction examples.
 
 ---
 
