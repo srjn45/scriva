@@ -1,0 +1,19 @@
+services:
+  filedb:
+    build: .
+    image: ghcr.io/srjn45/filedbv2:dev
+    container_name: filedb
+    restart: unless-stopped
+    ports:
+      - "5433:5433"   # gRPC (TCP)
+      - "8080:8080"   # REST gateway
+    environment:
+      # API key for both gRPC and REST; clients must send the same value.
+      FILEDB_API_KEY: ${FILEDB_API_KEY:-dev-key}
+    # The image entrypoint is ["filedb", "serve", "--data", "/data"], which
+    # already listens on :5433 (gRPC) and :8080 (REST) on all interfaces.
+    volumes:
+      - filedb-data:/data
+
+volumes:
+  filedb-data:

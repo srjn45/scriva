@@ -29,6 +29,24 @@ filedb-cli repl --api-key dev-key
 
 ---
 
+## Run with Docker Compose
+
+```bash
+# Start the server (builds the image from the local Dockerfile on first run)
+FILEDB_API_KEY=dev-key docker compose up -d
+
+# Insert a record against the REST gateway on :8080
+curl -H "x-api-key: dev-key" \
+  -d '{"data":{"name":"alice","age":30}}' \
+  http://localhost:8080/v1/users/records
+```
+
+gRPC is exposed on `:5433` and REST on `:8080`; data persists in the named
+`filedb-data` volume. See [`docker-compose.yml`](docker-compose.yml) and the
+fully commented [`filedb.example.yaml`](filedb.example.yaml) for configuration.
+
+---
+
 ## What it is
 
 FileDB v2 stores each collection as a set of **NDJSON segment files** — one JSON object per line, appended in order. There is no binary format, no external runtime, and no hidden state. You can inspect, backup, or migrate your data with any text editor or Unix tool.
@@ -82,6 +100,13 @@ make build          # produces bin/filedb and bin/filedb-cli
 make test           # run tests with race detector
 make proto          # regenerate gRPC code (requires buf)
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to
+build, test, and submit changes.
 
 ---
 
