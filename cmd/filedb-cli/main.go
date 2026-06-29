@@ -24,6 +24,13 @@ type cliFlags struct {
 	tlsCA  string // path to PEM CA cert; empty = no TLS on TCP
 }
 
+// Build information, injected at release time via -ldflags -X (see .goreleaser.yml).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
@@ -34,9 +41,11 @@ func rootCmd() *cobra.Command {
 	flags := &cliFlags{}
 
 	root := &cobra.Command{
-		Use:   "filedb-cli",
-		Short: "FileDB command-line client",
+		Use:     "filedb-cli",
+		Short:   "FileDB command-line client",
+		Version: version,
 	}
+	root.SetVersionTemplate("filedb-cli {{.Version}}\n")
 
 	pf := root.PersistentFlags()
 	pf.StringVar(&flags.host, "host", "localhost:5433", "FileDB gRPC address")
@@ -64,8 +73,19 @@ func rootCmd() *cobra.Command {
 		beginTxCmd(flags),
 		commitTxCmd(flags),
 		rollbackTxCmd(flags),
+		versionCmd(),
 	)
 	return root
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version, commit, and build date",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Printf("filedb-cli %s (commit %s, built %s)\n", version, commit, date)
+		},
+	}
 }
 
 // connect dials the FileDB server, preferring the Unix socket when available.

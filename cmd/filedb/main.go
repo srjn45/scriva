@@ -29,6 +29,13 @@ import (
 	"github.com/srjn45/filedbv2/server"
 )
 
+// Build information, injected at release time via -ldflags -X (see .goreleaser.yml).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
@@ -37,11 +44,23 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "filedb",
-		Short: "FileDB — lightweight append-only file database",
+		Use:     "filedb",
+		Short:   "FileDB — lightweight append-only file database",
+		Version: version,
 	}
-	root.AddCommand(serveCmd())
+	root.SetVersionTemplate("filedb {{.Version}}\n")
+	root.AddCommand(serveCmd(), versionCmd())
 	return root
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version, commit, and build date",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Printf("filedb %s (commit %s, built %s)\n", version, commit, date)
+		},
+	}
 }
 
 func serveCmd() *cobra.Command {
