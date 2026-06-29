@@ -289,7 +289,7 @@ conventions.
 - [ ] D3 — per-record segment checksums
 - [ ] D4 — Watch overflow signal
 - [x] D5 — propagate rotation errors on all write paths
-- [ ] D6 — transaction GC / `--tx-timeout`
+- [x] D6 — transaction GC / `--tx-timeout`
 
 **v0.3.0 — Query at scale**
 - [ ] Q1 — streaming, push-down Find

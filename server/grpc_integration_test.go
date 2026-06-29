@@ -35,7 +35,8 @@ func newTestServer(t *testing.T) pb.FileDBClient {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	gs := server.NewGRPCServer(db)
+	gs := server.NewGRPCServer(db, 5*time.Minute)
+	t.Cleanup(gs.Close)
 	grpcSrv := grpc.NewServer()
 	pb.RegisterFileDBServer(grpcSrv, gs)
 

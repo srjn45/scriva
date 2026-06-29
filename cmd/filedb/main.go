@@ -103,6 +103,8 @@ func serveCmd() *cobra.Command {
 						merged.SyncMode = cfg.SyncMode
 					case "sync-interval":
 						merged.SyncInterval = cfg.SyncInterval
+					case "tx-timeout":
+						merged.TxTimeout = cfg.TxTimeout
 					case "metrics-addr":
 						merged.MetricsAddr = cfg.MetricsAddr
 					case "tls-cert":
@@ -129,6 +131,7 @@ func serveCmd() *cobra.Command {
 	f.Float64Var(&cfg.CompactDirtyPct, "compact-dirty", cfg.CompactDirtyPct, "Dirty ratio threshold to trigger compaction (0–1)")
 	f.StringVar(&cfg.SyncMode, "sync", cfg.SyncMode, "Durability mode: none (OS flush), always (fsync per write), interval (fsync on a timer)")
 	f.DurationVar(&cfg.SyncInterval, "sync-interval", cfg.SyncInterval, "Flush cadence when --sync=interval")
+	f.DurationVar(&cfg.TxTimeout, "tx-timeout", cfg.TxTimeout, "Idle timeout before an open transaction is reaped (0 = disabled)")
 	f.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "Prometheus metrics listen address (empty = disabled)")
 	f.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "Path to TLS certificate PEM file (enables TLS when set with --tls-key)")
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
@@ -218,7 +221,8 @@ func serve(cfg server.Config) error {
 		grpc.StreamInterceptor(stream),
 		grpc.Creds(serverCreds),
 	)
-	pb.RegisterFileDBServer(grpcSrv, server.NewGRPCServer(db))
+	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout)
+	pb.RegisterFileDBServer(grpcSrv, tcpAPI)
 
 	// TCP listener for gRPC.
 	tcpLn, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -233,7 +237,8 @@ func serve(cfg server.Config) error {
 		grpc.StreamInterceptor(stream),
 		grpc.Creds(insecure.NewCredentials()),
 	)
-	pb.RegisterFileDBServer(unixGrpcSrv, server.NewGRPCServer(db))
+	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout)
+	pb.RegisterFileDBServer(unixGrpcSrv, unixAPI)
 
 	_ = os.Remove(cfg.UnixSocket)
 	unixLn, err := net.Listen("unix", cfg.UnixSocket)
@@ -271,6 +276,8 @@ func serve(cfg server.Config) error {
 
 	grpcSrv.GracefulStop()
 	unixGrpcSrv.GracefulStop()
+	tcpAPI.Close()
+	unixAPI.Close()
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

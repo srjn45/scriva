@@ -36,6 +36,9 @@ type Config struct {
 	// Durability
 	SyncMode     string        `yaml:"sync_mode"`     // none|always|interval (default: none)
 	SyncInterval time.Duration `yaml:"sync_interval"` // flush cadence for interval mode (default: 1s)
+
+	// Transactions
+	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -51,6 +54,7 @@ func DefaultConfig() Config {
 		CompactDirtyPct: 0.30,
 		SyncMode:        string(engine.SyncModeNone),
 		SyncInterval:    engine.DefaultSyncInterval,
+		TxTimeout:       5 * time.Minute,
 	}
 }
 
@@ -81,6 +85,7 @@ type fileConfig struct {
 	CompactDirtyPct float64 `yaml:"compact_dirty_pct"`
 	SyncMode        string  `yaml:"sync_mode"`
 	SyncInterval    string  `yaml:"sync_interval"`
+	TxTimeout       string  `yaml:"tx_timeout"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -108,6 +113,7 @@ func LoadConfigFile(path string) (Config, error) {
 		CompactDirtyPct: defaults.CompactDirtyPct,
 		SyncMode:        defaults.SyncMode,
 		SyncInterval:    defaults.SyncInterval.String(),
+		TxTimeout:       defaults.TxTimeout.String(),
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -126,6 +132,11 @@ func LoadConfigFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config file sync_interval %q: %w", fc.SyncInterval, err)
 	}
 
+	txTimeout, err := time.ParseDuration(fc.TxTimeout)
+	if err != nil {
+		return Config{}, fmt.Errorf("config file tx_timeout %q: %w", fc.TxTimeout, err)
+	}
+
 	return Config{
 		DataDir:         fc.DataDir,
 		GRPCAddr:        fc.GRPCAddr,
@@ -140,5 +151,6 @@ func LoadConfigFile(path string) (Config, error) {
 		CompactDirtyPct: fc.CompactDirtyPct,
 		SyncMode:        fc.SyncMode,
 		SyncInterval:    syncInterval,
+		TxTimeout:       txTimeout,
 	}, nil
 }
