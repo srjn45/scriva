@@ -14,7 +14,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 
 | # | Language | Package Registry | Directory | Status |
 |---|---|---|---|---|
-| 1 | Python | PyPI (`pip install filedbv2`) | `clients/python/` | ⬜ Not started |
+| 1 | Python | PyPI (`pip install filedbv2`) | `clients/python/` | ✅ Done |
 | 2 | TypeScript / JavaScript | npm (`npm install filedbv2`) | `clients/js/` | ✅ Done |
 | 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ⬜ Not started |
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
@@ -56,50 +56,50 @@ docs(clients/python): add README and getting-started entry
 **Target Python:** 3.9+
 
 ### 1.1 Scaffold
-- [ ] Add `clients/python/` directory with `pyproject.toml` (flit or hatchling build backend)
+- [x] Add `clients/python/` directory with `pyproject.toml` (flit or hatchling build backend)
   - package name: `filedbv2`
   - version: `0.1.0`
   - dependencies: `grpcio>=1.60`, `grpcio-tools>=1.60`, `protobuf>=4.25`
-- [ ] Add `clients/python/src/filedbv2/__init__.py` (re-exports `FileDB`)
-- [ ] Add `clients/python/src/filedbv2/proto/` (generated stub destination)
-- [ ] Add `clients/python/generate.sh` — runs `python -m grpc_tools.protoc` to regenerate stubs from `../../proto/`
-- [ ] Commit: `feat(clients/python): scaffold package structure`
+- [x] Add `clients/python/src/filedbv2/__init__.py` (re-exports `FileDB`)
+- [x] Add `clients/python/src/filedbv2/proto/` (generated stub destination)
+- [x] Add `clients/python/generate.sh` — runs `python -m grpc_tools.protoc` to regenerate stubs from `../../proto/`
+- [x] Commit: `feat(clients/python): scaffold package structure`
 
 ### 1.2 Proto stubs
-- [ ] Run `generate.sh` — produces `filedb_pb2.py` + `filedb_pb2_grpc.py` in `proto/`
-- [ ] Verify import works: `from filedbv2.proto import filedb_pb2`
-- [ ] Commit: `feat(clients/python): add generated proto stubs`
+- [x] Run `generate.sh` — produces `filedb_pb2.py` + `filedb_pb2_grpc.py` in `proto/`
+- [x] Verify import works: `from filedbv2.proto import filedb_pb2`
+- [x] Commit: `feat(clients/python): add generated proto stubs`
 
 ### 1.3 Client class (`client.py`)
-- [ ] `FileDB.__init__(host, port, api_key, tls_ca_cert=None)` — builds channel + stub
-- [ ] Collection management
-  - [ ] `create_collection(name) -> str`
-  - [ ] `drop_collection(name) -> bool`
-  - [ ] `list_collections() -> list[str]`
-- [ ] CRUD
-  - [ ] `insert(collection, data: dict) -> int`
-  - [ ] `insert_many(collection, records: list[dict]) -> list[int]`
-  - [ ] `find_by_id(collection, id: int) -> dict`
-  - [ ] `find(collection, filter=None, limit=0, offset=0, order_by="", descending=False) -> list[dict]`
-  - [ ] `update(collection, id: int, data: dict) -> int`
-  - [ ] `delete(collection, id: int) -> bool`
-- [ ] Indexes
-  - [ ] `ensure_index(collection, field) -> None`
-  - [ ] `drop_index(collection, field) -> bool`
-  - [ ] `list_indexes(collection) -> list[str]`
-- [ ] Transactions
-  - [ ] `begin_tx(collection) -> str`
-  - [ ] `commit_tx(tx_id) -> bool`
-  - [ ] `rollback_tx(tx_id) -> bool`
-- [ ] Watch
-  - [ ] `watch(collection, filter=None) -> Iterator[WatchEvent]`
-- [ ] Stats
-  - [ ] `stats(collection) -> dict`
-- [ ] Helper: `_filter_to_proto(filter_dict)` — converts `{"field":"name","op":"eq","value":"alice"}` / `{"and":[...]}` to proto `Filter`
-- [ ] Commit: `feat(clients/python): implement FileDB client class`
+- [x] `FileDB.__init__(host, port, api_key, tls_ca_cert=None)` — builds channel + stub
+- [x] Collection management
+  - [x] `create_collection(name) -> str`
+  - [x] `drop_collection(name) -> bool`
+  - [x] `list_collections() -> list[str]`
+- [x] CRUD
+  - [x] `insert(collection, data: dict) -> int`
+  - [x] `insert_many(collection, records: list[dict]) -> list[int]`
+  - [x] `find_by_id(collection, id: int) -> dict`
+  - [x] `find(collection, filter=None, limit=0, offset=0, order_by="", descending=False) -> list[dict]`
+  - [x] `update(collection, id: int, data: dict) -> int`
+  - [x] `delete(collection, id: int) -> bool`
+- [x] Indexes
+  - [x] `ensure_index(collection, field) -> None`
+  - [x] `drop_index(collection, field) -> bool`
+  - [x] `list_indexes(collection) -> list[str]`
+- [x] Transactions
+  - [x] `begin_tx(collection) -> str`
+  - [x] `commit_tx(tx_id) -> bool`
+  - [x] `rollback_tx(tx_id) -> bool`
+- [x] Watch
+  - [x] `watch(collection, filter=None) -> Iterator[WatchEvent]`
+- [x] Stats
+  - [x] `stats(collection) -> dict`
+- [x] Helper: `_filter_to_proto(filter_dict)` — converts `{"field":"name","op":"eq","value":"alice"}` / `{"and":[...]}` to proto `Filter`
+- [x] Commit: `feat(clients/python): implement FileDB client class`
 
 ### 1.4 Example / test program
-- [ ] `clients/python/examples/test_basic.py`
+- [x] `clients/python/examples/test_basic.py`
   - Connect to `localhost:5433` with `dev-key`
   - Create collection `test_py`
   - Insert 3 records
@@ -110,18 +110,18 @@ docs(clients/python): add README and getting-started entry
   - `stats`
   - Drop collection
   - Print all results
-- [ ] `clients/python/examples/test_watch.py` — subscribes to `Watch`, inserts in background thread, prints events
-- [ ] Commit: `feat(clients/python): add example programs`
+- [x] `clients/python/examples/test_watch.py` — subscribes to `Watch`, inserts in background thread, prints events
+- [x] Commit: `feat(clients/python): add example programs`
 
 ### 1.5 Documentation
-- [ ] `clients/python/README.md`
+- [x] `clients/python/README.md`
   - Install, connect, full usage snippet for every method
   - Filter syntax reference
   - TLS example
-- [ ] Add Python SDK section to `docs/getting-started.md`
-- [ ] Mark `clients/python/` row in this PLAN.md as ✅
-- [ ] Mark `ROADMAP.md` Python client as done
-- [ ] Commit: `docs(clients/python): README and getting-started entry`
+- [x] Add Python SDK section to `docs/getting-started.md`
+- [x] Mark `clients/python/` row in this PLAN.md as ✅
+- [x] Mark `ROADMAP.md` Python client as done
+- [x] Commit: `docs(clients/python): README and getting-started entry`
 
 ---
 

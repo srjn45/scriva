@@ -453,6 +453,52 @@ Serve `dist/` with any static file server; point it at a running FileDB REST gat
 
 ---
 
+## Python SDK
+
+Install:
+
+```bash
+pip install filedbv2
+```
+
+```python
+from filedbv2 import FileDB
+
+db = FileDB("localhost", 5433, "dev-key")
+
+db.create_collection("users")
+
+rid = db.insert("users", {"name": "Alice", "age": 30})
+
+record = db.find_by_id("users", rid)
+
+# find collects the server stream into a list of record dicts
+admins = db.find("users", {"field": "role", "op": "eq", "value": "admin"}, order_by="name")
+
+db.update("users", rid, {"name": "Alice", "age": 31})
+db.delete("users", rid)
+db.drop_collection("users")
+db.close()
+```
+
+`FileDB` is also a context manager (`with FileDB(...) as db:`). Watch returns an
+iterator of event dicts:
+
+```python
+for event in db.watch("users"):
+    print(event["op"], event["record"]["id"], event["record"]["data"])
+```
+
+With TLS:
+
+```python
+db = FileDB("myserver.example.com", 5433, "api-key", tls_ca_cert="/path/to/ca.crt")
+```
+
+See [clients/python/README.md](../clients/python/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## JavaScript / TypeScript SDK
 
 Install:
