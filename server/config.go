@@ -32,6 +32,10 @@ type Config struct {
 	SegmentMaxSize  int64         `yaml:"segment_max_size"`  // default: 4 MiB
 	CompactInterval time.Duration `yaml:"compact_interval"`  // default: 5m
 	CompactDirtyPct float64       `yaml:"compact_dirty_pct"` // default: 0.30
+
+	// Durability
+	SyncMode     string        `yaml:"sync_mode"`     // none|always|interval (default: none)
+	SyncInterval time.Duration `yaml:"sync_interval"` // flush cadence for interval mode (default: 1s)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -45,6 +49,8 @@ func DefaultConfig() Config {
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: 5 * time.Minute,
 		CompactDirtyPct: 0.30,
+		SyncMode:        string(engine.SyncModeNone),
+		SyncInterval:    engine.DefaultSyncInterval,
 	}
 }
 
@@ -54,6 +60,8 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		SegmentMaxSize:  c.SegmentMaxSize,
 		CompactInterval: c.CompactInterval,
 		CompactDirtyPct: c.CompactDirtyPct,
+		SyncMode:        engine.SyncMode(c.SyncMode),
+		SyncInterval:    c.SyncInterval,
 	}
 }
 
@@ -71,6 +79,8 @@ type fileConfig struct {
 	SegmentMaxSize  int64   `yaml:"segment_max_size"`
 	CompactInterval string  `yaml:"compact_interval"`
 	CompactDirtyPct float64 `yaml:"compact_dirty_pct"`
+	SyncMode        string  `yaml:"sync_mode"`
+	SyncInterval    string  `yaml:"sync_interval"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -96,6 +106,8 @@ func LoadConfigFile(path string) (Config, error) {
 		SegmentMaxSize:  defaults.SegmentMaxSize,
 		CompactInterval: defaults.CompactInterval.String(),
 		CompactDirtyPct: defaults.CompactDirtyPct,
+		SyncMode:        defaults.SyncMode,
+		SyncInterval:    defaults.SyncInterval.String(),
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -107,6 +119,11 @@ func LoadConfigFile(path string) (Config, error) {
 	d, err := time.ParseDuration(fc.CompactInterval)
 	if err != nil {
 		return Config{}, fmt.Errorf("config file compact_interval %q: %w", fc.CompactInterval, err)
+	}
+
+	syncInterval, err := time.ParseDuration(fc.SyncInterval)
+	if err != nil {
+		return Config{}, fmt.Errorf("config file sync_interval %q: %w", fc.SyncInterval, err)
 	}
 
 	return Config{
@@ -121,5 +138,7 @@ func LoadConfigFile(path string) (Config, error) {
 		SegmentMaxSize:  fc.SegmentMaxSize,
 		CompactInterval: d,
 		CompactDirtyPct: fc.CompactDirtyPct,
+		SyncMode:        fc.SyncMode,
+		SyncInterval:    syncInterval,
 	}, nil
 }

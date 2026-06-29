@@ -36,11 +36,13 @@ FileDB v2 stores each collection as a set of **NDJSON segment files** — one JS
 Key properties:
 
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
+- **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments
 - **In-memory index** — O(1) lookup by id, persisted with a checksum for fast restarts
 - **Secondary indexes** — per-field inverted indexes for O(1) equality lookups; automatically maintained and persisted
 - **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
+- **OpenAPI spec** — `docs/openapi/filedb.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`

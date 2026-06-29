@@ -131,6 +131,21 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 	return offset, nil
 }
 
+// Sync flushes any buffered writes for the active segment to stable storage
+// via fsync(2). It is a no-op on sealed segments (which hold no open file
+// handle) and is safe to call concurrently with Append.
+func (s *Segment) Sync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed || s.file == nil {
+		return nil
+	}
+	if err := s.file.Sync(); err != nil {
+		return fmt.Errorf("segment: sync %q: %w", s.path, err)
+	}
+	return nil
+}
+
 // ReadAt decodes the entry starting at the given byte offset.
 // Safe to call concurrently on any segment (active or sealed).
 func (s *Segment) ReadAt(offset int64) (store.Entry, error) {

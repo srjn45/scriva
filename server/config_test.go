@@ -21,6 +21,8 @@ api_key: secret
 segment_max_size: 1048576
 compact_interval: 10m
 compact_dirty_pct: 0.5
+sync_mode: interval
+sync_interval: 2s
 `)
 		if err := f.Close(); err != nil {
 			t.Fatal(err)
@@ -54,6 +56,12 @@ compact_dirty_pct: 0.5
 		}
 		if cfg.CompactDirtyPct != 0.5 {
 			t.Errorf("CompactDirtyPct = %v, want 0.5", cfg.CompactDirtyPct)
+		}
+		if cfg.SyncMode != "interval" {
+			t.Errorf("SyncMode = %q, want interval", cfg.SyncMode)
+		}
+		if cfg.SyncInterval != 2*time.Second {
+			t.Errorf("SyncInterval = %v, want 2s", cfg.SyncInterval)
 		}
 	})
 

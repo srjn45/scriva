@@ -8,7 +8,7 @@ GO           := go
 GOFLAGS      := -trimpath
 LDFLAGS      := -s -w
 
-.PHONY: all build proto test lint run cli clean release help
+.PHONY: all build proto openapi test bench lint run cli clean release help
 
 all: build
 
@@ -25,10 +25,20 @@ proto:
 	buf generate
 	@echo "Proto generated in $(PROTO_GEN)/proto"
 
+## openapi: generate the OpenAPI/Swagger spec from proto into docs/openapi (requires buf)
+openapi:
+	@which buf > /dev/null 2>&1 || (echo "ERROR: buf not found. Install: https://buf.build/docs/installation" && exit 1)
+	buf generate
+	@echo "OpenAPI spec generated in docs/openapi/"
+
 ## test: run all tests with race detector and coverage
 test:
 	$(GO) test ./... -race -count=1 -coverprofile=coverage.out
 	$(GO) tool cover -func=coverage.out | tail -1
+
+## bench: run engine microbenchmarks (insert/find/scan) with allocation stats
+bench:
+	$(GO) test ./internal/engine -bench '.' -benchmem -run '^$$'
 
 ## lint: run golangci-lint
 lint:

@@ -52,6 +52,16 @@ Compaction:  resolve latest per id → write clean segments → atomic swap → 
 
 ## What Is Done ✅
 
+### Durability, benchmarks & OpenAPI — shipped
+- [x] Configurable durability policy (`--sync none|always|interval`, `--sync-interval`)
+  - `engine.SyncMode` on `CollectionConfig`; `Segment.Sync()` (fsync); per-write fsync for `always`; background flush loop for `interval`
+  - Wired through `server.Config`, YAML (`sync_mode` / `sync_interval`), and CLI flags with validation
+  - Zero-value `CollectionConfig` is now normalized to safe defaults
+  - Tests in `internal/engine/durability_test.go` (CRUD + reopen under every mode)
+- [x] Engine benchmark suite (`internal/engine/bench_test.go`, `make bench`) — insert per sync mode, FindByID, full vs indexed scan
+- [x] OpenAPI/Swagger spec generated from proto (`docs/openapi/filedb.swagger.json`, `make openapi`) — universal client-generation path
+- [x] `LICENSE` file added (MIT)
+
 ### Web admin UI — shipped
 - [x] `clients/web/` — React 18 + TypeScript + Vite + Tailwind CSS browser UI (dark theme)
   - Browse and manage collections (create, drop), full CRUD on records with filter/order/pagination
@@ -136,7 +146,15 @@ BeginTx  CommitTx  RollbackTx
 ### High Priority
 
 #### 1. Language clients
-The proto file is ready. Seven language clients are planned — see [`clients/PLAN.md`](clients/PLAN.md) for the full step-by-step implementation checklist.
+The proto file is ready. Two strategies, used together:
+
+- **Universal (cheap):** generate clients from the checked-in OpenAPI spec
+  (`docs/openapi/filedb.swagger.json`) with `openapi-generator` — covers nearly
+  every language with zero hand-written code.
+- **Ergonomic (curated):** hand-written SDKs for the highest-value languages
+  where an idiomatic wrapper is worth the maintenance. Seven are scoped — see
+  [`clients/PLAN.md`](clients/PLAN.md) — but the OpenAPI path means the long tail
+  (Ruby, PHP, C#, …) no longer blocks "use from any language."
 
 | Client | Package manager | Status |
 |---|---|---|
