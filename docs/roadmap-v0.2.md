@@ -1,0 +1,306 @@
+# FileDB — Post-v0.1.0 Roadmap & Implementation Plan
+
+v0.1.0 shipped the feature-complete core (storage engine, gRPC+REST, 7 client
+SDKs, web UI, durability modes, metrics, TLS). This document plans the next arc:
+**making the durability promise real, making queries scale, and rounding out the
+feature set.**
+
+It is derived from the codebase review of 2026-06-29. Each item lists the
+*problem* (with `file:line` evidence), the *approach*, *proto/API* impact, the
+*files* touched, *tests*, and an *acceptance bar*. Items are grouped into
+release milestones and sized **S** (≤½ day), **M** (1–2 days), **L** (3+ days).
+
+> **Workflow:** one PR per task. Small correctness fixes are batched into a
+> single hardening PR; each large feature is its own branch (or warden agent in
+> an isolated worktree). CI must be green before merge; every feature updates
+> `docs/`, `README.md`, and ticks its box here.
+
+---
+
+## Milestone summary
+
+| Milestone | Theme | Items | Risk | Headline |
+|---|---|---|---|---|
+| **v0.2.0** | Durability & correctness hardening | D1–D6 | Low | Back the durability promise; no silent data/edge bugs |
+| **v0.3.0** | Query at scale | Q1–Q4 | Medium | Stop materializing whole collections; range indexes |
+| **v0.4.0** | Feature breadth | F1–F3 | Medium | TTL, backup/snapshot, on-demand compaction |
+| **v0.5.0** | Auth & multi-tenancy | A1 | Medium | Multiple scoped, rotatable API keys |
+
+---
+
+## v0.2.0 — Durability & correctness hardening
+
+Small, high-trust-impact fixes. Ship D1–D2 + D5 first as one PR (they directly
+back the `--sync` feature), then D3/D4/D6 as follow-ups.
+
+### D1 — fsync the directory after segment create/rotate/rename — **S**
+- **Problem:** `segment.go` fsyncs file *contents* (`Sync`, `Seal`) but never
+  the parent directory. A new `seg_NNNNNN.ndjson` created in `rotateSegment`
+  (`collection.go:531`) or `openActiveSegment` (`segment.go:30`) is not durable
+  on crash even under `SyncModeAlways`. Same for the atomic-rename of
+  `index.json` / `sidx_*.json` (`index.go:98`, `secondary_index.go:182`) —
+  rename is atomic for *visibility*, not *durability*, without a dir fsync.
+- **Approach:** add `fsyncDir(path string) error` helper (open dir, `Sync`,
+  close). Call it after: first active-segment create, every rotation, and every
+  tmp→final rename of index/sidx/meta files. Gate the per-rotation dir-fsync on
+  `SyncMode != none` to preserve fast-mode throughput.
+- **Files:** `internal/engine/segment.go`, `collection.go`, `index.go`,
+  `secondary_index.go`, new `internal/engine/fsync.go`.
+- **Tests:** `durability_test.go` — extend the reopen matrix; add a test that
+  asserts dir-fsync is invoked per sync mode (inject a hook/counter).
+- **Acceptance:** under `always`, no acknowledged write or its containing
+  segment file can be lost across a simulated crash (kill + reopen).
+
+### D2 — atomic, off-hot-path `meta.json` writes — **S**
+- **Problem:** `persistMeta` uses in-place `os.WriteFile` (`meta.go:38`) — a
+  torn write corrupts it — and it runs on **every insert** (`collection.go:314`),
+  adding a file write to the hot path even in `SyncModeNone`.
+- **Approach:** (a) switch `persistMeta` to tmp+rename like the indexes; (b) stop
+  writing it per-insert — persist on rotation, on `Close`, and on a coarse timer
+  (or every N writes). The id counter is already recoverable by scan, so this is
+  pure optimization + safety, not a correctness regression.
+- **Files:** `internal/engine/meta.go`, `collection.go`.
+- **Tests:** `collection_test.go` — reopen after N inserts with no clean close
+  still recovers the correct id counter (falls back to scan); meta written
+  atomically (no partial file observable).
+- **Acceptance:** insert throughput in `none` mode improves measurably
+  (`make bench`); id counter never regresses across crash/reopen.
+
+### D3 — per-record checksums in segments — **M**
+- **Problem:** the primary index has a SHA-256 checksum, but segment lines do
+  not. Silent bit-rot in a sealed segment is undetectable — `store.Decode`
+  returns wrong data if the corrupted bytes still parse as JSON.
+- **Approach:** add an optional `crc` field to the NDJSON entry (CRC32C of the
+  canonical `data`), written by `store.Encode` and verified by `store.Decode`
+  when present. Keep it backward-compatible: absent `crc` = legacy line, no
+  verification. Verification failures surface as a typed `ErrCorruptEntry`.
+- **Proto/format:** no proto change; on-disk NDJSON gains an optional key.
+  Document in `docs/architecture.md`.
+- **Files:** `internal/store/ndjson.go`, `internal/engine/segment.go`
+  (`ScanAll`/`ReadAt` error wrapping), `docs/architecture.md`.
+- **Tests:** `ndjson_test.go` — round-trip with/without crc; flip a byte →
+  `ErrCorruptEntry`. `segment_recovery_fuzz_test.go` — extend fuzz corpus.
+- **Acceptance:** a single-bit flip in a sealed segment is detected on read.
+
+### D4 — Watch overflow signal (no silent event loss) — **S/M**
+- **Problem:** `emit` drops events when a subscriber's 64-buffer is full
+  (`collection.go:524`, `default:` case) with no notification — consumers
+  silently miss writes.
+- **Approach:** track per-watcher drops; when a drop occurs, set an "overflowed"
+  flag and deliver a sentinel `WatchEvent{Op: OpOverflow}` (new op) once the
+  channel drains, so the client knows to resync. Make buffer size configurable.
+- **Proto/API:** add `OVERFLOW` to the `WatchEvent` op enum in `proto/filedb.proto`;
+  regenerate stubs; map in `server/grpc.go` + `server/watch_rest.go`.
+- **Files:** `proto/filedb.proto`, `internal/engine/collection.go`,
+  `server/grpc.go`, `server/watch_rest.go`, web UI feed handling.
+- **Tests:** `collection_test.go` — slow subscriber receives an overflow sentinel
+  rather than silently missing events.
+- **Acceptance:** a deliberately stalled watcher observes exactly one overflow
+  signal and can recover a consistent view by re-reading.
+
+### D5 — stop swallowing rotation errors — **S**
+- **Problem:** `Update`, `Delete`, and `CommitTx` discard the rotation result
+  (`_ = c.rotateSegment()`, e.g. `collection.go:347, 655`); only `Insert`
+  checks it. A failed rotation (e.g. disk full) is silently ignored on three of
+  four write paths.
+- **Approach:** propagate the error (matching `Insert`'s pattern at
+  `collection.go:309`). The write itself already succeeded, so wrap as a
+  non-fatal warning return or a logged error — decide one consistent policy and
+  apply it on all four paths.
+- **Files:** `internal/engine/collection.go`.
+- **Tests:** `collection_test.go` — inject a rotation failure; assert it is
+  surfaced (not swallowed) on every write path.
+- **Acceptance:** no write path silently ignores a rotation error.
+
+### D6 — transaction GC / idle expiry — **S/M**
+- **Problem:** `TxManager` (`txmanager.go`) never evicts transactions. A client
+  that calls `BeginTx` and disconnects leaks the `*Tx`, its staged ops, and its
+  reserved id forever.
+- **Approach:** stamp each `Tx` with `createdAt`/`lastUsed`; run a sweeper
+  goroutine that rolls back + removes transactions idle beyond a configurable
+  TTL (default 5m). Expose `--tx-timeout` (Config + YAML + flag, per the
+  "Adding a new server flag" checklist in CLAUDE.md).
+- **Files:** `internal/engine/txmanager.go`, `server/config.go`,
+  `cmd/filedb/main.go`.
+- **Tests:** new `txmanager_test.go` — idle tx is reaped after TTL; active tx is
+  not; reaped tx commit fails cleanly.
+- **Acceptance:** abandoned transactions are bounded in number and memory.
+
+---
+
+## v0.3.0 — Query at scale
+
+The flagship arc. Today every non-indexed query materializes the entire
+collection in RAM (`Scan` slow path, `collection.go:425`) and `limit`/`offset`/
+`order_by` are applied *after* the fact in the gRPC handler (`grpc.go:151-178`),
+so `Find ... limit 10` still reads the whole collection.
+
+### Q1 — streaming, push-down Find (limit/offset honored before materialization) — **L**
+- **Problem:** see above — no I/O or memory savings from `limit`; the streaming
+  RPC streams results that were already fully buffered.
+- **Approach:** redesign the read path to stream:
+  1. Build the live-id set incrementally instead of a full `map[uint64]Entry`.
+  2. Push `limit`/`offset` into the engine; stop scanning once `offset+limit`
+     matches are produced (when no `order_by`, or when ordering by an indexed
+     field).
+  3. Stream `ScanResult`s through a channel to `Find` so the server emits as it
+     reads rather than buffering. Respect `ctx` cancellation (see Q4).
+  4. When `order_by` is present and unindexed, fall back to bounded buffering
+     (top-K heap of size `offset+limit`) rather than full sort of all rows.
+- **Proto/API:** no breaking change (`limit`/`offset`/`order_by` already exist);
+  semantics tightened. Document ordering guarantees.
+- **Files:** `internal/engine/collection.go` (new `ScanStream`), `server/grpc.go`
+  (consume the stream), `docs/architecture.md`.
+- **Tests:** `collection_test.go` + `grpc_integration_test.go` — large-collection
+  bench shows `limit 10` reads/holds O(limit), not O(n); top-K ordering correct.
+- **Acceptance:** memory + rows-read for a limited query are bounded by
+  `offset+limit`, not collection size (verified by a bench/metric).
+
+### Q2 — typed, directional `order_by` — **S/M**
+- **Problem:** ordering uses `fmt.Sprintf("%v")` string compare with only a
+  float64 fast path (`grpc.go:153`); ints-as-`json.Number` and mixed types sort
+  lexically, and there's no descending option.
+- **Approach:** reuse the existing typed comparison logic in `query/filter.go`
+  (it already orders float/int/string/json.Number for `gt`/`lt`). Add a sort
+  direction (`order_dir` / `-field` convention). Centralize comparison so filter
+  and sort share one code path.
+- **Proto/API:** add `string order_dir = 6;` (or reuse a `-`-prefix) to
+  `FindRequest`; regenerate.
+- **Files:** `proto/filedb.proto`, `internal/query/filter.go` (export a
+  `Compare`), `server/grpc.go`, CLI `find` flag, clients/docs.
+- **Tests:** `filter_test.go` + integration — numeric vs string ordering, desc.
+- **Acceptance:** `order_by age` sorts 2 < 10; `desc` reverses correctly.
+
+### Q3 — range-capable secondary indexes — **L**
+- **Problem:** secondary indexes only accelerate `OpEq` (`collection.go:411`);
+  `gt/gte/lt/lte` always full-scan despite being supported filters.
+- **Approach:** add an ordered index structure (sorted slice of keys with binary
+  search, or a B-tree) alongside the current hash index. `Scan` picks the index
+  for range predicates and AND-combines candidate id sets. Persist with the same
+  tmp+rename+checksum pattern; rebuild after compaction.
+- **Proto/API:** optionally extend `EnsureIndex` with an index-type hint
+  (`hash` | `ordered`); default `ordered` so it serves both eq and range.
+- **Files:** `internal/engine/secondary_index.go` (or new `ordered_index.go`),
+  `collection.go` (planner), `proto/filedb.proto`, `server/grpc.go`, CLI, docs.
+- **Tests:** `secondary_index_test.go` — range lookups match full-scan results;
+  survives update/delete/compaction; persistence round-trips.
+- **Acceptance:** a `gt`/`lt` query on an indexed field reads O(matches), not
+  O(collection), and returns identical results to the scan path.
+
+### Q4 — context cancellation into the engine — **S/M**
+- **Problem:** handlers don't thread `ctx` into the engine, so a client
+  cancelling a long `Find`/`Scan` doesn't stop server-side work.
+- **Approach:** add `ctx` params to `ScanStream`/long reads; check
+  `ctx.Err()` between segments/batches and abort. Pairs naturally with Q1.
+- **Files:** `internal/engine/collection.go`, `server/grpc.go`.
+- **Tests:** integration — cancel a streaming Find mid-flight; server stops
+  reading promptly.
+- **Acceptance:** cancelled queries release engine work within one batch.
+
+---
+
+## v0.4.0 — Feature breadth
+
+### F1 — TTL / expiring records — **M**
+- **Why:** natural fit for the cache/IoT/session use cases the README targets.
+- **Approach:** optional per-record `expires_at` (or per-collection default TTL).
+  A reaper (reuse the compactor cadence) tombstones expired ids; reads filter
+  out expired records defensively. Surface via Insert/Update options + a
+  collection-level config.
+- **Proto/API:** add `expires_at` / `ttl_seconds` to Insert/Update;
+  collection-level default TTL in `CreateCollection`.
+- **Files:** `proto/filedb.proto`, `collection.go`, `compactor.go`,
+  `server/grpc.go`, CLI, clients, docs.
+- **Tests:** record disappears after TTL; not before; survives reopen.
+- **Acceptance:** expired records are invisible to reads and reclaimed by
+  compaction.
+
+### F2 — backup / snapshot — **S/M**
+- **Why:** high perceived value, cheap given append-only files.
+- **Approach:** `filedb backup <dest>` (CLI) + a `Snapshot` RPC that produces a
+  consistent tarball of the data dir (briefly quiesce writes per collection, or
+  snapshot sealed segments + a frozen active tail). Document restore (it's just
+  untar into `--data`).
+- **Proto/API:** new `Snapshot` RPC (or CLI-only against the data dir).
+- **Files:** `proto/filedb.proto` (if RPC), `server/grpc.go`, new
+  `cmd/filedb-cli` command, `db.go`, docs.
+- **Tests:** backup→restore round-trip yields identical query results.
+- **Acceptance:** a backup taken under concurrent writes restores to a
+  consistent state.
+
+### F3 — on-demand compaction (RPC + CLI) — **S**
+- **Why:** today compaction is only automatic (dirty-ratio/timer); operators
+  want to force it (e.g. before backup).
+- **Approach:** add a `Compact(collection)` RPC that signals the existing
+  `compactC` channel and waits for completion; `filedb-cli compact <collection>`.
+- **Proto/API:** new `Compact` RPC.
+- **Files:** `proto/filedb.proto`, `collection.go` (synchronous compact entry),
+  `server/grpc.go`, CLI, docs.
+- **Tests:** integration — compact reduces segment count on demand.
+- **Acceptance:** `compact` returns after a full compaction pass completes.
+
+---
+
+## v0.5.0 — Auth & multi-tenancy
+
+### A1 — multiple scoped, rotatable API keys — **M/L**
+- **Problem:** one shared static key, no per-client identity, rotation, or
+  read/write scoping (`internal/auth/apikey.go`).
+- **Approach:** load a key set (key → {name, scope}) from config/file; interceptor
+  resolves the presented key to a principal and enforces read vs read-write
+  scope per RPC. Support hot-reload for rotation. Keep single-key + no-auth modes
+  for backward compatibility.
+- **Proto/API:** no proto change; config schema gains a `keys:` list.
+- **Files:** `internal/auth/`, `server/config.go`, `cmd/filedb/main.go`, docs.
+- **Tests:** `auth` unit tests — scope enforcement, unknown key rejected,
+  reload picks up new keys; constant-time compare preserved.
+- **Acceptance:** a read-scoped key is rejected on writes; keys rotate without
+  restart.
+
+---
+
+## Sequencing & delegation
+
+```
+v0.2.0  PR-A: D1 + D2 + D5         (durability hardening — do first)
+        PR-B: D6 (tx GC)           + new --tx-timeout flag
+        PR-C: D4 (watch overflow)  + proto enum
+        PR-D: D3 (record checksums)
+v0.3.0  Agent-1: Q1 + Q4           (streaming read path — flagship)
+        PR-E:    Q2                (typed order_by)
+        Agent-2: Q3                (range indexes)
+v0.4.0  Agent-3: F1 (TTL)
+        PR-F:    F2 (backup) , PR-G: F3 (compact)
+v0.5.0  Agent-4: A1 (scoped keys)
+```
+
+Each large item (Q1, Q3, F1, A1) is a candidate warden development agent in its
+own worktree; the small items ship as direct PRs. Every merged item ticks its
+box above and updates `ROADMAP.md`, `docs/`, and `README.md` per CLAUDE.md
+conventions.
+
+---
+
+## Checklist
+
+**v0.2.0 — Hardening**
+- [ ] D1 — directory fsync on create/rotate/rename
+- [ ] D2 — atomic, off-hot-path `meta.json`
+- [ ] D3 — per-record segment checksums
+- [ ] D4 — Watch overflow signal
+- [ ] D5 — propagate rotation errors on all write paths
+- [ ] D6 — transaction GC / `--tx-timeout`
+
+**v0.3.0 — Query at scale**
+- [ ] Q1 — streaming, push-down Find
+- [ ] Q2 — typed, directional `order_by`
+- [ ] Q3 — range-capable secondary indexes
+- [ ] Q4 — context cancellation into the engine
+
+**v0.4.0 — Features**
+- [ ] F1 — TTL / expiring records
+- [ ] F2 — backup / snapshot
+- [ ] F3 — on-demand compaction
+
+**v0.5.0 — Auth**
+- [ ] A1 — multiple scoped, rotatable API keys
