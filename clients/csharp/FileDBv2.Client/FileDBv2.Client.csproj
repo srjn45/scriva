@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!-- NuGet package metadata -->
+    <PackageId>FileDBv2.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>srjn45</Authors>
+    <Company>srjn45</Company>
+    <Description>C# / .NET 8 client SDK for FileDB v2. Exposes every gRPC RPC with idiomatic async methods. Streaming RPCs (Find, Watch) are returned as IAsyncEnumerable.</Description>
+    <PackageTags>filedb;grpc;database;client;sdk</PackageTags>
+    <RepositoryUrl>https://github.com/srjn45/filedbv2</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>../README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- gRPC runtime: channel, call credentials, interceptors -->
+    <PackageReference Include="Grpc.Net.Client" Version="2.63.0" />
+    <!-- Protobuf runtime: generated message types, well-known types -->
+    <PackageReference Include="Google.Protobuf" Version="3.27.1" />
+    <!-- Build-time only: protoc + grpc_csharp_plugin; generates stubs on dotnet build -->
+    <PackageReference Include="Grpc.Tools" Version="2.63.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    Proto codegen: Grpc.Tools reads this item group and invokes protoc during build.
+    GrpcServices="Client"  — generate only client-side stub (FileDBClient), not server base.
+    ProtoRoot="proto"      — import root; resolves google/api/*.proto from proto/google/api/.
+  -->
+  <ItemGroup>
+    <Protobuf Include="proto/filedb.proto" GrpcServices="Client" ProtoRoot="proto" />
+  </ItemGroup>
+
+</Project>
