@@ -11,13 +11,6 @@ linters:
     - misspell      # common spelling mistakes in comments/strings
     - staticcheck   # SA* and S* checks (explicitly enabled, previously default)
     - govet         # reports suspicious constructs (explicitly enabled)
-
-formatters:
-  exclusions:
-    paths:
-      - internal/pb  # generated protobuf code
-
-issues:
   exclusions:
     paths:
       - internal/pb  # generated protobuf code
@@ -26,3 +19,8 @@ issues:
       - path: "_test\\.go$"
         linters:
           - errcheck
+
+formatters:
+  exclusions:
+    paths:
+      - internal/pb  # generated protobuf code
