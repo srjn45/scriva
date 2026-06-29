@@ -1,0 +1,15 @@
+// Minimal stub of google/api/annotations.proto sufficient for proto-loader dynamic loading.
+syntax = "proto3";
+
+package google.api;
+
+import "google/api/http.proto";
+import "google/protobuf/descriptor.proto";
+
+option go_package = "google.golang.org/genproto/googleapis/api/annotations;annotations";
+option java_multiple_files = true;
+option java_package = "com.google.api";
+
+extend google.protobuf.MethodOptions {
+  HttpRule http = 72295728;
+}
