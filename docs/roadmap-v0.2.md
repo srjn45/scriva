@@ -284,11 +284,11 @@ conventions.
 ## Checklist
 
 **v0.2.0 — Hardening**
-- [ ] D1 — directory fsync on create/rotate/rename
-- [ ] D2 — atomic, off-hot-path `meta.json`
+- [x] D1 — directory fsync on create/rotate/rename
+- [x] D2 — atomic, off-hot-path `meta.json`
 - [ ] D3 — per-record segment checksums
 - [ ] D4 — Watch overflow signal
-- [ ] D5 — propagate rotation errors on all write paths
+- [x] D5 — propagate rotation errors on all write paths
 - [ ] D6 — transaction GC / `--tx-timeout`
 
 **v0.3.0 — Query at scale**

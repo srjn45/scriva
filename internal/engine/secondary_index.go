@@ -179,11 +179,10 @@ func (s *SecondaryIndex) Persist(path string) error {
 		return fmt.Errorf("sidx: marshal file: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return fmt.Errorf("sidx: write: %w", err)
+	if err := writeFileAtomic(path, b, 0o644); err != nil {
+		return fmt.Errorf("sidx: persist: %w", err)
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 // Load reads a persisted index from path and verifies its checksum.

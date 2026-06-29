@@ -235,11 +235,19 @@ func (c *Collection) load() error {
 	}
 
 	// Restore the id counter.
-	// Fast path: load from meta.json written by a previous clean run.
+	// Fast path: load from meta.json written by a previous clean run or
+	// segment rotation. meta.json is no longer rewritten on every insert, so it
+	// may trail the true counter after a crash — reconcile it against the
+	// highest id present in the active segment, which always holds the most
+	// recently assigned id (ids are monotonic and appended in order). This
+	// scan is cheap: the active segment is bounded by SegmentMaxSize.
 	metaPath := filepath.Join(c.dir, metaFilename)
 	if meta, err := loadMeta(metaPath); err == nil {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
+		if amax := c.activeMaxID(); amax > c.idSeq.Load() {
+			c.idSeq.Store(amax)
+		}
 		return nil
 	}
 
@@ -272,6 +280,22 @@ func (c *Collection) load() error {
 	_ = persistMeta(metaPath, collectionMeta{IDCounter: maxID, CreatedAt: c.createdAt})
 
 	return nil
+}
+
+// activeMaxID returns the highest entry id present in the active segment, or 0
+// if it is empty or unreadable. Used to reconcile the id counter on load.
+func (c *Collection) activeMaxID() uint64 {
+	entries, err := c.active.ScanAll()
+	if err != nil {
+		return 0
+	}
+	var maxID uint64
+	for _, e := range entries {
+		if e.ID > maxID {
+			maxID = e.ID
+		}
+	}
+	return maxID
 }
 
 // syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
@@ -311,9 +335,9 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 		}
 	}
 
-	_ = persistMeta(filepath.Join(c.dir, metaFilename),
-		collectionMeta{IDCounter: id, CreatedAt: c.createdAt})
-
+	// meta.json is persisted on rotation and on Close rather than per insert;
+	// the id counter is reconciled against the active segment on load, so a
+	// crash between writes cannot cause id reuse.
 	c.emit(WatchEvent{Op: store.OpInsert, ID: id, Data: data, Ts: ts})
 	return id, ts, nil
 }
@@ -344,7 +368,9 @@ func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
 	c.mu.Unlock()
 
 	if needRotate {
-		_ = c.rotateSegment()
+		if err := c.rotateSegment(); err != nil {
+			return ts, fmt.Errorf("collection: rotate after update: %w", err)
+		}
 	}
 
 	c.emit(WatchEvent{Op: store.OpUpdate, ID: id, Data: data, Ts: ts})
@@ -544,6 +570,18 @@ func (c *Collection) rotateSegment() error {
 	}
 	c.active = active
 
+	// Persist the newly created segment's directory entry so a crash cannot
+	// lose the file. Skipped in SyncModeNone to preserve fast-mode throughput.
+	if c.cfg.SyncMode != SyncModeNone {
+		if err := fsyncDir(c.dir); err != nil {
+			return fmt.Errorf("collection: fsync dir after rotate: %w", err)
+		}
+	}
+
+	// Persist the id counter now that a segment boundary has been crossed.
+	_ = persistMeta(filepath.Join(c.dir, metaFilename),
+		collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+
 	// Signal the compactor.
 	select {
 	case c.compactC <- struct{}{}:
@@ -652,7 +690,9 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	c.mu.Unlock()
 
 	if needRotate {
-		_ = c.rotateSegment()
+		if err := c.rotateSegment(); err != nil {
+			return fmt.Errorf("collection: rotate after commit: %w", err)
+		}
 	}
 
 	for _, ev := range events {
