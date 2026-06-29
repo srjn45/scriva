@@ -50,6 +50,14 @@ Compaction:  resolve latest per id → write clean segments → atomic swap → 
 
 ---
 
+## Release status
+
+**v0.1.0 — released** (`v*` tag → goreleaser → GitHub Releases + GHCR). The core
+is feature-complete; the next arc is tracked in
+[**docs/roadmap-v0.2.md**](docs/roadmap-v0.2.md) — see "Post-v0.1.0 roadmap" below.
+
+---
+
 ## What Is Done ✅
 
 ### Durability, benchmarks & OpenAPI — shipped
@@ -210,6 +218,21 @@ Optional TLS on the TCP gRPC listener via `--tls-cert` / `--tls-key` server flag
 
 ---
 
+## Post-v0.1.0 roadmap (Hardening & Scale)
+
+Derived from the 2026-06-29 codebase review. Full plan with per-item approach,
+files, tests, and acceptance criteria in
+[**docs/roadmap-v0.2.md**](docs/roadmap-v0.2.md).
+
+| Milestone | Theme | Key items |
+|---|---|---|
+| **v0.2.0** | Durability & correctness hardening | dir fsync, atomic/off-hot-path `meta.json`, per-record checksums, Watch overflow signal, propagate rotation errors, transaction GC |
+| **v0.3.0** | Query at scale | streaming push-down `Find` (honor `limit` before materializing), typed/directional `order_by`, range-capable secondary indexes, context cancellation |
+| **v0.4.0** | Feature breadth | TTL / expiring records, backup/snapshot, on-demand compaction |
+| **v0.5.0** | Auth & multi-tenancy | multiple scoped, rotatable API keys |
+
+---
+
 ## Key Files Reference
 
 | File | Purpose |
@@ -245,8 +268,11 @@ make run          # serves on :5433 (gRPC), :8080 (REST), /tmp/filedb.sock
 make cli          # connects to local socket automatically
 ```
 
-Next logical steps in order:
-1. Language clients — unlocks the "use from any language" goal (Python, PHP, JS)
-2. Secondary indexes — makes filtered queries O(log n) instead of O(n)
-3. TLS support — hardens network transport
-4. Metrics endpoint — adds Prometheus observability
+Next logical steps are tracked in [docs/roadmap-v0.2.md](docs/roadmap-v0.2.md).
+In order:
+1. **v0.2.0 durability hardening** — directory fsync, atomic `meta.json`,
+   propagate rotation errors (one PR); then transaction GC, Watch overflow
+   signal, per-record checksums.
+2. **v0.3.0 query at scale** — streaming push-down `Find`, range indexes.
+3. **v0.4.0 features** — TTL records, backup/snapshot, on-demand compaction.
+4. **v0.5.0 auth** — multiple scoped, rotatable API keys.
