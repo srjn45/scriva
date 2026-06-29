@@ -19,7 +19,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 | 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ✅ Done |
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
 | 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ✅ Done |
-| 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ⬜ Not started |
+| 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ✅ Done |
 | 7 | C# / .NET | NuGet (`FileDBv2.Client`) | `clients/csharp/` | ⬜ Not started |
 
 ---
@@ -325,42 +325,42 @@ docs(clients/python): add README and getting-started entry
 **Code gen:** `tonic-build` in `build.rs`
 
 ### 6.1 Scaffold
-- [ ] `clients/rust/Cargo.toml`
+- [x] `clients/rust/Cargo.toml`
   - name = `filedbv2`, version = `0.1.0`, edition = `2021`
   - deps: `tonic`, `prost`, `tokio { features = ["full"] }`, `serde_json`
   - build-deps: `tonic-build`
-- [ ] `clients/rust/build.rs` — calls `tonic_build::compile_protos("../../proto/filedb.proto")`
-- [ ] `clients/rust/proto/` — copy (or symlink) of `filedb.proto` for build.rs path resolution
-- [ ] Commit: `feat(clients/rust): scaffold Cargo project`
+- [x] `clients/rust/build.rs` — calls `tonic_build::compile_protos("../../proto/filedb.proto")`
+- [x] `clients/rust/proto/` — copy (or symlink) of `filedb.proto` for build.rs path resolution
+- [x] Commit: `feat(clients/rust): scaffold Cargo project`
 
 ### 6.2 Proto stubs
-- [ ] `cargo build` — verifies `tonic-build` generates Rust code into `OUT_DIR`
-- [ ] `include_proto!("filedb.v1")` in `src/lib.rs` — verify it compiles
-- [ ] Commit: `feat(clients/rust): add generated proto stubs`
+- [x] `cargo build` — verifies `tonic-build` generates Rust code into `OUT_DIR`
+- [x] `include_proto!("filedb.v1")` in `src/lib.rs` — verify it compiles
+- [x] Commit: `feat(clients/rust): add generated proto stubs`
 
 ### 6.3 Client struct (`src/client.rs`)
-- [ ] `FileDB::connect(host: &str, port: u16, api_key: &str) -> Result<Self>`
-- [ ] `FileDB::connect_tls(host, port, api_key, ca_cert_pem) -> Result<Self>` — uses `tonic::transport::ClientTlsConfig`
-- [ ] All calls attach `x-api-key` via `tonic::metadata::MetadataValue` on each request
-- [ ] Collection management: `create_collection`, `drop_collection`, `list_collections`
-- [ ] CRUD: `insert`, `insert_many`, `find_by_id`, `find` (returns `Vec<Record>`), `update`, `delete`
-- [ ] Indexes: `ensure_index`, `drop_index`, `list_indexes`
-- [ ] Transactions: `begin_tx`, `commit_tx`, `rollback_tx`
-- [ ] Watch: `watch(collection, filter) -> impl Stream<Item=WatchEvent>` (tonic streaming)
-- [ ] Stats: `stats(collection)`
-- [ ] Helper: `json_to_struct(serde_json::Value) -> prost_types::Struct`
-- [ ] Commit: `feat(clients/rust): implement FileDB client struct`
+- [x] `FileDB::connect(host: &str, port: u16, api_key: &str) -> Result<Self>`
+- [x] `FileDB::connect_tls(host, port, api_key, ca_cert_pem) -> Result<Self>` — uses `tonic::transport::ClientTlsConfig`
+- [x] All calls attach `x-api-key` via `tonic::metadata::MetadataValue` on each request
+- [x] Collection management: `create_collection`, `drop_collection`, `list_collections`
+- [x] CRUD: `insert`, `insert_many`, `find_by_id`, `find` (returns `Vec<Record>`), `update`, `delete`
+- [x] Indexes: `ensure_index`, `drop_index`, `list_indexes`
+- [x] Transactions: `begin_tx`, `commit_tx`, `rollback_tx`
+- [x] Watch: `watch(collection, filter) -> impl Stream<Item=WatchEvent>` (tonic streaming)
+- [x] Stats: `stats(collection)`
+- [x] Helper: `json_to_struct(serde_json::Value) -> prost_types::Struct`
+- [x] Commit: `feat(clients/rust): implement FileDB client struct`
 
 ### 6.4 Example / test program
-- [ ] `clients/rust/examples/test_basic.rs` — `cargo run --example test_basic`
-- [ ] `clients/rust/examples/test_watch.rs`
-- [ ] Commit: `feat(clients/rust): add example programs`
+- [x] `clients/rust/examples/test_basic.rs` — `cargo run --example test_basic`
+- [x] `clients/rust/examples/test_watch.rs`
+- [x] Commit: `feat(clients/rust): add example programs`
 
 ### 6.5 Documentation
-- [ ] `clients/rust/README.md`
-- [ ] Add Rust SDK section to `docs/getting-started.md`
-- [ ] Mark rows + ROADMAP.md
-- [ ] Commit: `docs(clients/rust): README and getting-started entry`
+- [x] `clients/rust/README.md`
+- [x] Add Rust SDK section to `docs/getting-started.md`
+- [x] Mark rows + ROADMAP.md
+- [x] Commit: `docs(clients/rust): README and getting-started entry`
 
 ---
 

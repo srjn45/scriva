@@ -711,6 +711,69 @@ See [clients/ruby/README.md](../clients/ruby/README.md) for the full API referen
 
 ---
 
+## Rust SDK
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+filedbv2 = "0.1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+```
+
+**Requires:** `protoc` on `PATH` at build time (used by `tonic-build` for code generation).
+
+```rust
+use filedbv2::{FileDB, FilterInput, FilterOp, FindOptions};
+use futures::StreamExt;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut db = FileDB::connect("localhost", 5433, "dev-key").await?;
+
+    db.create_collection("users").await?;
+
+    let id = db.insert("users", serde_json::json!({"name": "Alice", "age": 30})).await?;
+
+    let record = db.find_by_id("users", id).await?;
+    println!("{} — {}", record.id, record.data);
+
+    // Streaming find — collect into Vec or iterate lazily with find_stream.
+    let admins = db.find("users", FindOptions {
+        filter: Some(FilterInput::field("role", FilterOp::Eq, "admin")),
+        order_by: "name".to_owned(),
+        ..Default::default()
+    }).await?;
+
+    db.update("users", id, serde_json::json!({"name": "Alice", "age": 31})).await?;
+    db.delete("users", id).await?;
+    db.drop_collection("users").await?;
+    Ok(())
+}
+```
+
+Watch (change feed) returns an async `Stream`:
+
+```rust
+let mut events = db.watch("users", None).await?;
+while let Some(event) = events.next().await {
+    let event = event?;
+    println!("{:?} id={} data={}", event.op, event.record.id, event.record.data);
+}
+```
+
+With TLS:
+
+```rust
+let ca_pem = std::fs::read("/path/to/ca.pem")?;
+let mut db = FileDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
+```
+
+See [clients/rust/README.md](../clients/rust/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## Prometheus metrics
 
 When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
