@@ -16,7 +16,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 |---|---|---|---|---|
 | 1 | Python | PyPI (`pip install filedbv2`) | `clients/python/` | ✅ Done |
 | 2 | TypeScript / JavaScript | npm (`npm install filedbv2`) | `clients/js/` | ✅ Done |
-| 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ⬜ Not started |
+| 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ✅ Done |
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
 | 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ⬜ Not started |
 | 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ⬜ Not started |
@@ -187,40 +187,40 @@ docs(clients/python): add README and getting-started entry
 **Code gen:** `protoc` + `grpc_php_plugin`
 
 ### 3.1 Scaffold
-- [ ] `clients/php/composer.json`
+- [x] `clients/php/composer.json`
   - name: `srjn45/filedbv2`, version `0.1.0`
   - require: `grpc/grpc: ^1.56`, `google/protobuf: ^3.25`
   - autoload PSR-4: `FileDBv2\\` → `src/`
-- [ ] `clients/php/src/Proto/` — generated stub destination
-- [ ] `clients/php/generate.sh` — runs `protoc` with `--php_out` + `--grpc_out`
-- [ ] Commit: `feat(clients/php): scaffold package structure`
+- [x] `clients/php/src/Proto/` — generated stub destination
+- [x] `clients/php/generate.sh` — runs `protoc` with `--php_out` + `--grpc_out`
+- [x] Commit: `feat(clients/php): scaffold package + proto stubs + FileDB client + examples`
 
 ### 3.2 Proto stubs
-- [ ] Run `generate.sh` — produces `FileDB/V1/` namespace PHP files
-- [ ] `composer install` + verify autoload resolves stubs
-- [ ] Commit: `feat(clients/php): add generated proto stubs`
+- [x] Run `generate.sh` — produces `FileDB/V1/` namespace PHP files
+- [x] `composer install` + verify autoload resolves stubs
+- [x] Commit: included in scaffold commit above
 
 ### 3.3 Client class (`src/FileDB.php`)
-- [ ] `new FileDB(string $host, int $port, string $apiKey, ?string $tlsCaCert = null)`
-- [ ] Collection management: `createCollection`, `dropCollection`, `listCollections`
-- [ ] CRUD: `insert`, `insertMany`, `findById`, `find` (returns `array`), `update`, `delete`
-- [ ] Indexes: `ensureIndex`, `dropIndex`, `listIndexes`
-- [ ] Transactions: `beginTx`, `commitTx`, `rollbackTx`
-- [ ] Watch: `watch(string $collection, ?array $filter = null): \Generator`
-- [ ] Stats: `stats(string $collection): array`
-- [ ] Helper: `filterToProto(array $filter): \FileDB\V1\Filter`
-- [ ] Commit: `feat(clients/php): implement FileDB client class`
+- [x] `new FileDB(string $host, int $port, string $apiKey, ?string $tlsCaCert = null)`
+- [x] Collection management: `createCollection`, `dropCollection`, `listCollections`
+- [x] CRUD: `insert`, `insertMany`, `findById`, `find` (returns `array`), `update`, `delete`
+- [x] Indexes: `ensureIndex`, `dropIndex`, `listIndexes`
+- [x] Transactions: `beginTx`, `commitTx`, `rollbackTx`
+- [x] Watch: `watch(string $collection, ?array $filter = null): \Generator`
+- [x] Stats: `stats(string $collection): array`
+- [x] Helper: `filterToProto(array $filter): \Filedb\V1\Filter`
+- [x] Commit: included in scaffold commit above
 
 ### 3.4 Example / test program
-- [ ] `clients/php/examples/test_basic.php` — same end-to-end flow
-- [ ] `clients/php/examples/test_watch.php`
-- [ ] Commit: `feat(clients/php): add example programs`
+- [x] `clients/php/examples/test_basic.php` — same end-to-end flow
+- [x] `clients/php/examples/test_watch.php`
+- [x] Commit: included in scaffold commit above
 
 ### 3.5 Documentation
-- [ ] `clients/php/README.md`
-- [ ] Add PHP SDK section to `docs/getting-started.md`
-- [ ] Mark rows + ROADMAP.md
-- [ ] Commit: `docs(clients/php): README and getting-started entry`
+- [x] `clients/php/README.md`
+- [x] Add PHP SDK section to `docs/getting-started.md`
+- [x] Mark rows + ROADMAP.md
+- [x] Commit: `docs(clients/php): README and getting-started entry`
 
 ---
 
