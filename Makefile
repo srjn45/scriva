@@ -8,7 +8,10 @@ GO           := go
 GOFLAGS      := -trimpath
 LDFLAGS      := -s -w
 
-.PHONY: all build proto openapi test bench lint run cli clean release help
+.PHONY: all build proto openapi test bench fuzz lint run cli clean release help
+
+# FUZZTIME controls how long each fuzz target runs (override on the CLI).
+FUZZTIME     ?= 10s
 
 all: build
 
@@ -39,6 +42,11 @@ test:
 ## bench: run engine microbenchmarks (insert/find/scan) with allocation stats
 bench:
 	$(GO) test ./internal/engine -bench '.' -benchmem -run '^$$'
+
+## fuzz: run engine crash-recovery + compaction fuzz targets (FUZZTIME=10s)
+fuzz:
+	$(GO) test ./internal/engine -run '^$$' -fuzz 'FuzzSegmentRecovery$$' -fuzztime=$(FUZZTIME)
+	$(GO) test ./internal/engine -run '^$$' -fuzz 'FuzzCompaction$$'      -fuzztime=$(FUZZTIME)
 
 ## lint: run golangci-lint
 lint:
