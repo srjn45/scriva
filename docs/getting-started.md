@@ -547,6 +547,56 @@ See [clients/js/README.md](../clients/js/README.md) for the full API reference, 
 
 ---
 
+## PHP SDK
+
+Install:
+
+```bash
+composer require srjn45/filedbv2
+```
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+use FileDBv2\FileDB;
+
+$db = new FileDB('localhost', 5433, 'dev-key');
+
+$db->createCollection('users');
+
+$id = $db->insert('users', ['name' => 'Alice', 'age' => 30]);
+
+$record = $db->findById('users', $id);
+
+// find() collects the server stream into an array of record arrays
+$admins = $db->find('users', ['field' => 'role', 'op' => 'eq', 'value' => 'admin'],
+                    orderBy: 'name');
+
+$db->update('users', $id, ['name' => 'Alice', 'age' => 31]);
+$db->delete('users', $id);
+$db->dropCollection('users');
+```
+
+Watch returns a PHP Generator of event arrays:
+
+```php
+foreach ($db->watch('users') as $event) {
+    echo $event['op'] . ' id=' . $event['record']['id'] . "\n";
+    // $event['op'] is 'INSERTED' | 'UPDATED' | 'DELETED'
+}
+```
+
+With TLS:
+
+```php
+$db = new FileDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+```
+
+See [clients/php/README.md](../clients/php/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## Java SDK
 
 Add the dependency to your Gradle or Maven project:

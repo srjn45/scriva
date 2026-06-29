@@ -160,7 +160,7 @@ The proto file is ready. Two strategies, used together:
 |---|---|---|
 | `clients/python/` | PyPI: `pip install filedbv2` | ✅ Done |
 | `clients/js/` | npm: `npm install filedbv2` | ✅ Done |
-| `clients/php/` | Packagist: `composer require srjn45/filedbv2` | ⬜ Not started |
+| `clients/php/` | Packagist: `composer require srjn45/filedbv2` | ✅ Done |
 | `clients/java/` | Maven Central: `com.srjn45:filedbv2-client` | ✅ Done |
 | `clients/ruby/` | RubyGems: `gem install filedbv2` | ✅ Done |
 | `clients/rust/` | crates.io: `filedbv2` | ⬜ Not started |

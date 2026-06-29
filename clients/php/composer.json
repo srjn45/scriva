@@ -1,0 +1,44 @@
+{
+  "name": "srjn45/filedbv2",
+  "description": "Official PHP client for FileDB v2 — a file-based document database with a gRPC API",
+  "type": "library",
+  "version": "0.1.0",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "srjn45",
+      "homepage": "https://github.com/srjn45"
+    }
+  ],
+  "keywords": [
+    "filedb",
+    "grpc",
+    "database",
+    "client",
+    "document-store"
+  ],
+  "homepage": "https://github.com/srjn45/filedbv2",
+  "require": {
+    "php": ">=8.1",
+    "grpc/grpc": "^1.56",
+    "google/protobuf": "^3.25"
+  },
+  "autoload": {
+    "psr-4": {
+      "FileDBv2\\": "src/",
+      "Filedb\\": "src/Proto/Filedb/",
+      "GPBMetadata\\": "src/Proto/GPBMetadata/"
+    }
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-main": "0.1.x-dev"
+    }
+  },
+  "support": {
+    "issues": "https://github.com/srjn45/filedbv2/issues",
+    "source": "https://github.com/srjn45/filedbv2"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
