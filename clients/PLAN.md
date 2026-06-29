@@ -20,7 +20,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
 | 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ⬜ Not started |
 | 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ⬜ Not started |
-| 7 | C# / .NET | NuGet (`FileDBv2.Client`) | `clients/csharp/` | ⬜ Not started |
+| 7 | C# / .NET | NuGet (`FileDBv2.Client`) | `clients/csharp/` | ✅ Done |
 
 ---
 
@@ -372,40 +372,40 @@ docs(clients/python): add README and getting-started entry
 **Code gen:** `Grpc.Tools` MSBuild integration (auto codegen on build)
 
 ### 7.1 Scaffold
-- [ ] `clients/csharp/FileDBv2.Client/FileDBv2.Client.csproj`
+- [x] `clients/csharp/FileDBv2.Client/FileDBv2.Client.csproj`
   - TargetFramework: `net8.0`
   - PackageReferences: `Grpc.Net.Client`, `Grpc.Tools`, `Google.Protobuf`
-  - `<Protobuf>` item group pointing to `../../../proto/filedb.proto` with `GrpcServices="Client"`
-- [ ] `clients/csharp/FileDBv2.Client.sln`
-- [ ] Commit: `feat(clients/csharp): scaffold .NET project`
+  - `<Protobuf>` item group pointing to `proto/filedb.proto` with `GrpcServices="Client"`
+- [x] `clients/csharp/FileDBv2.Client.sln`
+- [x] Commit: `feat(clients/csharp): scaffold .NET project`
 
 ### 7.2 Proto stubs
-- [ ] `dotnet build` — Grpc.Tools auto-generates `Filedb.cs` + `FiledbGrpc.cs`
-- [ ] Verify `FileDB.FileDBClient` class is accessible
-- [ ] Commit: `feat(clients/csharp): add generated proto stubs`
+- [x] `dotnet build` — Grpc.Tools auto-generates `Filedb.cs` + `FiledbGrpc.cs`
+- [x] `proto/filedb.proto` copy + `proto/google/api/` stubs bundled under `clients/csharp/`
+- [x] Commit: `feat(clients/csharp): scaffold .NET project`
 
 ### 7.3 Client class (`FileDB.cs`)
-- [ ] `new FileDB(string host, int port, string apiKey, string? tlsCaCertPath = null)`
-- [ ] All calls attach `x-api-key` via `Grpc.Core.Metadata`
-- [ ] Collection management: `CreateCollectionAsync`, `DropCollectionAsync`, `ListCollectionsAsync`
-- [ ] CRUD: `InsertAsync`, `InsertManyAsync`, `FindByIdAsync`, `FindAsync` (returns `IAsyncEnumerable<Record>`), `UpdateAsync`, `DeleteAsync`
-- [ ] Indexes: `EnsureIndexAsync`, `DropIndexAsync`, `ListIndexesAsync`
-- [ ] Transactions: `BeginTxAsync`, `CommitTxAsync`, `RollbackTxAsync`
-- [ ] Watch: `WatchAsync(collection, filter?) -> IAsyncEnumerable<WatchEvent>`
-- [ ] Stats: `StatsAsync(collection)`
-- [ ] Helper: `FilterToProto(object filter)` — supports anonymous types or `Dictionary<string,object>`
-- [ ] Commit: `feat(clients/csharp): implement FileDB client class`
+- [x] `new FileDB(string host, int port, string apiKey, string? tlsCaCertPath = null)`
+- [x] All calls attach `x-api-key` via `Grpc.Core.Metadata`
+- [x] Collection management: `CreateCollectionAsync`, `DropCollectionAsync`, `ListCollectionsAsync`
+- [x] CRUD: `InsertAsync`, `InsertManyAsync`, `FindByIdAsync`, `FindAsync` (returns `IAsyncEnumerable<Dictionary<string,object?>>`), `FindAllAsync`, `UpdateAsync`, `DeleteAsync`
+- [x] Indexes: `EnsureIndexAsync`, `DropIndexAsync`, `ListIndexesAsync`
+- [x] Transactions: `BeginTxAsync`, `CommitTxAsync`, `RollbackTxAsync`
+- [x] Watch: `WatchAsync(collection, filter?) -> IAsyncEnumerable<WatchEventResult>`
+- [x] Stats: `StatsAsync(collection) -> CollectionStats`
+- [x] Helper: `FilterToProto(Dictionary<string,object?> filter)` — field / AND / OR
+- [x] Commit: `feat(clients/csharp): scaffold .NET project`
 
 ### 7.4 Example / test program
-- [ ] `clients/csharp/FileDBv2.Example/FileDBv2.Example.csproj`
-- [ ] `clients/csharp/FileDBv2.Example/Program.cs` — same end-to-end flow (`dotnet run`)
-- [ ] Commit: `feat(clients/csharp): add example program`
+- [x] `clients/csharp/FileDBv2.Example/FileDBv2.Example.csproj`
+- [x] `clients/csharp/FileDBv2.Example/Program.cs` — same end-to-end flow (`dotnet run`)
+- [x] Commit: `feat(clients/csharp): scaffold .NET project`
 
 ### 7.5 Documentation
-- [ ] `clients/csharp/README.md`
-- [ ] Add C# SDK section to `docs/getting-started.md`
-- [ ] Mark rows + ROADMAP.md
-- [ ] Commit: `docs(clients/csharp): README and getting-started entry`
+- [x] `clients/csharp/README.md`
+- [x] Add C# SDK section to `docs/getting-started.md`
+- [x] Mark rows + ROADMAP.md
+- [x] Commit: `docs(clients/csharp): README and getting-started entry`
 
 ---
 

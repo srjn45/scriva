@@ -164,7 +164,7 @@ The proto file is ready. Two strategies, used together:
 | `clients/java/` | Maven Central: `com.srjn45:filedbv2-client` | ✅ Done |
 | `clients/ruby/` | RubyGems: `gem install filedbv2` | ⬜ Not started |
 | `clients/rust/` | crates.io: `filedbv2` | ⬜ Not started |
-| `clients/csharp/` | NuGet: `FileDBv2.Client` | ⬜ Not started |
+| `clients/csharp/` | NuGet: `FileDBv2.Client` | ✅ Done |
 
 Each client needs:
 1. Proto stub generation (language-specific `protoc` plugin or `buf` remote plugin)
