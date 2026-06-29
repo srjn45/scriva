@@ -18,7 +18,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 | 2 | TypeScript / JavaScript | npm (`npm install filedbv2`) | `clients/js/` | ✅ Done |
 | 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ⬜ Not started |
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
-| 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ⬜ Not started |
+| 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ✅ Done |
 | 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ⬜ Not started |
 | 7 | C# / .NET | NuGet (`FileDBv2.Client`) | `clients/csharp/` | ⬜ Not started |
 
@@ -279,41 +279,41 @@ docs(clients/python): add README and getting-started entry
 **Code gen:** `grpc_tools_ruby_protoc` or `buf` ruby plugin
 
 ### 5.1 Scaffold
-- [ ] `clients/ruby/filedbv2.gemspec`
+- [x] `clients/ruby/filedbv2.gemspec`
   - spec.name = `filedbv2`, spec.version = `0.1.0`
   - runtime deps: `grpc ~> 1.60`, `google-protobuf ~> 3.25`
-- [ ] `clients/ruby/Gemfile` — source + gemspec
-- [ ] `clients/ruby/lib/filedbv2/proto/` — generated stub destination
-- [ ] `clients/ruby/generate.sh` — runs `grpc_tools_ruby_protoc`
-- [ ] Commit: `feat(clients/ruby): scaffold gem structure`
+- [x] `clients/ruby/Gemfile` — source + gemspec
+- [x] `clients/ruby/lib/filedbv2/proto/` — generated stub destination
+- [x] `clients/ruby/generate.sh` — runs `grpc_tools_ruby_protoc`
+- [x] Commit: `feat(clients/ruby): scaffold gem structure`
 
 ### 5.2 Proto stubs
-- [ ] Run `generate.sh` — produces `filedb_pb.rb` + `filedb_services_pb.rb`
-- [ ] `bundle install` + verify `require 'filedbv2/proto/filedb_pb'` works
-- [ ] Commit: `feat(clients/ruby): add generated proto stubs`
+- [x] Run `generate.sh` — produces `filedb_pb.rb` + `filedb_services_pb.rb`
+- [x] `bundle install` + verify `require 'filedbv2/proto/filedb_pb'` works
+- [x] Commit: `feat(clients/ruby): add generated proto stubs`
 
 ### 5.3 Client class (`lib/filedbv2/client.rb`)
-- [ ] `FileDBv2::Client.new(host:, port:, api_key:, tls_ca_cert: nil)`
-- [ ] Attaches `x-api-key` via `GRPC::Core::CallCredentials`
-- [ ] Collection management: `create_collection`, `drop_collection`, `list_collections`
-- [ ] CRUD: `insert`, `insert_many`, `find_by_id`, `find` (returns `Array<Hash>`), `update`, `delete`
-- [ ] Indexes: `ensure_index`, `drop_index`, `list_indexes`
-- [ ] Transactions: `begin_tx`, `commit_tx`, `rollback_tx`
-- [ ] Watch: `watch(collection, filter: nil) -> Enumerator`
-- [ ] Stats: `stats(collection)`
-- [ ] Helper: `filter_to_proto(hash)` — recursive filter builder
-- [ ] Commit: `feat(clients/ruby): implement FileDBv2::Client class`
+- [x] `FileDBv2::Client.new(host:, port:, api_key:, tls_ca_cert: nil)`
+- [x] Attaches `x-api-key` via gRPC metadata on every call
+- [x] Collection management: `create_collection`, `drop_collection`, `list_collections`
+- [x] CRUD: `insert`, `insert_many`, `find_by_id`, `find` (returns `Array<Hash>`), `update`, `delete`
+- [x] Indexes: `ensure_index`, `drop_index`, `list_indexes`
+- [x] Transactions: `begin_tx`, `commit_tx`, `rollback_tx`
+- [x] Watch: `watch(collection, filter: nil) -> Enumerator` (also accepts block)
+- [x] Stats: `stats(collection)`
+- [x] Helper: `filter_to_proto(hash)` — recursive filter builder
+- [x] Commit: `feat(clients/ruby): implement FileDBv2::Client class`
 
 ### 5.4 Example / test program
-- [ ] `clients/ruby/examples/test_basic.rb`
-- [ ] `clients/ruby/examples/test_watch.rb`
-- [ ] Commit: `feat(clients/ruby): add example programs`
+- [x] `clients/ruby/examples/test_basic.rb`
+- [x] `clients/ruby/examples/test_watch.rb`
+- [x] Commit: `feat(clients/ruby): add example programs`
 
 ### 5.5 Documentation
-- [ ] `clients/ruby/README.md`
-- [ ] Add Ruby SDK section to `docs/getting-started.md`
-- [ ] Mark rows + ROADMAP.md
-- [ ] Commit: `docs(clients/ruby): README and getting-started entry`
+- [x] `clients/ruby/README.md`
+- [x] Add Ruby SDK section to `docs/getting-started.md`
+- [x] Mark rows + ROADMAP.md
+- [x] Commit: `docs(clients/ruby): README and getting-started entry`
 
 ---
 

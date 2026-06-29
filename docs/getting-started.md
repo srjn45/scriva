@@ -591,6 +591,76 @@ See [clients/java/README.md](../clients/java/README.md) for the full API referen
 
 ---
 
+## Ruby SDK
+
+Install:
+
+```bash
+gem install filedbv2
+```
+
+Or add to your `Gemfile`:
+
+```ruby
+gem "filedbv2", "~> 0.1"
+```
+
+```ruby
+require "filedbv2"
+
+db = FileDBv2::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
+
+db.create_collection("users")
+
+id = db.insert("users", { name: "Alice", age: 30 })
+
+record = db.find_by_id("users", id)
+
+# find collects the server stream into an Array of Hashes
+admins = db.find("users", filter: { field: "role", op: "eq", value: "admin" },
+                           order_by: "name")
+
+# Or stream results one by one with a block
+db.find("users") { |r| puts r["data"]["name"] }
+
+db.update("users", id, { name: "Alice", age: 31 })
+db.delete("users", id)
+db.drop_collection("users")
+db.close
+```
+
+Use `.open` for automatic close:
+
+```ruby
+FileDBv2::Client.open(host: "localhost", port: 5433, api_key: "dev-key") do |db|
+  db.create_collection("orders")
+  # ...
+end
+```
+
+Watch returns an `Enumerator` of event Hashes:
+
+```ruby
+db.watch("users") do |event|
+  puts "#{event[:op]}: #{event[:record]["data"].inspect}"
+end
+```
+
+With TLS:
+
+```ruby
+db = FileDBv2::Client.new(
+  host: "myserver.example.com",
+  port: 5433,
+  api_key: "api-key",
+  tls_ca_cert: "/path/to/ca.crt"
+)
+```
+
+See [clients/ruby/README.md](../clients/ruby/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## Prometheus metrics
 
 When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
