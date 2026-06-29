@@ -94,13 +94,9 @@ func (idx *Index) Persist(path string) error {
 		return fmt.Errorf("index: marshal file: %w", err)
 	}
 
-	// Write atomically via a temp file + rename.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return fmt.Errorf("index: write temp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("index: rename: %w", err)
+	// Write atomically and durably (temp file → fsync → rename → fsync dir).
+	if err := writeFileAtomic(path, b, 0o644); err != nil {
+		return fmt.Errorf("index: persist: %w", err)
 	}
 	return nil
 }

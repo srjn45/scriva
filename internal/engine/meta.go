@@ -29,13 +29,14 @@ func loadMeta(path string) (collectionMeta, error) {
 	return m, nil
 }
 
-// persistMeta writes m to path as JSON.
-// A corrupt or partial write degrades gracefully: the next startup falls back
-// to the full segment scan and rewrites a fresh meta.json.
+// persistMeta writes m to path as JSON, atomically and durably (temp file →
+// fsync → rename → fsync dir). A corrupt or partial write still degrades
+// gracefully: the next startup falls back to the full segment scan and rewrites
+// a fresh meta.json.
 func persistMeta(path string, m collectionMeta) error {
 	data, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return writeFileAtomic(path, data, 0o644)
 }
