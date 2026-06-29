@@ -269,19 +269,44 @@ Filters are JSON objects passed to `find` commands or the `POST /v1/{collection}
 
 ```json
 {"field": "name", "op": "eq",       "value": "alice"}
-{"field": "age",  "op": "gte",      "value": "18"}
+{"field": "age",  "op": "gte",      "value": 18}
 {"field": "bio",  "op": "contains", "value": "engineer"}
 {"field": "email","op": "regex",    "value": ".*@gmail\\.com"}
 ```
 
 Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `contains`, `regex`
 
+### Comparison semantics: numeric vs. string
+
+The comparison operators (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`) are
+**type-aware**. The JSON type of `value` — and the type of the stored field —
+decides how two values are ordered:
+
+| Stored field | `value`              | Comparison    | Example                                    |
+|--------------|----------------------|---------------|--------------------------------------------|
+| number       | number (e.g. `9`)    | numeric       | `age gt 9` matches `age = 10` (10 > 9)     |
+| string       | string (e.g. `"m"`)  | lexicographic | `name gt "m"` matches `name = "n"`         |
+| number       | string, or vice-versa| lexicographic on the string forms (cross-type comparisons are a query mistake; the result is deterministic but rarely meaningful) |
+
+Key points:
+
+- **Pass numbers as JSON numbers, not strings.** Write `"value": 9`, not
+  `"value": "9"`. A number compared against the JSON number `9` is ordered
+  numerically, so `gt 9` correctly matches `10`. If you quote it as `"9"`,
+  it becomes a string and the comparison falls back to lexicographic ordering,
+  where `"10" < "9"`.
+- **Numeric-looking strings stay strings.** A field stored as the string
+  `"10"` is *not* coerced to a number; it keeps lexicographic ordering, so
+  `"10" < "9"`. This keeps string fields (zero-padded codes, IDs, versions)
+  predictable.
+- `contains` and `regex` always operate on the string form of the field value.
+
 ### Composite filters
 
 ```json
 {
   "and": [
-    {"field": "age",  "op": "gte", "value": "18"},
+    {"field": "age",  "op": "gte", "value": 18},
     {"field": "city", "op": "eq",  "value": "New York"}
   ]
 }

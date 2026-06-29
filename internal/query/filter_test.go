@@ -128,6 +128,157 @@ func TestFieldFilter_MissingField(t *testing.T) {
 	}
 }
 
+// ---- Numeric comparison correctness -----------------------------------------
+
+// TestFieldFilter_Gt_NumericNotLexical is the regression test for the headline
+// bug: "10" < "9" lexicographically, but 10 > 9 numerically. With JSON numbers
+// on both sides the comparison must be numeric.
+func TestFieldFilter_Gt_NumericNotLexical(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpGt, Value: "9"}
+	if !f.Match(record("age", float64(10))) {
+		t.Error("expected match: 10 > 9 numerically (lexical compare would fail because \"10\" < \"9\")")
+	}
+	if f.Match(record("age", float64(9))) {
+		t.Error("expected no match for 9 > 9")
+	}
+	if f.Match(record("age", float64(8))) {
+		t.Error("expected no match for 8 > 9")
+	}
+}
+
+// TestFieldFilter_NumericBoundaries exercises gt/gte/lt/lte around the boundary
+// value for the multi-digit case that breaks lexical ordering.
+func TestFieldFilter_NumericBoundaries(t *testing.T) {
+	cases := []struct {
+		name  string
+		op    query.Op
+		val   string
+		field float64
+		want  bool
+	}{
+		{"gt below", query.OpGt, "100", 99, false},
+		{"gt equal", query.OpGt, "100", 100, false},
+		{"gt above", query.OpGt, "100", 101, true},
+
+		{"gte below", query.OpGte, "100", 99, false},
+		{"gte equal", query.OpGte, "100", 100, true},
+		{"gte above", query.OpGte, "100", 101, true},
+
+		{"lt below", query.OpLt, "100", 99, true},
+		{"lt equal", query.OpLt, "100", 100, false},
+		{"lt above", query.OpLt, "100", 101, false},
+
+		{"lte below", query.OpLte, "100", 99, true},
+		{"lte equal", query.OpLte, "100", 100, true},
+		{"lte above", query.OpLte, "100", 101, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &query.FieldFilter{Field: "n", Op: tc.op, Value: tc.val}
+			if got := f.Match(record("n", tc.field)); got != tc.want {
+				t.Errorf("%s %s %s with field %v: got %v want %v",
+					"n", tc.op, tc.val, tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFieldFilter_NegativeNumbers(t *testing.T) {
+	gt := &query.FieldFilter{Field: "t", Op: query.OpGt, Value: "-5"}
+	if !gt.Match(record("t", float64(-3))) {
+		t.Error("expected match: -3 > -5")
+	}
+	if gt.Match(record("t", float64(-10))) {
+		t.Error("expected no match: -10 > -5 is false")
+	}
+
+	lt := &query.FieldFilter{Field: "t", Op: query.OpLt, Value: "0"}
+	if !lt.Match(record("t", float64(-1))) {
+		t.Error("expected match: -1 < 0")
+	}
+	if lt.Match(record("t", float64(1))) {
+		t.Error("expected no match: 1 < 0 is false")
+	}
+}
+
+func TestFieldFilter_Floats(t *testing.T) {
+	f := &query.FieldFilter{Field: "score", Op: query.OpGt, Value: "9.5"}
+	if !f.Match(record("score", float64(9.51))) {
+		t.Error("expected match: 9.51 > 9.5")
+	}
+	if f.Match(record("score", float64(9.5))) {
+		t.Error("expected no match: 9.5 > 9.5 is false")
+	}
+	if f.Match(record("score", float64(9.49))) {
+		t.Error("expected no match: 9.49 > 9.5 is false")
+	}
+
+	// Float field against an integer comparison value still compares numerically.
+	lte := &query.FieldFilter{Field: "score", Op: query.OpLte, Value: "10"}
+	if !lte.Match(record("score", float64(9.99))) {
+		t.Error("expected match: 9.99 <= 10")
+	}
+}
+
+// TestFieldFilter_IntFieldValue ensures non-JSON numeric Go types (int, int64)
+// that may reach the filter are also treated numerically.
+func TestFieldFilter_IntFieldValue(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpGt, Value: "9"}
+	if !f.Match(record("age", 10)) {
+		t.Error("expected match: int 10 > 9")
+	}
+	if !f.Match(record("age", int64(10))) {
+		t.Error("expected match: int64 10 > 9")
+	}
+}
+
+// ---- String comparison stays lexicographic ----------------------------------
+
+func TestFieldFilter_StringComparisonLexical(t *testing.T) {
+	gt := &query.FieldFilter{Field: "name", Op: query.OpGt, Value: `"m"`}
+	if !gt.Match(record("name", "n")) {
+		t.Error("expected match: \"n\" > \"m\" lexically")
+	}
+	if gt.Match(record("name", "a")) {
+		t.Error("expected no match: \"a\" > \"m\" is false")
+	}
+
+	lt := &query.FieldFilter{Field: "name", Op: query.OpLt, Value: `"banana"`}
+	if !lt.Match(record("name", "apple")) {
+		t.Error("expected match: \"apple\" < \"banana\" lexically")
+	}
+}
+
+// TestFieldFilter_NumericStringsStayLexical proves that string-typed fields keep
+// lexicographic ordering even when they look numeric — they are NOT coerced to
+// numbers. "10" < "9" as strings.
+func TestFieldFilter_NumericStringsStayLexical(t *testing.T) {
+	f := &query.FieldFilter{Field: "code", Op: query.OpGt, Value: `"9"`}
+	if f.Match(record("code", "10")) {
+		t.Error("expected no match: string \"10\" > \"9\" is false lexically")
+	}
+	if !f.Match(record("code", "95")) {
+		t.Error("expected match: string \"95\" > \"9\" lexically")
+	}
+}
+
+// TestFieldFilter_MismatchedTypes documents the cross-type fallback: a numeric
+// field compared against a string comparison value (and vice versa) degrades to
+// a deterministic lexicographic comparison of their string forms.
+func TestFieldFilter_MismatchedTypes(t *testing.T) {
+	// Numeric field, string comparison value.
+	f := &query.FieldFilter{Field: "age", Op: query.OpEq, Value: `"30"`}
+	if !f.Match(record("age", float64(30))) {
+		t.Error("expected match: number 30 vs string \"30\" stringify-equal")
+	}
+
+	// gt across types is lexicographic on string forms: "30" > "9".
+	gt := &query.FieldFilter{Field: "age", Op: query.OpGt, Value: `"9"`}
+	if gt.Match(record("age", float64(30))) {
+		t.Error("expected no match: \"30\" > \"9\" is false lexically")
+	}
+}
+
 // ---- AndFilter / OrFilter ---------------------------------------------------
 
 func TestAndFilter_AllMatch(t *testing.T) {
