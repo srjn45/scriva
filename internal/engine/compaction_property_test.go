@@ -269,7 +269,6 @@ func compactionRound(t *testing.T, seed int64, ops int) {
 // spread of deterministic seeds.
 func TestCompactionPreservesData(t *testing.T) {
 	for seed := int64(0); seed < 32; seed++ {
-		seed := seed
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			compactionRound(t, seed, 80)
 		})
