@@ -305,6 +305,18 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.FileDB_WatchServer) e
 			if !ok {
 				return nil
 			}
+			// An overflow sentinel carries no record and bypasses the filter —
+			// the client must always learn it may have missed matching events.
+			if ev.Op == engine.OpOverflow {
+				if err := stream.Send(&pb.WatchEvent{
+					Op:         pb.WatchOp_OVERFLOW,
+					Collection: req.Collection,
+					Ts:         timestamppb.New(ev.Ts),
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 			if !f.Match(ev.Data) {
 				continue
 			}

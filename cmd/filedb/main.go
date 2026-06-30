@@ -105,6 +105,8 @@ func serveCmd() *cobra.Command {
 						merged.SyncInterval = cfg.SyncInterval
 					case "tx-timeout":
 						merged.TxTimeout = cfg.TxTimeout
+					case "watch-buffer":
+						merged.WatchBufferSize = cfg.WatchBufferSize
 					case "metrics-addr":
 						merged.MetricsAddr = cfg.MetricsAddr
 					case "tls-cert":
@@ -132,6 +134,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.SyncMode, "sync", cfg.SyncMode, "Durability mode: none (OS flush), always (fsync per write), interval (fsync on a timer)")
 	f.DurationVar(&cfg.SyncInterval, "sync-interval", cfg.SyncInterval, "Flush cadence when --sync=interval")
 	f.DurationVar(&cfg.TxTimeout, "tx-timeout", cfg.TxTimeout, "Idle timeout before an open transaction is reaped (0 = disabled)")
+	f.IntVar(&cfg.WatchBufferSize, "watch-buffer", cfg.WatchBufferSize, "Per-subscriber Watch event buffer; a slow subscriber gets an overflow signal once full")
 	f.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "Prometheus metrics listen address (empty = disabled)")
 	f.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "Path to TLS certificate PEM file (enables TLS when set with --tls-key)")
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")

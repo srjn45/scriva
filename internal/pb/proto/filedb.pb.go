@@ -98,6 +98,9 @@ const (
 	WatchOp_INSERTED             WatchOp = 1
 	WatchOp_UPDATED              WatchOp = 2
 	WatchOp_DELETED              WatchOp = 3
+	// OVERFLOW signals that the server dropped events because this subscriber
+	// fell behind. The client missed writes and should resync. No record is set.
+	WatchOp_OVERFLOW WatchOp = 4
 )
 
 // Enum value maps for WatchOp.
@@ -107,12 +110,14 @@ var (
 		1: "INSERTED",
 		2: "UPDATED",
 		3: "DELETED",
+		4: "OVERFLOW",
 	}
 	WatchOp_value = map[string]int32{
 		"WATCH_OP_UNSPECIFIED": 0,
 		"INSERTED":             1,
 		"UPDATED":              2,
 		"DELETED":              3,
+		"OVERFLOW":             4,
 	}
 )
 
@@ -2261,12 +2266,13 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x02LT\x10\x05\x12\a\n" +
 	"\x03LTE\x10\x06\x12\f\n" +
 	"\bCONTAINS\x10\a\x12\t\n" +
-	"\x05REGEX\x10\b*K\n" +
+	"\x05REGEX\x10\b*Y\n" +
 	"\aWatchOp\x12\x18\n" +
 	"\x14WATCH_OP_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bINSERTED\x10\x01\x12\v\n" +
 	"\aUPDATED\x10\x02\x12\v\n" +
-	"\aDELETED\x10\x032\xe0\r\n" +
+	"\aDELETED\x10\x03\x12\f\n" +
+	"\bOVERFLOW\x10\x042\xe0\r\n" +
 	"\x06FileDB\x12w\n" +
 	"\x10CreateCollection\x12\".filedb.v1.CreateCollectionRequest\x1a#.filedb.v1.CreateCollectionResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/collections\x12u\n" +
 	"\x0eDropCollection\x12 .filedb.v1.DropCollectionRequest\x1a!.filedb.v1.DropCollectionResponse\"\x1e\x82\xd3\xe4\x93\x02\x18*\x16/v1/collections/{name}\x12q\n" +

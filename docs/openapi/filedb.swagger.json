@@ -880,9 +880,11 @@
         "WATCH_OP_UNSPECIFIED",
         "INSERTED",
         "UPDATED",
-        "DELETED"
+        "DELETED",
+        "OVERFLOW"
       ],
-      "default": "WATCH_OP_UNSPECIFIED"
+      "default": "WATCH_OP_UNSPECIFIED",
+      "description": " - OVERFLOW: OVERFLOW signals that the server dropped events because this subscriber\nfell behind. The client missed writes and should resync. No record is set."
     }
   }
 }

@@ -35,6 +35,16 @@ const (
 // interval is configured.
 const DefaultSyncInterval = time.Second
 
+// DefaultWatchBufferSize is the per-subscriber channel buffer used when no size
+// is configured.
+const DefaultWatchBufferSize = 64
+
+// OpOverflow is a watch-only sentinel op delivered to a subscriber after the
+// engine had to drop one or more events because that subscriber's buffer was
+// full. It tells the consumer it missed writes and should resync. It is never
+// written to a segment.
+const OpOverflow store.Op = "overflow"
+
 // CollectionConfig holds tunable parameters for a single collection.
 type CollectionConfig struct {
 	SegmentMaxSize  int64         // default: DefaultSegmentMaxSize
@@ -45,6 +55,11 @@ type CollectionConfig struct {
 	SyncMode SyncMode
 	// SyncInterval is the flush cadence for SyncModeInterval. Default: 1s.
 	SyncInterval time.Duration
+
+	// WatchBufferSize is the per-subscriber channel buffer for Watch. A slow
+	// subscriber that fills its buffer receives an OpOverflow sentinel rather
+	// than silently missing events. Default: DefaultWatchBufferSize.
+	WatchBufferSize int
 
 	// OnCompaction is called after each successful compaction run with the
 	// collection name and elapsed wall-clock duration. May be nil.
@@ -58,6 +73,7 @@ func defaultConfig() CollectionConfig {
 		CompactDirtyPct: 0.30,
 		SyncMode:        SyncModeNone,
 		SyncInterval:    DefaultSyncInterval,
+		WatchBufferSize: DefaultWatchBufferSize,
 	}
 }
 
@@ -84,7 +100,7 @@ type Collection struct {
 
 	// Watch subscribers.
 	watchMu      sync.Mutex
-	watchers     map[uint64]chan WatchEvent
+	watchers     map[uint64]*watcher
 	watcherIDSeq atomic.Uint64
 
 	// Secondary indexes: field name → index.
@@ -123,6 +139,9 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = DefaultSyncInterval
 	}
+	if cfg.WatchBufferSize <= 0 {
+		cfg.WatchBufferSize = DefaultWatchBufferSize
+	}
 
 	c := &Collection{
 		name:     name,
@@ -130,7 +149,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		cfg:      cfg,
 		index:    newIndex(),
 		sidxMap:  make(map[string]*SecondaryIndex),
-		watchers: make(map[uint64]chan WatchEvent),
+		watchers: make(map[uint64]*watcher),
 		compactC: make(chan struct{}, 1),
 		closed:   make(chan struct{}),
 	}
@@ -524,30 +543,52 @@ type CollectionStats struct {
 	SizeBytes    uint64
 }
 
+// watcher is a single Watch subscription: a buffered channel plus a flag that
+// records whether events were dropped because the channel was full.
+type watcher struct {
+	ch         chan WatchEvent
+	overflowed bool // set when an event was dropped; cleared once the sentinel is delivered
+}
+
 // Subscribe registers a watcher channel and returns its id and a cancel func.
 func (c *Collection) Subscribe() (uint64, <-chan WatchEvent, func()) {
 	id := c.watcherIDSeq.Add(1)
-	ch := make(chan WatchEvent, 64)
+	w := &watcher{ch: make(chan WatchEvent, c.cfg.WatchBufferSize)}
 
 	c.watchMu.Lock()
-	c.watchers[id] = ch
+	c.watchers[id] = w
 	c.watchMu.Unlock()
 
 	cancel := func() {
 		c.watchMu.Lock()
 		delete(c.watchers, id)
 		c.watchMu.Unlock()
-		close(ch)
+		close(w.ch)
 	}
-	return id, ch, cancel
+	return id, w.ch, cancel
 }
 
+// emit delivers ev to every subscriber. If a subscriber's buffer is full the
+// event is dropped and the watcher is marked overflowed; once its channel
+// drains, exactly one OpOverflow sentinel is delivered before normal events
+// resume, so the consumer knows it missed writes and must resync.
 func (c *Collection) emit(ev WatchEvent) {
 	c.watchMu.Lock()
-	for _, ch := range c.watchers {
+	for _, w := range c.watchers {
+		if w.overflowed {
+			// Flush the overflow sentinel before resuming normal delivery.
+			// Until it lands, keep dropping events (continuity is already lost).
+			select {
+			case w.ch <- WatchEvent{Op: OpOverflow, Ts: time.Now().UTC()}:
+				w.overflowed = false
+			default:
+				continue // still backed up; stay overflowed
+			}
+		}
 		select {
-		case ch <- ev:
-		default: // drop if subscriber is slow
+		case w.ch <- ev:
+		default:
+			w.overflowed = true // subscriber too slow; signal once it drains
 		}
 	}
 	c.watchMu.Unlock()

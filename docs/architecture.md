@@ -119,6 +119,27 @@ map[string]map[string][]uint64
 
 ---
 
+## Change Feed (Watch)
+
+Every write emits a `WatchEvent` to all live `Watch` subscribers. Each
+subscriber gets its own buffered channel (`--watch-buffer`, default 64).
+
+### Overflow signal
+
+Delivery is non-blocking: a write never waits on a slow consumer. If a
+subscriber's buffer is full, the event is dropped and the watcher is marked
+*overflowed*. Once that channel drains, the next emit delivers a single
+sentinel `WatchEvent` with op `OVERFLOW` (no record) before normal events
+resume — so a consumer that fell behind learns it missed writes and can resync
+(re-read the affected records) instead of silently losing them. Exactly one
+overflow sentinel is delivered per overflow episode.
+
+Server-side `Watch` filters are applied *after* the buffer, so an `OVERFLOW`
+sentinel always bypasses the filter and reaches the client regardless of
+whether the dropped events would have matched.
+
+---
+
 ## Concurrency Model
 
 **Pessimistic locking per collection using `sync.RWMutex`:**

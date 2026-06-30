@@ -39,6 +39,9 @@ type Config struct {
 
 	// Transactions
 	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
+
+	// Watch
+	WatchBufferSize int `yaml:"watch_buffer_size"` // per-subscriber event buffer (default: 64)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -55,6 +58,7 @@ func DefaultConfig() Config {
 		SyncMode:        string(engine.SyncModeNone),
 		SyncInterval:    engine.DefaultSyncInterval,
 		TxTimeout:       5 * time.Minute,
+		WatchBufferSize: engine.DefaultWatchBufferSize,
 	}
 }
 
@@ -66,6 +70,7 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		CompactDirtyPct: c.CompactDirtyPct,
 		SyncMode:        engine.SyncMode(c.SyncMode),
 		SyncInterval:    c.SyncInterval,
+		WatchBufferSize: c.WatchBufferSize,
 	}
 }
 
@@ -86,6 +91,7 @@ type fileConfig struct {
 	SyncMode        string  `yaml:"sync_mode"`
 	SyncInterval    string  `yaml:"sync_interval"`
 	TxTimeout       string  `yaml:"tx_timeout"`
+	WatchBufferSize int     `yaml:"watch_buffer_size"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -114,6 +120,7 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncMode:        defaults.SyncMode,
 		SyncInterval:    defaults.SyncInterval.String(),
 		TxTimeout:       defaults.TxTimeout.String(),
+		WatchBufferSize: defaults.WatchBufferSize,
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -152,5 +159,6 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncMode:        fc.SyncMode,
 		SyncInterval:    syncInterval,
 		TxTimeout:       txTimeout,
+		WatchBufferSize: fc.WatchBufferSize,
 	}, nil
 }

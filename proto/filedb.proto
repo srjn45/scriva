@@ -271,6 +271,9 @@ enum WatchOp {
   INSERTED             = 1;
   UPDATED              = 2;
   DELETED              = 3;
+  // OVERFLOW signals that the server dropped events because this subscriber
+  // fell behind. The client missed writes and should resync. No record is set.
+  OVERFLOW             = 4;
 }
 
 message WatchRequest {
