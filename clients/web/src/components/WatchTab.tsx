@@ -7,9 +7,27 @@ const OP_STYLES = {
   INSERTED: 'bg-green-900 text-green-300',
   UPDATED:  'bg-blue-900 text-blue-300',
   DELETED:  'bg-red-900 text-red-300',
+  OVERFLOW: 'bg-yellow-900 text-yellow-300',
 } as const
 
 function EventRow({ event }: { event: WatchEvent }) {
+  // An OVERFLOW sentinel carries no record: the server dropped events because
+  // this watcher fell behind, so the view may be stale and should be refreshed.
+  if (event.op === 'OVERFLOW') {
+    return (
+      <div className="flex items-start gap-3 py-2 border-b border-gray-800 text-sm">
+        <span className="text-xs text-gray-600 whitespace-nowrap mt-0.5 w-20 shrink-0">
+          {new Date(event.ts).toLocaleTimeString()}
+        </span>
+        <span className={`text-xs font-medium px-2 py-0.5 rounded shrink-0 ${OP_STYLES.OVERFLOW}`}>
+          OVERFLOW
+        </span>
+        <span className="text-xs text-yellow-500/80 flex-1">
+          events dropped — watcher fell behind; reload to resync
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="flex items-start gap-3 py-2 border-b border-gray-800 text-sm">
       <span className="text-xs text-gray-600 whitespace-nowrap mt-0.5 w-20 shrink-0">

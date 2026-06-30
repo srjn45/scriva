@@ -3,7 +3,7 @@
 export type FilterOp =
   | 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'CONTAINS' | 'REGEX'
 
-export type WatchOp = 'INSERTED' | 'UPDATED' | 'DELETED'
+export type WatchOp = 'INSERTED' | 'UPDATED' | 'DELETED' | 'OVERFLOW'
 
 // ---- Filter types -----------------------------------------------------------
 

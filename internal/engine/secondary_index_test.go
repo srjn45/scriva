@@ -204,7 +204,7 @@ func TestSecondaryIndex_SurvivesCompaction(t *testing.T) {
 		cfg:     CollectionConfig{SegmentMaxSize: 512, CompactInterval: 24 * time.Hour, CompactDirtyPct: 0.30},
 		index:   newIndex(),
 		sidxMap: make(map[string]*SecondaryIndex),
-		watchers: make(map[uint64]chan WatchEvent),
+		watchers: make(map[uint64]*watcher),
 		compactC: make(chan struct{}, 1),
 		closed:   make(chan struct{}),
 	}

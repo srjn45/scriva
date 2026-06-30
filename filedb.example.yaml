@@ -69,3 +69,10 @@ sync_interval: 1s
 # bound memory and reserved ids leaked by clients that disconnect without
 # committing. Go duration; set "0" to disable expiry entirely.
 tx_timeout: 5m
+
+# --- Watch ------------------------------------------------------------------
+
+# Per-subscriber event buffer for the Watch change feed. A subscriber that
+# fills its buffer receives a single OVERFLOW sentinel (signalling it should
+# resync) instead of silently missing events.
+watch_buffer_size: 64

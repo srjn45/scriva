@@ -66,6 +66,7 @@ All flags and their defaults:
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
+| `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -88,6 +89,7 @@ compact_dirty_pct: 0.30
 sync_mode: none             # none | always | interval
 sync_interval: 1s           # used when sync_mode: interval
 tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
+watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
