@@ -62,3 +62,10 @@ sync_mode: none
 
 # Flush cadence when sync_mode is "interval" (Go duration, e.g. "1s", "500ms").
 sync_interval: 1s
+
+# --- Transactions -----------------------------------------------------------
+
+# Reap transactions that have been idle (no staged op) longer than this, to
+# bound memory and reserved ids leaked by clients that disconnect without
+# committing. Go duration; set "0" to disable expiry entirely.
+tx_timeout: 5m

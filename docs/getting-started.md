@@ -65,6 +65,7 @@ All flags and their defaults:
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
+| `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -86,6 +87,7 @@ compact_interval: 5m
 compact_dirty_pct: 0.30
 sync_mode: none             # none | always | interval
 sync_interval: 1s           # used when sync_mode: interval
+tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -384,6 +386,12 @@ filedb-cli commit-tx "$TX"
 # Or rollback
 filedb-cli rollback-tx "$TX"
 ```
+
+Open transactions are held in server memory. If a client disconnects without
+committing or rolling back, the server reaps the transaction once it has been
+idle longer than `--tx-timeout` (default `5m`); a later commit on a reaped
+transaction returns a not-found error. Set `--tx-timeout 0` to keep
+transactions indefinitely.
 
 ---
 

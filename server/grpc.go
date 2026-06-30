@@ -25,9 +25,16 @@ type GRPCServer struct {
 	txMgr *engine.TxManager
 }
 
-// NewGRPCServer creates a GRPCServer backed by the given DB.
-func NewGRPCServer(db *engine.DB) *GRPCServer {
-	return &GRPCServer{db: db, txMgr: engine.NewTxManager()}
+// NewGRPCServer creates a GRPCServer backed by the given DB. txTimeout bounds
+// how long an idle open transaction is retained before it is reaped (0 disables
+// expiry); see engine.NewTxManager.
+func NewGRPCServer(db *engine.DB, txTimeout time.Duration) *GRPCServer {
+	return &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout)}
+}
+
+// Close releases server-owned background resources (the transaction sweeper).
+func (s *GRPCServer) Close() {
+	s.txMgr.Close()
 }
 
 // txIDFromContext extracts the x-tx-id value from incoming gRPC metadata.

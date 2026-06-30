@@ -177,6 +177,17 @@ RollbackTx → discard staging buffer
 
 Staged operations bypass the normal single-operation write path; the write lock is held for the entire commit batch.
 
+### Idle transaction expiry
+
+Open transactions live only in server memory, so a client that calls `BeginTx`
+and then disconnects without committing or rolling back would otherwise leak its
+staging buffer and reserved id forever. A background sweeper in the `TxManager`
+reaps any transaction whose last staged op is older than `--tx-timeout`
+(default 5m; set `0` to disable). Reaping an abandoned transaction is equivalent
+to a rollback — nothing was ever written to disk, so the staged buffer is simply
+discarded. A subsequent `CommitTx`/`RollbackTx` on a reaped id returns
+`NotFound`.
+
 ---
 
 ## Durability

@@ -30,12 +30,20 @@ type Tx struct {
 	Collection string
 	mu         sync.Mutex
 	ops        []txOp
+	createdAt  time.Time // when BeginTx allocated this transaction
+	lastUsed   time.Time // bumped on every staged op; drives idle expiry
+}
+
+// touch records activity on the transaction. Caller must hold t.mu.
+func (t *Tx) touch() {
+	t.lastUsed = time.Now().UTC()
 }
 
 // StageInsert appends an insert op to the transaction buffer.
 func (t *Tx) StageInsert(id uint64, data map[string]any) {
 	t.mu.Lock()
 	t.ops = append(t.ops, txOp{kind: txOpInsert, id: id, data: data, ts: time.Now().UTC()})
+	t.touch()
 	t.mu.Unlock()
 }
 
@@ -43,6 +51,7 @@ func (t *Tx) StageInsert(id uint64, data map[string]any) {
 func (t *Tx) StageUpdate(id uint64, data map[string]any) {
 	t.mu.Lock()
 	t.ops = append(t.ops, txOp{kind: txOpUpdate, id: id, data: data, ts: time.Now().UTC()})
+	t.touch()
 	t.mu.Unlock()
 }
 
@@ -50,6 +59,7 @@ func (t *Tx) StageUpdate(id uint64, data map[string]any) {
 func (t *Tx) StageDelete(id uint64) {
 	t.mu.Lock()
 	t.ops = append(t.ops, txOp{kind: txOpDelete, id: id, ts: time.Now().UTC()})
+	t.touch()
 	t.mu.Unlock()
 }
 
@@ -62,22 +72,99 @@ func (t *Tx) Snapshot() []txOp {
 	return cp
 }
 
+// maxSweepInterval caps how long the sweeper sleeps between idle-tx scans, so a
+// large --tx-timeout still gets reaped on a reasonable cadence.
+const maxSweepInterval = time.Minute
+
 // TxManager owns all open transactions. It is safe for concurrent use.
+//
+// When constructed with a positive ttl, a background sweeper rolls back and
+// removes transactions that have been idle (no staged op) for longer than the
+// ttl. This bounds the memory and reserved ids leaked by clients that call
+// BeginTx and disconnect without committing or rolling back.
 type TxManager struct {
 	mu  sync.RWMutex
 	txs map[string]*Tx
+
+	ttl      time.Duration
+	sweeping bool // true when a background sweeper goroutine is running
+	stop     chan struct{}
+	stopOnce sync.Once
+	done     chan struct{}
 }
 
-// NewTxManager returns a ready TxManager.
-func NewTxManager() *TxManager {
-	return &TxManager{txs: make(map[string]*Tx)}
+// Close stops the background sweeper, if one is running. It is safe to call
+// multiple times.
+func (m *TxManager) Close() {
+	m.stopOnce.Do(func() {
+		close(m.stop)
+		if m.sweeping {
+			<-m.done // wait for the sweeper goroutine to exit
+		}
+	})
+}
+
+// NewTxManager returns a ready TxManager. If ttl > 0 it starts a background
+// sweeper that reaps idle transactions; ttl <= 0 disables expiry entirely.
+func NewTxManager(ttl time.Duration) *TxManager {
+	m := &TxManager{
+		txs:  make(map[string]*Tx),
+		ttl:  ttl,
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	if ttl > 0 {
+		m.sweeping = true
+		go m.sweepLoop()
+	}
+	return m
+}
+
+// sweepLoop reaps idle transactions until Close is called.
+func (m *TxManager) sweepLoop() {
+	defer close(m.done)
+	interval := m.ttl
+	if interval > maxSweepInterval {
+		interval = maxSweepInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-t.C:
+			m.reapExpired(time.Now().UTC())
+		}
+	}
+}
+
+// reapExpired removes every transaction idle since before now-ttl and returns
+// their ids. Reaping an abandoned transaction simply discards its staging
+// buffer — identical to a rollback, since nothing was ever written to disk.
+func (m *TxManager) reapExpired(now time.Time) []string {
+	cutoff := now.Add(-m.ttl)
+	var reaped []string
+	m.mu.Lock()
+	for id, tx := range m.txs {
+		tx.mu.Lock()
+		idle := tx.lastUsed.Before(cutoff)
+		tx.mu.Unlock()
+		if idle {
+			delete(m.txs, id)
+			reaped = append(reaped, id)
+		}
+	}
+	m.mu.Unlock()
+	return reaped
 }
 
 // Begin creates a new transaction for the given collection and returns its ID.
 func (m *TxManager) Begin(collection string) string {
 	id := newTxID()
+	now := time.Now().UTC()
 	m.mu.Lock()
-	m.txs[id] = &Tx{ID: id, Collection: collection}
+	m.txs[id] = &Tx{ID: id, Collection: collection, createdAt: now, lastUsed: now}
 	m.mu.Unlock()
 	return id
 }
@@ -103,4 +190,3 @@ func newTxID() string {
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
-
