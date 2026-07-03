@@ -326,7 +326,7 @@ commit style, one PR per task. Commits must use the
 | T1 | EMB-1 public engine 🔴 | — | ☐ todo | |
 | T2 | EMB-3 deps-check CI | T1 | ☑ done | [#23](https://github.com/srjn45/FileDBv2/pull/23) |
 | T3 | KEY-2 unique index | T1 | ☑ done | [#25](https://github.com/srjn45/FileDBv2/pull/25) |
-| T4 | KEY-1 string keys 🔴 | T3 | ☐ todo | |
+| T4 | KEY-1 string keys 🔴 | T3 | ☑ done | [#26](https://github.com/srjn45/FileDBv2/pull/26) |
 | T5 | KEY-3 CAS / rev 🔴 | T4 | ☐ todo | |
 | T6 | KEY-4 upsert | T4 (after T5) | ☐ todo | |
 | T7 | QRY-3 count/exists | T4 (after T6) | ☐ todo | |
