@@ -345,6 +345,6 @@ callers — the port is gated only on Phase 1–2 here.
 **OPS — Embedded operations**
 - [ ] OPS-1 — embedded durability default
 - [ ] OPS-2 — in-process Watch for poller/TUI
-- [ ] OPS-3 — migration/import from warden's JSON layout
+- [x] OPS-3 — migration/import from warden's JSON layout
 - [ ] OPS-4 — backup / snapshot (→ release F2)
 - [ ] OPS-5 — on-demand + bounded compaction (→ release F3)
