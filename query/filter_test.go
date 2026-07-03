@@ -352,3 +352,51 @@ func TestNestedFilter(t *testing.T) {
 		t.Error("expected match: superuser regardless of age")
 	}
 }
+
+// ---- Compare (shared by filter operators and engine order_by) ---------------
+
+// TestCompare exercises the exported Compare directly. It is the single
+// comparison used by both the gt/gte/lt/lte operators and by order_by sorting,
+// so these cases pin the semantics both paths rely on.
+func TestCompare(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b any
+		want int // sign: -1 a<b, 0 equal, +1 a>b
+	}{
+		{"numeric less, not lexical", float64(2), float64(10), -1},
+		{"numeric greater", float64(10), float64(2), 1},
+		{"numeric equal", float64(7), float64(7), 0},
+		{"negative numbers", float64(-5), float64(-1), -1},
+		{"string lexical less", "apple", "banana", -1},
+		{"string lexical greater", "banana", "apple", 1},
+		{"string equal", "x", "x", 0},
+		// A numeric-looking string keeps string ordering — "10" < "9" lexically.
+		{"numeric-looking strings stay lexical", "10", "9", -1},
+		// Mixed types degrade to a deterministic string comparison.
+		{"mixed number vs string is deterministic", float64(5), "5", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sign(query.Compare(tc.a, tc.b))
+			if got != tc.want {
+				t.Errorf("Compare(%v, %v) = %d, want sign %d", tc.a, tc.b, got, tc.want)
+			}
+			// Compare must be antisymmetric: swapping the arguments flips the sign.
+			if rev := sign(query.Compare(tc.b, tc.a)); rev != -tc.want {
+				t.Errorf("Compare(%v, %v) = %d, want %d (antisymmetry)", tc.b, tc.a, rev, -tc.want)
+			}
+		})
+	}
+}
+
+func sign(n int) int {
+	switch {
+	case n < 0:
+		return -1
+	case n > 0:
+		return 1
+	default:
+		return 0
+	}
+}

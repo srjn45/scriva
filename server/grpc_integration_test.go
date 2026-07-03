@@ -241,6 +241,35 @@ func TestIntegration_Find_FilterAndOrder(t *testing.T) {
 	}
 }
 
+// TestIntegration_Find_OrderNumericNotLexical drives order_by end-to-end over
+// gRPC with values that span the numeric/lexical boundary (2 vs 10 vs 100). A
+// naive string sort would put "10" and "100" before "2"; the typed comparison
+// must sort them numerically.
+func TestIntegration_Find_OrderNumericNotLexical(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "spread"})
+
+	for _, n := range []float64{10, 2, 100, 9, 1} {
+		d, _ := structpb.NewStruct(map[string]any{"score": n})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "spread", Data: d})
+	}
+
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "spread", OrderBy: "score"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs := collectFind(t, stream)
+	want := []float64{1, 2, 9, 10, 100}
+	if len(recs) != len(want) {
+		t.Fatalf("got %d records, want %d", len(recs), len(want))
+	}
+	for i, w := range want {
+		if got := recs[i].Data.Fields["score"].GetNumberValue(); got != w {
+			t.Errorf("ascending[%d] = %v, want %v (numeric, not lexical)", i, got, w)
+		}
+	}
+}
+
 func TestIntegration_Find_LimitOffset(t *testing.T) {
 	c := newTestServer(t)
 	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "paged"})

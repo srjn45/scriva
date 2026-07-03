@@ -107,11 +107,14 @@ So `Find … limit 10` over a million-row collection reads and holds ~10 rows, n
 a million. (Range/`gt`/`lt` predicates and ordering by a non-indexed field still
 examine every candidate — ordered indexes to fix that are tracked as Q3.)
 
-**Ordering guarantees.** With `order_by`, results are sorted by that field —
-numerically when both values are numbers, else by their string form — with ties
-broken by ascending `id` so pages are deterministic and a bounded top-K agrees
-with a full sort. Without `order_by`, results are returned in insertion (id)
-order.
+**Ordering guarantees.** With `order_by`, results are sorted by that field using
+`query.Compare` — the *same* type-aware comparison the `gt`/`gte`/`lt`/`lte`
+filter operators use, so a sort and a filter never disagree about how two values
+relate. Numbers order numerically (`2` before `10`, not the lexical `"10"` before
+`"2"`) and strings order lexically; mixed types degrade to a deterministic string
+comparison. `descending` reverses the order. Ties are broken by ascending `id` so
+pages are deterministic and a bounded top-K agrees with a full sort. Without
+`order_by`, results are returned in insertion (id) order.
 
 **Cancellation.** `ScanStream` threads the request `context` and checks it
 between segments and records, so a client that cancels a long `Find` (or
