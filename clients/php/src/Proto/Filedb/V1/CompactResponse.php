@@ -9,9 +9,9 @@ use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
- * Generated from protobuf message <code>filedb.v1.DropCollectionResponse</code>
+ * Generated from protobuf message <code>filedb.v1.CompactResponse</code>
  */
-class DropCollectionResponse extends \Google\Protobuf\Internal\Message
+class CompactResponse extends \Google\Protobuf\Internal\Message
 {
     /**
      * Generated from protobuf field <code>bool ok = 1 [json_name = "ok"];</code>

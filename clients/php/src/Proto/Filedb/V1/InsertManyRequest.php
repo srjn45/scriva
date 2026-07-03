@@ -4,42 +4,120 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.InsertManyRequest</code>
+ */
 class InsertManyRequest extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     */
     protected $collection = '';
-    protected $records;
+    /**
+     * Generated from protobuf field <code>repeated .google.protobuf.Struct records = 2 [json_name = "records"];</code>
+     */
+    private $records;
+    /**
+     * Optional per-record TTL, in seconds, applied to every record in the batch.
+     * Same semantics as InsertRequest.ttl_seconds.
+     *
+     * Generated from protobuf field <code>int64 ttl_seconds = 3 [json_name = "ttlSeconds"];</code>
+     */
+    protected $ttl_seconds = 0;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type string $collection
+     *     @type array<\Google\Protobuf\Struct>|\Google\Protobuf\Internal\RepeatedField $records
+     *     @type int|string $ttl_seconds
+     *           Optional per-record TTL, in seconds, applied to every record in the batch.
+     *           Same semantics as InsertRequest.ttl_seconds.
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     * @return string
+     */
     public function getCollection()
     {
         return $this->collection;
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     * @param string $var
+     * @return $this
+     */
     public function setCollection($var)
     {
         GPBUtil::checkString($var, True);
         $this->collection = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>repeated .google.protobuf.Struct records = 2 [json_name = "records"];</code>
+     * @return \Google\Protobuf\Internal\RepeatedField
+     */
     public function getRecords()
     {
         return $this->records;
     }
 
+    /**
+     * Generated from protobuf field <code>repeated .google.protobuf.Struct records = 2 [json_name = "records"];</code>
+     * @param array<\Google\Protobuf\Struct>|\Google\Protobuf\Internal\RepeatedField $var
+     * @return $this
+     */
     public function setRecords($var)
     {
         $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::MESSAGE, \Google\Protobuf\Struct::class);
         $this->records = $arr;
+
+        return $this;
+    }
+
+    /**
+     * Optional per-record TTL, in seconds, applied to every record in the batch.
+     * Same semantics as InsertRequest.ttl_seconds.
+     *
+     * Generated from protobuf field <code>int64 ttl_seconds = 3 [json_name = "ttlSeconds"];</code>
+     * @return int|string
+     */
+    public function getTtlSeconds()
+    {
+        return $this->ttl_seconds;
+    }
+
+    /**
+     * Optional per-record TTL, in seconds, applied to every record in the batch.
+     * Same semantics as InsertRequest.ttl_seconds.
+     *
+     * Generated from protobuf field <code>int64 ttl_seconds = 3 [json_name = "ttlSeconds"];</code>
+     * @param int|string $var
+     * @return $this
+     */
+    public function setTtlSeconds($var)
+    {
+        GPBUtil::checkInt64($var);
+        $this->ttl_seconds = $var;
+
         return $this;
     }
 
 }
+

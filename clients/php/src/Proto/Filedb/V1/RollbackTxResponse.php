@@ -4,29 +4,55 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.RollbackTxResponse</code>
+ */
 class RollbackTxResponse extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>bool ok = 1 [json_name = "ok"];</code>
+     */
     protected $ok = false;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type bool $ok
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>bool ok = 1 [json_name = "ok"];</code>
+     * @return bool
+     */
     public function getOk()
     {
         return $this->ok;
     }
 
+    /**
+     * Generated from protobuf field <code>bool ok = 1 [json_name = "ok"];</code>
+     * @param bool $var
+     * @return $this
+     */
     public function setOk($var)
     {
         GPBUtil::checkBool($var);
         $this->ok = $var;
+
         return $this;
     }
 
 }
+

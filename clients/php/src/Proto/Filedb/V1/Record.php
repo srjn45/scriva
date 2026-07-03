@@ -4,34 +4,75 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.Record</code>
+ */
 class Record extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>uint64 id = 1 [json_name = "id"];</code>
+     */
     protected $id = 0;
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Struct data = 2 [json_name = "data"];</code>
+     */
     protected $data = null;
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_added = 3 [json_name = "dateAdded"];</code>
+     */
     protected $date_added = null;
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_modified = 4 [json_name = "dateModified"];</code>
+     */
     protected $date_modified = null;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type int|string $id
+     *     @type \Google\Protobuf\Struct $data
+     *     @type \Google\Protobuf\Timestamp $date_added
+     *     @type \Google\Protobuf\Timestamp $date_modified
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>uint64 id = 1 [json_name = "id"];</code>
+     * @return int|string
+     */
     public function getId()
     {
         return $this->id;
     }
 
+    /**
+     * Generated from protobuf field <code>uint64 id = 1 [json_name = "id"];</code>
+     * @param int|string $var
+     * @return $this
+     */
     public function setId($var)
     {
         GPBUtil::checkUint64($var);
         $this->id = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Struct data = 2 [json_name = "data"];</code>
+     * @return \Google\Protobuf\Struct|null
+     */
     public function getData()
     {
         return $this->data;
@@ -47,13 +88,23 @@ class Record extends \Google\Protobuf\Internal\Message
         unset($this->data);
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Struct data = 2 [json_name = "data"];</code>
+     * @param \Google\Protobuf\Struct $var
+     * @return $this
+     */
     public function setData($var)
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Struct::class);
         $this->data = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_added = 3 [json_name = "dateAdded"];</code>
+     * @return \Google\Protobuf\Timestamp|null
+     */
     public function getDateAdded()
     {
         return $this->date_added;
@@ -69,13 +120,23 @@ class Record extends \Google\Protobuf\Internal\Message
         unset($this->date_added);
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_added = 3 [json_name = "dateAdded"];</code>
+     * @param \Google\Protobuf\Timestamp $var
+     * @return $this
+     */
     public function setDateAdded($var)
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Timestamp::class);
         $this->date_added = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_modified = 4 [json_name = "dateModified"];</code>
+     * @return \Google\Protobuf\Timestamp|null
+     */
     public function getDateModified()
     {
         return $this->date_modified;
@@ -91,11 +152,18 @@ class Record extends \Google\Protobuf\Internal\Message
         unset($this->date_modified);
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp date_modified = 4 [json_name = "dateModified"];</code>
+     * @param \Google\Protobuf\Timestamp $var
+     * @return $this
+     */
     public function setDateModified($var)
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Timestamp::class);
         $this->date_modified = $var;
+
         return $this;
     }
 
 }
+

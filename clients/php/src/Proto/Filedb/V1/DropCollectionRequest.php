@@ -4,29 +4,55 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.DropCollectionRequest</code>
+ */
 class DropCollectionRequest extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     */
     protected $name = '';
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type string $name
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     * @return string
+     */
     public function getName()
     {
         return $this->name;
     }
 
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     * @param string $var
+     * @return $this
+     */
     public function setName($var)
     {
         GPBUtil::checkString($var, True);
         $this->name = $var;
+
         return $this;
     }
 
 }
+
