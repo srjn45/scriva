@@ -44,8 +44,8 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   close). Call it after: first active-segment create, every rotation, and every
   tmp→final rename of index/sidx/meta files. Gate the per-rotation dir-fsync on
   `SyncMode != none` to preserve fast-mode throughput.
-- **Files:** `internal/engine/segment.go`, `collection.go`, `index.go`,
-  `secondary_index.go`, new `internal/engine/fsync.go`.
+- **Files:** `engine/segment.go`, `collection.go`, `index.go`,
+  `secondary_index.go`, new `engine/fsync.go`.
 - **Tests:** `durability_test.go` — extend the reopen matrix; add a test that
   asserts dir-fsync is invoked per sync mode (inject a hook/counter).
 - **Acceptance:** under `always`, no acknowledged write or its containing
@@ -59,7 +59,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   writing it per-insert — persist on rotation, on `Close`, and on a coarse timer
   (or every N writes). The id counter is already recoverable by scan, so this is
   pure optimization + safety, not a correctness regression.
-- **Files:** `internal/engine/meta.go`, `collection.go`.
+- **Files:** `engine/meta.go`, `collection.go`.
 - **Tests:** `collection_test.go` — reopen after N inserts with no clean close
   still recovers the correct id counter (falls back to scan); meta written
   atomically (no partial file observable).
@@ -76,7 +76,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   verification. Verification failures surface as a typed `ErrCorruptEntry`.
 - **Proto/format:** no proto change; on-disk NDJSON gains an optional key.
   Document in `docs/architecture.md`.
-- **Files:** `internal/store/ndjson.go`, `internal/engine/segment.go`
+- **Files:** `store/ndjson.go`, `engine/segment.go`
   (`ScanAll`/`ReadAt` error wrapping), `docs/architecture.md`.
 - **Tests:** `ndjson_test.go` — round-trip with/without crc; flip a byte →
   `ErrCorruptEntry`. `segment_recovery_fuzz_test.go` — extend fuzz corpus.
@@ -91,7 +91,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   channel drains, so the client knows to resync. Make buffer size configurable.
 - **Proto/API:** add `OVERFLOW` to the `WatchEvent` op enum in `proto/filedb.proto`;
   regenerate stubs; map in `server/grpc.go` + `server/watch_rest.go`.
-- **Files:** `proto/filedb.proto`, `internal/engine/collection.go`,
+- **Files:** `proto/filedb.proto`, `engine/collection.go`,
   `server/grpc.go`, `server/watch_rest.go`, web UI feed handling.
 - **Tests:** `collection_test.go` — slow subscriber receives an overflow sentinel
   rather than silently missing events.
@@ -107,7 +107,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   `collection.go:309`). The write itself already succeeded, so wrap as a
   non-fatal warning return or a logged error — decide one consistent policy and
   apply it on all four paths.
-- **Files:** `internal/engine/collection.go`.
+- **Files:** `engine/collection.go`.
 - **Tests:** `collection_test.go` — inject a rotation failure; assert it is
   surfaced (not swallowed) on every write path.
 - **Acceptance:** no write path silently ignores a rotation error.
@@ -120,7 +120,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   goroutine that rolls back + removes transactions idle beyond a configurable
   TTL (default 5m). Expose `--tx-timeout` (Config + YAML + flag, per the
   "Adding a new server flag" checklist in CLAUDE.md).
-- **Files:** `internal/engine/txmanager.go`, `server/config.go`,
+- **Files:** `engine/txmanager.go`, `server/config.go`,
   `cmd/filedb/main.go`.
 - **Tests:** new `txmanager_test.go` — idle tx is reaped after TTL; active tx is
   not; reaped tx commit fails cleanly.
@@ -149,7 +149,7 @@ so `Find ... limit 10` still reads the whole collection.
      (top-K heap of size `offset+limit`) rather than full sort of all rows.
 - **Proto/API:** no breaking change (`limit`/`offset`/`order_by` already exist);
   semantics tightened. Document ordering guarantees.
-- **Files:** `internal/engine/collection.go` (new `ScanStream`), `server/grpc.go`
+- **Files:** `engine/collection.go` (new `ScanStream`), `server/grpc.go`
   (consume the stream), `docs/architecture.md`.
 - **Tests:** `collection_test.go` + `grpc_integration_test.go` — large-collection
   bench shows `limit 10` reads/holds O(limit), not O(n); top-K ordering correct.
@@ -166,7 +166,7 @@ so `Find ... limit 10` still reads the whole collection.
   and sort share one code path.
 - **Proto/API:** add `string order_dir = 6;` (or reuse a `-`-prefix) to
   `FindRequest`; regenerate.
-- **Files:** `proto/filedb.proto`, `internal/query/filter.go` (export a
+- **Files:** `proto/filedb.proto`, `query/filter.go` (export a
   `Compare`), `server/grpc.go`, CLI `find` flag, clients/docs.
 - **Tests:** `filter_test.go` + integration — numeric vs string ordering, desc.
 - **Acceptance:** `order_by age` sorts 2 < 10; `desc` reverses correctly.
@@ -180,7 +180,7 @@ so `Find ... limit 10` still reads the whole collection.
   tmp+rename+checksum pattern; rebuild after compaction.
 - **Proto/API:** optionally extend `EnsureIndex` with an index-type hint
   (`hash` | `ordered`); default `ordered` so it serves both eq and range.
-- **Files:** `internal/engine/secondary_index.go` (or new `ordered_index.go`),
+- **Files:** `engine/secondary_index.go` (or new `ordered_index.go`),
   `collection.go` (planner), `proto/filedb.proto`, `server/grpc.go`, CLI, docs.
 - **Tests:** `secondary_index_test.go` — range lookups match full-scan results;
   survives update/delete/compaction; persistence round-trips.
@@ -192,7 +192,7 @@ so `Find ... limit 10` still reads the whole collection.
   cancelling a long `Find`/`Scan` doesn't stop server-side work.
 - **Approach:** add `ctx` params to `ScanStream`/long reads; check
   `ctx.Err()` between segments/batches and abort. Pairs naturally with Q1.
-- **Files:** `internal/engine/collection.go`, `server/grpc.go`.
+- **Files:** `engine/collection.go`, `server/grpc.go`.
 - **Tests:** integration — cancel a streaming Find mid-flight; server stops
   reading promptly.
 - **Acceptance:** cancelled queries release engine work within one batch.

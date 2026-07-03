@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/store"
 )
 
 func TestIndexSetGetDelete(t *testing.T) {

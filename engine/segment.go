@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // DefaultSegmentMaxSize is the default maximum file size before a segment is

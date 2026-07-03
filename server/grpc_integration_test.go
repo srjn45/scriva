@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/srjn45/filedbv2/internal/engine"
+	"github.com/srjn45/filedbv2/engine"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"github.com/srjn45/filedbv2/server"
 )

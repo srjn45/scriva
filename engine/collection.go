@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // SyncMode controls how aggressively writes are flushed to stable storage.

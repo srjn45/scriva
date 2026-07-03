@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/query"
+	"github.com/srjn45/filedbv2/query"
 )
 
 // openIndexedCollection creates a test collection and ensures a secondary index
