@@ -340,7 +340,7 @@ callers — the port is gated only on Phase 1–2 here.
 **QRY — Query fit**
 - [ ] QRY-1 — directional order_by (→ release Q2)
 - [ ] QRY-2 — range index for time windows (→ release Q3)
-- [ ] QRY-3 — count / exists helpers
+- [x] QRY-3 — count / exists helpers
 
 **OPS — Embedded operations**
 - [ ] OPS-1 — embedded durability default

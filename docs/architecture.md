@@ -289,6 +289,27 @@ updates:
 Because a replace is an ordinary update entry, the stale versions collapse on
 compaction to a single live line, exactly as with `UpdateByKey`.
 
+### Count and existence checks
+
+Dashboards and list views ask "how many?" and "does this key exist?" far more
+often than they ask for the rows themselves. `Count` and `Exists` answer those
+without materialising the collection:
+
+- `Count(filter)` picks the cheapest path the filter allows:
+  - a `nil` or match-all filter returns the primary index length in **O(1)** — no
+    segment is read, because the index already tracks exactly the live records;
+  - a single `eq` filter on an indexed field returns the size of that value's id
+    set from the secondary index (**O(matches)**, still no segment read) — the
+    bucket membership is exactly what the filter would accept, so the count is
+    scan-identical;
+  - any other filter streams live records through the same `forEachMatch` path
+    `Scan` uses and increments a counter, so it never buffers a result slice or a
+    whole-collection data map. `Count(f)` always equals `len(Scan(f))`.
+- `Exists(key)` is a single `IndexLookup("_key", key)` — an **O(1)** in-memory
+  hit with no segment read, so it stays flat regardless of collection size. A
+  collection that has never taken a keyed write has no `_key` index and reports
+  `false` for every key.
+
 ---
 
 ## Change Feed (Watch)
