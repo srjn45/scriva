@@ -4,42 +4,82 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.CreateCollectionResponse</code>
+ */
 class CreateCollectionResponse extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     */
     protected $name = '';
+    /**
+     * Generated from protobuf field <code>string created_at = 2 [json_name = "createdAt"];</code>
+     */
     protected $created_at = '';
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type string $name
+     *     @type string $created_at
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     * @return string
+     */
     public function getName()
     {
         return $this->name;
     }
 
+    /**
+     * Generated from protobuf field <code>string name = 1 [json_name = "name"];</code>
+     * @param string $var
+     * @return $this
+     */
     public function setName($var)
     {
         GPBUtil::checkString($var, True);
         $this->name = $var;
+
         return $this;
     }
 
-    public function getCreated_at()
+    /**
+     * Generated from protobuf field <code>string created_at = 2 [json_name = "createdAt"];</code>
+     * @return string
+     */
+    public function getCreatedAt()
     {
         return $this->created_at;
     }
 
-    public function setCreated_at($var)
+    /**
+     * Generated from protobuf field <code>string created_at = 2 [json_name = "createdAt"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setCreatedAt($var)
     {
         GPBUtil::checkString($var, True);
         $this->created_at = $var;
+
         return $this;
     }
 
 }
+

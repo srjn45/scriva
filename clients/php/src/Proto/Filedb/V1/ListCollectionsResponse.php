@@ -4,29 +4,55 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.ListCollectionsResponse</code>
+ */
 class ListCollectionsResponse extends \Google\Protobuf\Internal\Message
 {
-    protected $names;
+    /**
+     * Generated from protobuf field <code>repeated string names = 1 [json_name = "names"];</code>
+     */
+    private $names;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type array<string>|\Google\Protobuf\Internal\RepeatedField $names
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>repeated string names = 1 [json_name = "names"];</code>
+     * @return \Google\Protobuf\Internal\RepeatedField
+     */
     public function getNames()
     {
         return $this->names;
     }
 
+    /**
+     * Generated from protobuf field <code>repeated string names = 1 [json_name = "names"];</code>
+     * @param array<string>|\Google\Protobuf\Internal\RepeatedField $var
+     * @return $this
+     */
     public function setNames($var)
     {
         $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::STRING);
         $this->names = $arr;
+
         return $this;
     }
 
 }
+

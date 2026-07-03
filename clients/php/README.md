@@ -33,7 +33,7 @@ composer install
 To regenerate the gRPC stubs from `proto/filedb.proto`:
 
 ```bash
-# Requires protoc and grpc_php_plugin — see generate.sh for details
+# Requires only buf — plugins are pulled from the Buf Schema Registry.
 ./generate.sh
 ```
 
@@ -85,6 +85,10 @@ $db = new FileDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
 string   $name   = $db->createCollection('col');
 bool     $ok     = $db->dropCollection('col');
 string[] $names  = $db->listCollections();
+
+// Give the collection a default per-record TTL (seconds). Records inserted
+// without an explicit ttl then expire this many seconds after being written.
+string $name = $db->createCollection('sessions', defaultTtlSeconds: 3600);
 ```
 
 ### CRUD
@@ -115,6 +119,25 @@ int $id = $db->update('col', $id, ['field' => 'new value']);
 // Delete — returns true if the record existed
 bool $deleted = $db->delete('col', $id);
 ```
+
+#### Per-record TTL
+
+`insert`, `insertMany`, and `update` accept a `ttlSeconds` argument:
+
+```php
+// Expire this record 60 seconds from now, regardless of the collection default.
+int $id = $db->insert('sessions', ['token' => 'abc'], ttlSeconds: 60);
+
+// Same TTL applied to every record in the batch.
+int[] $ids = $db->insertMany('sessions', [['token' => 'a'], ['token' => 'b']], ttlSeconds: 60);
+
+// On update, ttlSeconds > 0 resets the expiry; ttlSeconds: 0 (default) is
+// sticky and leaves the existing deadline untouched.
+$db->update('sessions', $id, ['token' => 'abc', 'seen' => true], ttlSeconds: 120);
+```
+
+`ttlSeconds: 0` (the default) inherits the collection's default TTL on insert; a
+value greater than 0 overrides it. Negative values are rejected by the server.
 
 Record array shape:
 
@@ -183,6 +206,24 @@ $s = $db->stats('col');
 // ]
 ```
 
+### Maintenance
+
+```php
+// Force a synchronous compaction of a collection — merges dirty segments and
+// reclaims space from deleted/overwritten records. Returns true on success.
+bool $ok = $db->compact('col');
+
+// Stream a consistent gzip-compressed tar snapshot of the whole database
+// straight to a file. Returns the number of bytes written; restore with
+// `tar xzf backup.tar.gz`.
+int $bytes = $db->snapshotToFile('backup.tar.gz');
+
+// Or consume the raw gzip byte chunks yourself (Snapshot is server-streaming):
+foreach ($db->snapshot() as $chunk) {
+    // $chunk is a string of bytes
+}
+```
+
 ---
 
 ## Filter syntax
@@ -245,13 +286,14 @@ When no CA cert path is supplied the client connects over plaintext.
 ## Regenerating proto stubs
 
 ```bash
-# Install protoc: https://github.com/protocolbuffers/protobuf/releases
-# Install grpc_php_plugin: https://github.com/grpc/grpc
-
+# Install buf: https://buf.build/docs/installation
 ./generate.sh
 ```
 
-The script reads `../../proto/filedb.proto` and writes to `src/Proto/`.
+The script reads `../../proto/filedb.proto` and writes to `src/Proto/`. It uses
+`buf` with the `protocolbuffers/php` and `grpc/php` remote plugins (pinned to
+versions matching the `google/protobuf: ^3.25` runtime), so no local `protoc` or
+`grpc_php_plugin` install is needed.
 
 ---
 

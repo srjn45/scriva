@@ -8,6 +8,7 @@ use Filedb\V1\AndFilter;
 use Filedb\V1\BeginTxRequest;
 use Filedb\V1\CollectionStatsRequest;
 use Filedb\V1\CommitTxRequest;
+use Filedb\V1\CompactRequest;
 use Filedb\V1\CreateCollectionRequest;
 use Filedb\V1\DeleteRequest;
 use Filedb\V1\DropCollectionRequest;
@@ -25,6 +26,7 @@ use Filedb\V1\ListCollectionsRequest;
 use Filedb\V1\ListIndexesRequest;
 use Filedb\V1\OrFilter;
 use Filedb\V1\RollbackTxRequest;
+use Filedb\V1\SnapshotRequest;
 use Filedb\V1\UpdateRequest;
 use Filedb\V1\WatchRequest;
 use Google\Protobuf\Struct;
@@ -108,11 +110,17 @@ class FileDB
 
     /**
      * Create a new collection. Returns the collection name.
+     *
+     * @param int $defaultTtlSeconds Default per-record TTL for the collection, in
+     *     seconds. When > 0, records inserted without an explicit ttl_seconds
+     *     expire this many seconds after they are written. 0 (the default) means
+     *     records never expire unless the server was started with --default-ttl.
      */
-    public function createCollection(string $name): string
+    public function createCollection(string $name, int $defaultTtlSeconds = 0): string
     {
         $req = new CreateCollectionRequest();
         $req->setName($name);
+        $req->setDefaultTtlSeconds($defaultTtlSeconds);
         [$resp, $status] = $this->stub->CreateCollection($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return $resp->getName();
@@ -151,12 +159,16 @@ class FileDB
      * Insert one record. Returns the assigned integer ID.
      *
      * @param array<string, mixed> $data
+     * @param int $ttlSeconds Per-record TTL in seconds. When > 0, overrides the
+     *     collection default and expires the record this many seconds from now.
+     *     0 (the default) inherits the collection's default TTL.
      */
-    public function insert(string $collection, array $data): int
+    public function insert(string $collection, array $data, int $ttlSeconds = 0): int
     {
         $req = new InsertRequest();
         $req->setCollection($collection);
         $req->setData($this->arrayToStruct($data));
+        $req->setTtlSeconds($ttlSeconds);
         [$resp, $status] = $this->stub->Insert($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return (int) $resp->getId();
@@ -166,14 +178,18 @@ class FileDB
      * Insert multiple records. Returns the assigned IDs in insertion order.
      *
      * @param array<array<string, mixed>> $records
+     * @param int $ttlSeconds Per-record TTL applied to every record in the batch.
+     *     Same semantics as insert(): > 0 overrides the collection default,
+     *     0 (the default) inherits it.
      * @return int[]
      */
-    public function insertMany(string $collection, array $records): array
+    public function insertMany(string $collection, array $records, int $ttlSeconds = 0): array
     {
         $req = new InsertManyRequest();
         $req->setCollection($collection);
         $structs = array_map([$this, 'arrayToStruct'], $records);
         $req->setRecords($structs);
+        $req->setTtlSeconds($ttlSeconds);
         [$resp, $status] = $this->stub->InsertMany($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return array_map('intval', iterator_to_array($resp->getIds()));
@@ -233,13 +249,17 @@ class FileDB
      * Update a record by ID. Returns the updated ID.
      *
      * @param array<string, mixed> $data
+     * @param int $ttlSeconds Per-record TTL in seconds. When > 0, resets the
+     *     record's expiry to this many seconds from now. 0 (the default) is
+     *     sticky — it leaves any existing expiry deadline in place.
      */
-    public function update(string $collection, int $id, array $data): int
+    public function update(string $collection, int $id, array $data, int $ttlSeconds = 0): int
     {
         $req = new UpdateRequest();
         $req->setCollection($collection);
         $req->setId($id);
         $req->setData($this->arrayToStruct($data));
+        $req->setTtlSeconds($ttlSeconds);
         [$resp, $status] = $this->stub->Update($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return (int) $resp->getId();
@@ -402,6 +422,67 @@ class FileDB
             'dirty_entries' => (int) $resp->getDirtyEntries(),
             'size_bytes'    => (int) $resp->getSizeBytes(),
         ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Maintenance
+    // -------------------------------------------------------------------------
+
+    /**
+     * Force a synchronous compaction of a collection, merging dirty segments and
+     * reclaiming space from deleted/overwritten records. Returns true on success.
+     */
+    public function compact(string $collection): bool
+    {
+        $req = new CompactRequest();
+        $req->setCollection($collection);
+        [$resp, $status] = $this->stub->Compact($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        return $resp->getOk();
+    }
+
+    /**
+     * Stream a consistent snapshot (a gzipped tar archive) of the entire
+     * database. The Snapshot RPC is server-streaming; this yields the raw byte
+     * chunks in order.
+     *
+     * Concatenating every yielded chunk reproduces the backup archive exactly.
+     *
+     * @return \Generator<int, string>
+     */
+    public function snapshot(): \Generator
+    {
+        $req = new SnapshotRequest();
+        $call = $this->stub->Snapshot($req, $this->metadata);
+        foreach ($call->responses() as $chunk) {
+            yield $chunk->getData();
+        }
+        $this->checkStatus($call->getStatus());
+    }
+
+    /**
+     * Stream a snapshot straight to a file on disk. Returns the number of bytes
+     * written.
+     */
+    public function snapshotToFile(string $path): int
+    {
+        $fh = fopen($path, 'wb');
+        if ($fh === false) {
+            throw new \RuntimeException("Cannot open snapshot file for writing: $path");
+        }
+        try {
+            $total = 0;
+            foreach ($this->snapshot() as $chunk) {
+                $written = fwrite($fh, $chunk);
+                if ($written === false) {
+                    throw new \RuntimeException("Failed writing snapshot to: $path");
+                }
+                $total += $written;
+            }
+            return $total;
+        } finally {
+            fclose($fh);
+        }
     }
 
     // -------------------------------------------------------------------------

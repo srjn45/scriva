@@ -9,18 +9,14 @@ use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
- * Generated from protobuf message <code>filedb.v1.FindByIdRequest</code>
+ * Generated from protobuf message <code>filedb.v1.CompactRequest</code>
  */
-class FindByIdRequest extends \Google\Protobuf\Internal\Message
+class CompactRequest extends \Google\Protobuf\Internal\Message
 {
     /**
      * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
      */
     protected $collection = '';
-    /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
-     */
-    protected $id = 0;
 
     /**
      * Constructor.
@@ -29,7 +25,6 @@ class FindByIdRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $collection
-     *     @type int|string $id
      * }
      */
     public function __construct($data = NULL) {
@@ -55,28 +50,6 @@ class FindByIdRequest extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkString($var, True);
         $this->collection = $var;
-
-        return $this;
-    }
-
-    /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
-     * @return int|string
-     */
-    public function getId()
-    {
-        return $this->id;
-    }
-
-    /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
-     * @param int|string $var
-     * @return $this
-     */
-    public function setId($var)
-    {
-        GPBUtil::checkUint64($var);
-        $this->id = $var;
 
         return $this;
     }

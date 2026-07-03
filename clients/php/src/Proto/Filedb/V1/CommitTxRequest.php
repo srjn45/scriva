@@ -4,29 +4,55 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.CommitTxRequest</code>
+ */
 class CommitTxRequest extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     */
     protected $tx_id = '';
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type string $tx_id
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
-    public function getTx_id()
+    /**
+     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     * @return string
+     */
+    public function getTxId()
     {
         return $this->tx_id;
     }
 
-    public function setTx_id($var)
+    /**
+     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setTxId($var)
     {
         GPBUtil::checkString($var, True);
         $this->tx_id = $var;
+
         return $this;
     }
 
 }
+

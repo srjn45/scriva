@@ -4,46 +4,97 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.WatchEvent</code>
+ */
 class WatchEvent extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>.filedb.v1.WatchOp op = 1 [json_name = "op"];</code>
+     */
     protected $op = 0;
+    /**
+     * Generated from protobuf field <code>string collection = 2 [json_name = "collection"];</code>
+     */
     protected $collection = '';
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Record record = 3 [json_name = "record"];</code>
+     */
     protected $record = null;
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp ts = 4 [json_name = "ts"];</code>
+     */
     protected $ts = null;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type int $op
+     *     @type string $collection
+     *     @type \Filedb\V1\Record $record
+     *     @type \Google\Protobuf\Timestamp $ts
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.WatchOp op = 1 [json_name = "op"];</code>
+     * @return int
+     */
     public function getOp()
     {
         return $this->op;
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.WatchOp op = 1 [json_name = "op"];</code>
+     * @param int $var
+     * @return $this
+     */
     public function setOp($var)
     {
         GPBUtil::checkEnum($var, \Filedb\V1\WatchOp::class);
         $this->op = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 2 [json_name = "collection"];</code>
+     * @return string
+     */
     public function getCollection()
     {
         return $this->collection;
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 2 [json_name = "collection"];</code>
+     * @param string $var
+     * @return $this
+     */
     public function setCollection($var)
     {
         GPBUtil::checkString($var, True);
         $this->collection = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Record record = 3 [json_name = "record"];</code>
+     * @return \Filedb\V1\Record|null
+     */
     public function getRecord()
     {
         return $this->record;
@@ -59,13 +110,23 @@ class WatchEvent extends \Google\Protobuf\Internal\Message
         unset($this->record);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Record record = 3 [json_name = "record"];</code>
+     * @param \Filedb\V1\Record $var
+     * @return $this
+     */
     public function setRecord($var)
     {
         GPBUtil::checkMessage($var, \Filedb\V1\Record::class);
         $this->record = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp ts = 4 [json_name = "ts"];</code>
+     * @return \Google\Protobuf\Timestamp|null
+     */
     public function getTs()
     {
         return $this->ts;
@@ -81,11 +142,18 @@ class WatchEvent extends \Google\Protobuf\Internal\Message
         unset($this->ts);
     }
 
+    /**
+     * Generated from protobuf field <code>.google.protobuf.Timestamp ts = 4 [json_name = "ts"];</code>
+     * @param \Google\Protobuf\Timestamp $var
+     * @return $this
+     */
     public function setTs($var)
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Timestamp::class);
         $this->ts = $var;
+
         return $this;
     }
 
 }
+

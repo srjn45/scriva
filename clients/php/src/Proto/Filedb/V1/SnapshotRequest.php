@@ -9,9 +9,9 @@ use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
- * Generated from protobuf message <code>filedb.v1.ListCollectionsRequest</code>
+ * Generated from protobuf message <code>filedb.v1.SnapshotRequest</code>
  */
-class ListCollectionsRequest extends \Google\Protobuf\Internal\Message
+class SnapshotRequest extends \Google\Protobuf\Internal\Message
 {
 
     /**

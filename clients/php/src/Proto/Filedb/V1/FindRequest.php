@@ -4,36 +4,91 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * Generated from protobuf message <code>filedb.v1.FindRequest</code>
+ */
 class FindRequest extends \Google\Protobuf\Internal\Message
 {
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     */
     protected $collection = '';
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Filter filter = 2 [json_name = "filter"];</code>
+     */
     protected $filter = null;
+    /**
+     * 0 = no limit
+     *
+     * Generated from protobuf field <code>uint32 limit = 3 [json_name = "limit"];</code>
+     */
     protected $limit = 0;
+    /**
+     * Generated from protobuf field <code>uint32 offset = 4 [json_name = "offset"];</code>
+     */
     protected $offset = 0;
+    /**
+     * field name
+     *
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     */
     protected $order_by = '';
+    /**
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     */
     protected $descending = false;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type string $collection
+     *     @type \Filedb\V1\Filter $filter
+     *     @type int $limit
+     *           0 = no limit
+     *     @type int $offset
+     *     @type string $order_by
+     *           field name
+     *     @type bool $descending
+     * }
+     */
     public function __construct($data = NULL) {
         \GPBMetadata\Filedb::initOnce();
         parent::__construct($data);
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     * @return string
+     */
     public function getCollection()
     {
         return $this->collection;
     }
 
+    /**
+     * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
+     * @param string $var
+     * @return $this
+     */
     public function setCollection($var)
     {
         GPBUtil::checkString($var, True);
         $this->collection = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Filter filter = 2 [json_name = "filter"];</code>
+     * @return \Filedb\V1\Filter|null
+     */
     public function getFilter()
     {
         return $this->filter;
@@ -49,59 +104,114 @@ class FindRequest extends \Google\Protobuf\Internal\Message
         unset($this->filter);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.Filter filter = 2 [json_name = "filter"];</code>
+     * @param \Filedb\V1\Filter $var
+     * @return $this
+     */
     public function setFilter($var)
     {
         GPBUtil::checkMessage($var, \Filedb\V1\Filter::class);
         $this->filter = $var;
+
         return $this;
     }
 
+    /**
+     * 0 = no limit
+     *
+     * Generated from protobuf field <code>uint32 limit = 3 [json_name = "limit"];</code>
+     * @return int
+     */
     public function getLimit()
     {
         return $this->limit;
     }
 
+    /**
+     * 0 = no limit
+     *
+     * Generated from protobuf field <code>uint32 limit = 3 [json_name = "limit"];</code>
+     * @param int $var
+     * @return $this
+     */
     public function setLimit($var)
     {
         GPBUtil::checkUint32($var);
         $this->limit = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>uint32 offset = 4 [json_name = "offset"];</code>
+     * @return int
+     */
     public function getOffset()
     {
         return $this->offset;
     }
 
+    /**
+     * Generated from protobuf field <code>uint32 offset = 4 [json_name = "offset"];</code>
+     * @param int $var
+     * @return $this
+     */
     public function setOffset($var)
     {
         GPBUtil::checkUint32($var);
         $this->offset = $var;
+
         return $this;
     }
 
-    public function getOrder_by()
+    /**
+     * field name
+     *
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     * @return string
+     */
+    public function getOrderBy()
     {
         return $this->order_by;
     }
 
-    public function setOrder_by($var)
+    /**
+     * field name
+     *
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setOrderBy($var)
     {
         GPBUtil::checkString($var, True);
         $this->order_by = $var;
+
         return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     * @return bool
+     */
     public function getDescending()
     {
         return $this->descending;
     }
 
+    /**
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     * @param bool $var
+     * @return $this
+     */
     public function setDescending($var)
     {
         GPBUtil::checkBool($var);
         $this->descending = $var;
+
         return $this;
     }
 
 }
+

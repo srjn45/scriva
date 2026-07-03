@@ -9,14 +9,14 @@ use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
- * Generated from protobuf message <code>filedb.v1.RollbackTxRequest</code>
+ * Generated from protobuf message <code>filedb.v1.SnapshotChunk</code>
  */
-class RollbackTxRequest extends \Google\Protobuf\Internal\Message
+class SnapshotChunk extends \Google\Protobuf\Internal\Message
 {
     /**
-     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     * Generated from protobuf field <code>bytes data = 1 [json_name = "data"];</code>
      */
-    protected $tx_id = '';
+    protected $data = '';
 
     /**
      * Constructor.
@@ -24,7 +24,7 @@ class RollbackTxRequest extends \Google\Protobuf\Internal\Message
      * @param array $data {
      *     Optional. Data for populating the Message object.
      *
-     *     @type string $tx_id
+     *     @type string $data
      * }
      */
     public function __construct($data = NULL) {
@@ -33,23 +33,23 @@ class RollbackTxRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     * Generated from protobuf field <code>bytes data = 1 [json_name = "data"];</code>
      * @return string
      */
-    public function getTxId()
+    public function getData()
     {
-        return $this->tx_id;
+        return $this->data;
     }
 
     /**
-     * Generated from protobuf field <code>string tx_id = 1 [json_name = "txId"];</code>
+     * Generated from protobuf field <code>bytes data = 1 [json_name = "data"];</code>
      * @param string $var
      * @return $this
      */
-    public function setTxId($var)
+    public function setData($var)
     {
-        GPBUtil::checkString($var, True);
-        $this->tx_id = $var;
+        GPBUtil::checkString($var, False);
+        $this->data = $var;
 
         return $this;
     }

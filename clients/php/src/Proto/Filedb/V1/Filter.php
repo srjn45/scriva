@@ -4,14 +4,39 @@
 
 namespace Filedb\V1;
 
-use Google\Protobuf\Internal\GPBUtil;
-use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBType;
+use Google\Protobuf\Internal\RepeatedField;
+use Google\Protobuf\Internal\GPBUtil;
 
+/**
+ * A composable filter node.
+ *
+ * Generated from protobuf message <code>filedb.v1.Filter</code>
+ */
 class Filter extends \Google\Protobuf\Internal\Message
 {
     protected $kind;
 
+    /**
+     * Constructor.
+     *
+     * @param array $data {
+     *     Optional. Data for populating the Message object.
+     *
+     *     @type \Filedb\V1\FieldFilter $field
+     *     @type \Filedb\V1\AndFilter $and
+     *     @type \Filedb\V1\OrFilter $or
+     * }
+     */
+    public function __construct($data = NULL) {
+        \GPBMetadata\Filedb::initOnce();
+        parent::__construct($data);
+    }
+
+    /**
+     * Generated from protobuf field <code>.filedb.v1.FieldFilter field = 1 [json_name = "field"];</code>
+     * @return \Filedb\V1\FieldFilter|null
+     */
     public function getField()
     {
         return $this->readOneof(1);
@@ -22,11 +47,23 @@ class Filter extends \Google\Protobuf\Internal\Message
         return $this->hasOneof(1);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.FieldFilter field = 1 [json_name = "field"];</code>
+     * @param \Filedb\V1\FieldFilter $var
+     * @return $this
+     */
     public function setField($var)
     {
-        return $this->writeOneof(1, $var);
+        GPBUtil::checkMessage($var, \Filedb\V1\FieldFilter::class);
+        $this->writeOneof(1, $var);
+
+        return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.AndFilter and = 2 [json_name = "and"];</code>
+     * @return \Filedb\V1\AndFilter|null
+     */
     public function getAnd()
     {
         return $this->readOneof(2);
@@ -37,11 +74,23 @@ class Filter extends \Google\Protobuf\Internal\Message
         return $this->hasOneof(2);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.AndFilter and = 2 [json_name = "and"];</code>
+     * @param \Filedb\V1\AndFilter $var
+     * @return $this
+     */
     public function setAnd($var)
     {
-        return $this->writeOneof(2, $var);
+        GPBUtil::checkMessage($var, \Filedb\V1\AndFilter::class);
+        $this->writeOneof(2, $var);
+
+        return $this;
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.OrFilter or = 3 [json_name = "or"];</code>
+     * @return \Filedb\V1\OrFilter|null
+     */
     public function getOr()
     {
         return $this->readOneof(3);
@@ -52,18 +101,26 @@ class Filter extends \Google\Protobuf\Internal\Message
         return $this->hasOneof(3);
     }
 
+    /**
+     * Generated from protobuf field <code>.filedb.v1.OrFilter or = 3 [json_name = "or"];</code>
+     * @param \Filedb\V1\OrFilter $var
+     * @return $this
+     */
     public function setOr($var)
     {
-        return $this->writeOneof(3, $var);
+        GPBUtil::checkMessage($var, \Filedb\V1\OrFilter::class);
+        $this->writeOneof(3, $var);
+
+        return $this;
     }
 
+    /**
+     * @return string
+     */
     public function getKind()
     {
         return $this->whichOneof("kind");
     }
 
-    public function __construct($data = NULL) {
-        \GPBMetadata\Filedb::initOnce();
-        parent::__construct($data);
-    }
 }
+

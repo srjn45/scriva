@@ -1,57 +1,66 @@
 #!/usr/bin/env bash
-# Regenerate PHP gRPC + protobuf stubs from proto/filedb.proto.
+# Regenerate PHP protobuf + gRPC stubs from proto/filedb.proto using buf.
+#
+# The stubs are vendored under clients/php/src/Proto/ so that `composer require`
+# users don't need protoc. Regenerate them whenever proto/filedb.proto changes.
 #
 # Requirements:
-#   - protoc (protobuf compiler): https://github.com/protocolbuffers/protobuf/releases
-#   - grpc_php_plugin: built from https://github.com/grpc/grpc (tools/run_tests/helper_scripts/build_php.sh)
-#       or installed via: pecl install grpc
-#   - The google/api proto includes (clone https://github.com/googleapis/googleapis)
+#   - buf (https://buf.build/docs/installation) — the only tool needed; the
+#     protoc-gen-php and grpc-php plugins are pulled from the Buf Schema Registry.
 #
-# Usage (run from the repo root):
+# The plugin versions are pinned to match the `google/protobuf: ^3.25` runtime
+# declared in composer.json. protocolbuffers/php:v25.1 emits the pre-4.x codegen
+# style (Google\Protobuf\Internal\RepeatedField, GPBUtil::checkX) that the 3.25
+# runtime expects. Bump these together with the composer constraint.
+#
+# Usage (run from anywhere):
 #   clients/php/generate.sh
-#
-# The script places all generated files under clients/php/src/Proto/.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PROTO_FILE="$REPO_ROOT/proto/filedb.proto"
 OUT_DIR="$SCRIPT_DIR/src/Proto"
 
-# Find grpc_php_plugin (try common locations)
-GRPC_PHP_PLUGIN="${GRPC_PHP_PLUGIN:-$(which grpc_php_plugin 2>/dev/null || true)}"
-if [[ -z "$GRPC_PHP_PLUGIN" ]]; then
-  echo "ERROR: grpc_php_plugin not found. Set GRPC_PHP_PLUGIN=/path/to/grpc_php_plugin" >&2
+PROTOBUF_PHP_VERSION="v25.1"
+GRPC_PHP_VERSION="v1.62.0"
+
+if ! command -v buf >/dev/null 2>&1; then
+  echo "ERROR: buf not found. Install it: https://buf.build/docs/installation" >&2
   exit 1
 fi
 
-# Find google API proto includes (required for google/api/annotations.proto)
-GOOGLE_APIS_DIR="${GOOGLE_APIS_DIR:-}"
-if [[ -z "$GOOGLE_APIS_DIR" ]]; then
-  # Try common locations
-  for d in /usr/local/include /usr/include "$REPO_ROOT/third_party/googleapis"; do
-    if [[ -f "$d/google/api/annotations.proto" ]]; then
-      GOOGLE_APIS_DIR="$d"
-      break
-    fi
-  done
-fi
+# Generate from a temp workspace rooted at the proto directory so that the
+# generated GPBMetadata class is \GPBMetadata\Filedb (file path "filedb.proto"),
+# matching the vendored layout.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+cp "$REPO_ROOT/proto/filedb.proto" "$WORK/filedb.proto"
 
-PROTO_PATH_FLAGS="-I $REPO_ROOT/proto"
-if [[ -n "$GOOGLE_APIS_DIR" ]]; then
-  PROTO_PATH_FLAGS="$PROTO_PATH_FLAGS -I $GOOGLE_APIS_DIR"
-fi
+cat > "$WORK/buf.yaml" <<'YAML'
+version: v2
+modules:
+  - path: .
+deps:
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - DEFAULT
+YAML
 
+cat > "$WORK/buf.gen.yaml" <<YAML
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/php:${PROTOBUF_PHP_VERSION}
+    out: OUT_PLACEHOLDER
+  - remote: buf.build/grpc/php:${GRPC_PHP_VERSION}
+    out: OUT_PLACEHOLDER
+YAML
+sed -i "s#OUT_PLACEHOLDER#$OUT_DIR#g" "$WORK/buf.gen.yaml"
+
+echo "Regenerating PHP stubs into $OUT_DIR ..."
+rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
+( cd "$WORK" && buf dep update >/dev/null 2>&1 || true; buf generate --template buf.gen.yaml )
 
-echo "Generating PHP stubs from $PROTO_FILE ..."
-protoc $PROTO_PATH_FLAGS \
-  --php_out="$OUT_DIR" \
-  --grpc_out="$OUT_DIR" \
-  --plugin=protoc-gen-grpc="$GRPC_PHP_PLUGIN" \
-  "$PROTO_FILE"
-
-echo "Done. Stubs written to $OUT_DIR"
-echo ""
-echo "Run 'composer install' in $SCRIPT_DIR to install dependencies."
+echo "Done. Run 'composer install' in $SCRIPT_DIR to install dependencies."

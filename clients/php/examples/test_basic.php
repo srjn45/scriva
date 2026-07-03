@@ -127,6 +127,23 @@ echo "Delete #$id2: " . ($deleted ? 'ok' : 'not found') . "\n";
 $stats = $db->stats(COLLECTION);
 echo 'Stats: ' . json_encode($stats) . "\n";
 
+// ── Compaction ───────────────────────────────────────────────────────────────
+$compacted = $db->compact(COLLECTION);
+echo 'Compact: ' . ($compacted ? 'ok' : 'failed') . "\n";
+
+// ── Per-record TTL ───────────────────────────────────────────────────────────
+$ttlId = $db->insert(COLLECTION, ['name' => 'Ephemeral', 'role' => 'temp'], ttlSeconds: 3600);
+echo "Inserted record #$ttlId with a 3600s TTL\n";
+// update with ttlSeconds: 0 is sticky (keeps the existing deadline)
+$db->update(COLLECTION, $ttlId, ['name' => 'Ephemeral', 'role' => 'temp', 'touched' => true]);
+echo "Updated the TTL record (deadline preserved)\n";
+
+// ── Snapshot (whole-database backup) ─────────────────────────────────────────
+$backup = sys_get_temp_dir() . '/filedb_php_snapshot.tar.gz';
+$bytes = $db->snapshotToFile($backup);
+echo "Snapshot: wrote $bytes bytes to $backup\n";
+@unlink($backup);
+
 // ── Drop collection ──────────────────────────────────────────────────────────
 $ok = $db->dropCollection(COLLECTION);
 echo 'dropCollection: ' . ($ok ? 'ok' : 'failed') . "\n";
