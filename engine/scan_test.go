@@ -110,6 +110,52 @@ func TestScanStream_OrderByAscendingDescending(t *testing.T) {
 	}
 }
 
+// TestScanStream_OrderByNumericNotLexical pins the acceptance bar: ordering by a
+// numeric field sorts 2 before 10 (numeric), not the lexical "10" < "2" that a
+// naive string sort would produce — and descending reverses it.
+func TestScanStream_OrderByNumericNotLexical(t *testing.T) {
+	col := openTestCollection(t)
+	for _, n := range []float64{10, 2, 100, 9, 1} {
+		col.Insert(map[string]any{"score": n})
+	}
+	asc := collectScores(t, col, ScanOptions{OrderBy: "score"})
+	if !sortedFloatsEqual(asc, []float64{1, 2, 9, 10, 100}) {
+		t.Errorf("ascending numeric: got %v want [1 2 9 10 100]", asc)
+	}
+	desc := collectScores(t, col, ScanOptions{OrderBy: "score", Descending: true})
+	if !sortedFloatsEqual(desc, []float64{100, 10, 9, 2, 1}) {
+		t.Errorf("descending numeric: got %v want [100 10 9 2 1]", desc)
+	}
+}
+
+// TestScanStream_OrderByStrings exercises the lexical branch of the shared
+// comparison: string fields sort in byte order, ascending and descending.
+func TestScanStream_OrderByStrings(t *testing.T) {
+	col := openTestCollection(t)
+	for _, name := range []string{"charlie", "alice", "bob"} {
+		col.Insert(map[string]any{"name": name})
+	}
+	collect := func(opts ScanOptions) []string {
+		t.Helper()
+		var out []string
+		if err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
+			out = append(out, r.Data["name"].(string))
+			return nil
+		}); err != nil {
+			t.Fatalf("ScanStream: %v", err)
+		}
+		return out
+	}
+	asc := collect(ScanOptions{OrderBy: "name"})
+	if len(asc) != 3 || asc[0] != "alice" || asc[1] != "bob" || asc[2] != "charlie" {
+		t.Errorf("ascending strings: got %v want [alice bob charlie]", asc)
+	}
+	desc := collect(ScanOptions{OrderBy: "name", Descending: true})
+	if len(desc) != 3 || desc[0] != "charlie" || desc[1] != "bob" || desc[2] != "alice" {
+		t.Errorf("descending strings: got %v want [charlie bob alice]", desc)
+	}
+}
+
 // TestScanStream_TopKMatchesFullSort checks that a bounded top-K query returns
 // exactly the same page a full sort would.
 func TestScanStream_TopKMatchesFullSort(t *testing.T) {

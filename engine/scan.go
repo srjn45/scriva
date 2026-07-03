@@ -212,13 +212,15 @@ func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
 }
 
 // orderLess returns a total ordering over ScanResults by the given field. The
-// primary comparison mirrors the legacy semantics — numeric when both values
-// are float64, otherwise a string comparison of their formatted values — and is
-// reversed when desc is set. Ties break on ascending id so results are
-// deterministic and a bounded top-K agrees with a full sort.
+// primary comparison is query.Compare — the exact same type-aware comparison
+// the filter operators (gt/gte/lt/lte) use, so a sort and a query never
+// disagree: numbers order numerically (2 < 10, not the lexical "10" < "2") and
+// strings lexically. The result is reversed when desc is set. Ties break on
+// ascending id so results are deterministic and a bounded top-K agrees with a
+// full sort.
 func orderLess(field string, desc bool) func(a, b ScanResult) bool {
 	return func(a, b ScanResult) bool {
-		c := compareValues(a.Data[field], b.Data[field])
+		c := query.Compare(a.Data[field], b.Data[field])
 		if desc {
 			c = -c
 		}
@@ -226,33 +228,6 @@ func orderLess(field string, desc bool) func(a, b ScanResult) bool {
 			return c < 0
 		}
 		return a.ID < b.ID
-	}
-}
-
-// compareValues returns -1, 0, or 1 ordering av before/equal/after bv, using a
-// numeric comparison when both are float64 and a formatted-string comparison
-// otherwise.
-func compareValues(av, bv any) int {
-	if af, ok := av.(float64); ok {
-		if bf, ok := bv.(float64); ok {
-			switch {
-			case af < bf:
-				return -1
-			case af > bf:
-				return 1
-			default:
-				return 0
-			}
-		}
-	}
-	as, bs := fmt.Sprintf("%v", av), fmt.Sprintf("%v", bv)
-	switch {
-	case as < bs:
-		return -1
-	case as > bs:
-		return 1
-	default:
-		return 0
 	}
 }
 

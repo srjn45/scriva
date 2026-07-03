@@ -85,13 +85,13 @@ func (f *FieldFilter) Match(record map[string]any) bool {
 	case OpNeq:
 		return !equal(fieldVal, cmp)
 	case OpGt:
-		return compare(fieldVal, cmp) > 0
+		return Compare(fieldVal, cmp) > 0
 	case OpGte:
-		return compare(fieldVal, cmp) >= 0
+		return Compare(fieldVal, cmp) >= 0
 	case OpLt:
-		return compare(fieldVal, cmp) < 0
+		return Compare(fieldVal, cmp) < 0
 	case OpLte:
-		return compare(fieldVal, cmp) <= 0
+		return Compare(fieldVal, cmp) <= 0
 	case OpContains:
 		return strings.Contains(fmt.Sprintf("%v", fieldVal), fmt.Sprintf("%v", cmp))
 	case OpRegex:
@@ -133,9 +133,11 @@ func equal(a, b any) bool {
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
-// compare returns -1, 0, or 1 for a < b, a == b, a > b following the
-// comparison semantics documented above.
-func compare(a, b any) int {
+// Compare returns -1, 0, or 1 for a < b, a == b, a > b following the
+// comparison semantics documented above. It is the single comparison used by
+// both filter operators (gt/gte/lt/lte) and by order_by sorting in the engine,
+// so a query and a sort always agree on how two values relate.
+func Compare(a, b any) int {
 	af, aIsNum := asNumber(a)
 	bf, bIsNum := asNumber(b)
 	if aIsNum && bIsNum {
