@@ -56,6 +56,10 @@ type Config struct {
 
 	// Watch
 	WatchBufferSize int `yaml:"watch_buffer_size"` // per-subscriber event buffer (default: 64)
+
+	// Logging
+	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
+	LogFormat string `yaml:"log_format"` // json|text (default: text)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -74,6 +78,8 @@ func DefaultConfig() Config {
 		TxTimeout:       5 * time.Minute,
 		WatchBufferSize: engine.DefaultWatchBufferSize,
 		DefaultTTL:      0,
+		LogLevel:        "info",
+		LogFormat:       "text",
 	}
 }
 
@@ -110,6 +116,8 @@ type fileConfig struct {
 	TxTimeout       string         `yaml:"tx_timeout"`
 	WatchBufferSize int            `yaml:"watch_buffer_size"`
 	DefaultTTL      string         `yaml:"default_ttl"`
+	LogLevel        string         `yaml:"log_level"`
+	LogFormat       string         `yaml:"log_format"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -141,6 +149,8 @@ func LoadConfigFile(path string) (Config, error) {
 		TxTimeout:       defaults.TxTimeout.String(),
 		WatchBufferSize: defaults.WatchBufferSize,
 		DefaultTTL:      defaults.DefaultTTL.String(),
+		LogLevel:        defaults.LogLevel,
+		LogFormat:       defaults.LogFormat,
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -187,5 +197,7 @@ func LoadConfigFile(path string) (Config, error) {
 		TxTimeout:       txTimeout,
 		WatchBufferSize: fc.WatchBufferSize,
 		DefaultTTL:      defaultTTL,
+		LogLevel:        fc.LogLevel,
+		LogFormat:       fc.LogFormat,
 	}, nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -115,6 +114,10 @@ func serveCmd() *cobra.Command {
 						merged.TLSCert = cfg.TLSCert
 					case "tls-key":
 						merged.TLSKey = cfg.TLSKey
+					case "log-level":
+						merged.LogLevel = cfg.LogLevel
+					case "log-format":
+						merged.LogFormat = cfg.LogFormat
 					}
 				})
 				cfg = merged
@@ -141,6 +144,8 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "Prometheus metrics listen address (empty = disabled)")
 	f.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "Path to TLS certificate PEM file (enables TLS when set with --tls-key)")
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
+	f.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
+	f.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format: json|text")
 
 	return cmd
 }
@@ -151,6 +156,13 @@ func serve(cfg server.Config, configFile string) error {
 	case engine.SyncModeNone, engine.SyncModeAlways, engine.SyncModeInterval:
 	default:
 		return fmt.Errorf("invalid --sync mode %q (want none|always|interval)", cfg.SyncMode)
+	}
+
+	// Structured logger for the server layer. Built before anything else so a
+	// bad --log-level/--log-format fails loudly at startup.
+	logger, err := server.NewLogger(os.Stderr, cfg.LogLevel, cfg.LogFormat)
+	if err != nil {
+		return err
 	}
 
 	// Set up Prometheus metrics.
@@ -167,7 +179,7 @@ func serve(cfg server.Config, configFile string) error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	log.Printf("filedb: data dir=%q", cfg.DataDir)
+	logger.Info("database opened", "data_dir", cfg.DataDir)
 
 	// Register the per-collection gauge collector.
 	metrics.NewDBCollector(reg, func() []metrics.CollectionStats {
@@ -194,9 +206,9 @@ func serve(cfg server.Config, configFile string) error {
 		metricsMux.Handle("/metrics", metrics.Handler(reg))
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux}
 		go func() {
-			log.Printf("filedb: metrics listening on %s/metrics", cfg.MetricsAddr)
+			logger.Info("metrics listening", "addr", cfg.MetricsAddr+"/metrics")
 			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Printf("filedb: metrics server error: %v", err)
+				logger.Error("metrics server error", "err", err)
 			}
 		}()
 	}
@@ -213,7 +225,7 @@ func serve(cfg server.Config, configFile string) error {
 		// The REST gateway dials gRPC on loopback; skip verification for this
 		// internal hop since the cert may be self-signed.
 		restDialCreds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
-		log.Printf("filedb: TLS enabled (cert=%s)", cfg.TLSCert)
+		logger.Info("TLS enabled", "cert", cfg.TLSCert)
 	} else {
 		serverCreds = insecure.NewCredentials()
 		restDialCreds = insecure.NewCredentials()
@@ -228,62 +240,78 @@ func serve(cfg server.Config, configFile string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("filedb: auth enabled with %d API key(s)", len(keys))
+	logger.Info("auth enabled", "keys", len(keys))
+
+	// Shared interceptors: auth first (resolves the principal onto the context),
+	// then structured request logging (reads that principal), then metrics.
+	authUnary, authStream := authn.Interceptors()
+	logUnary, logStream := server.LoggingInterceptors(logger)
+	unaryChain := grpc.ChainUnaryInterceptor(authUnary, logUnary, metricsUnaryInterceptor(m))
+	streamChain := grpc.ChainStreamInterceptor(authStream, logStream)
+
+	// gRPC health service (grpc.health.v1.Health). Shared across both servers;
+	// marked SERVING once the listeners are up and NOT_SERVING on shutdown.
+	healthSvc := server.NewHealthService()
 
 	// TCP gRPC server — uses configurable TLS credentials.
-	unary, stream := authn.Interceptors()
-	grpcMetrics := grpc.UnaryInterceptor(chainUnary(unary, metricsUnaryInterceptor(m)))
 	grpcSrv := grpc.NewServer(
-		grpcMetrics,
-		grpc.StreamInterceptor(stream),
+		unaryChain,
+		streamChain,
 		grpc.Creds(serverCreds),
 	)
 	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout)
 	pb.RegisterFileDBServer(grpcSrv, tcpAPI)
+	healthSvc.Register(grpcSrv)
 
 	// TCP listener for gRPC.
 	tcpLn, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		return fmt.Errorf("grpc tcp listen %q: %w", cfg.GRPCAddr, err)
 	}
-	log.Printf("filedb: gRPC listening on %s", cfg.GRPCAddr)
+	logger.Info("gRPC listening", "addr", cfg.GRPCAddr)
 
 	// Unix socket gRPC server — always insecure (local-only transport).
 	unixGrpcSrv := grpc.NewServer(
-		grpcMetrics,
-		grpc.StreamInterceptor(stream),
+		unaryChain,
+		streamChain,
 		grpc.Creds(insecure.NewCredentials()),
 	)
 	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout)
 	pb.RegisterFileDBServer(unixGrpcSrv, unixAPI)
+	healthSvc.Register(unixGrpcSrv)
 
 	_ = os.Remove(cfg.UnixSocket)
 	unixLn, err := net.Listen("unix", cfg.UnixSocket)
 	if err != nil {
-		log.Printf("filedb: unix socket unavailable (%v), skipping", err)
+		logger.Warn("unix socket unavailable, skipping", "err", err)
 	} else {
-		log.Printf("filedb: gRPC unix socket at %s", cfg.UnixSocket)
+		logger.Info("gRPC unix socket", "path", cfg.UnixSocket)
 		go func() { _ = unixGrpcSrv.Serve(unixLn) }()
 	}
+
+	// Readiness: the process is ready when the DB is open and its data directory
+	// accepts writes. Liveness (/healthz) is unconditional.
+	ready := func() error { return server.CheckDataDirWritable(cfg.DataDir) }
 
 	// REST gateway dials the TCP gRPC server using the matching credentials.
 	ctx, cancelGW := context.WithCancel(context.Background())
 	defer cancelGW()
 
-	restHandler, err := server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds)
+	restHandler, err := server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds, ready)
 	if err != nil {
 		return fmt.Errorf("rest gateway: %w", err)
 	}
 	restSrv := &http.Server{Addr: cfg.RESTAddr, Handler: restHandler}
 	go func() {
-		log.Printf("filedb: REST listening on %s", cfg.RESTAddr)
+		logger.Info("REST listening", "addr", cfg.RESTAddr)
 		if err := restSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("filedb: REST server error: %v", err)
+			logger.Error("REST server error", "err", err)
 		}
 	}()
 
-	// Start gRPC (TCP).
+	// Start gRPC (TCP) and mark the server SERVING now that listeners are up.
 	go func() { _ = grpcSrv.Serve(tcpLn) }()
+	healthSvc.SetServing()
 
 	// Hot-reload API keys on SIGHUP (rotation without a restart). Only useful
 	// when keys come from a config file; the startup --api-key is preserved.
@@ -294,20 +322,20 @@ func serve(cfg server.Config, configFile string) error {
 			for range hup {
 				newCfg, err := server.LoadConfigFile(configFile)
 				if err != nil {
-					log.Printf("filedb: key reload failed (parse %s): %v", configFile, err)
+					logger.Error("key reload failed (parse)", "file", configFile, "err", err)
 					continue
 				}
 				newCfg.APIKey = cfg.APIKey // preserve the startup/CLI legacy key
 				newKeys, err := buildKeys(newCfg)
 				if err != nil {
-					log.Printf("filedb: key reload failed: %v", err)
+					logger.Error("key reload failed", "err", err)
 					continue
 				}
 				if err := authn.Reload(newKeys); err != nil {
-					log.Printf("filedb: key reload rejected: %v", err)
+					logger.Error("key reload rejected", "err", err)
 					continue
 				}
-				log.Printf("filedb: reloaded %d API key(s) from %s", len(newKeys), configFile)
+				logger.Info("reloaded API keys", "keys", len(newKeys), "file", configFile)
 			}
 		}()
 	}
@@ -316,7 +344,12 @@ func serve(cfg server.Config, configFile string) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("filedb: shutting down...")
+	logger.Info("shutting down")
+
+	// Flip health to NOT_SERVING first so load balancers stop routing new work,
+	// then drain in-flight RPCs via GracefulStop.
+	healthSvc.SetNotServing()
+	healthSvc.Shutdown()
 
 	grpcSrv.GracefulStop()
 	unixGrpcSrv.GracefulStop()
@@ -331,7 +364,7 @@ func serve(cfg server.Config, configFile string) error {
 		_ = os.Remove(cfg.UnixSocket)
 	}
 
-	log.Println("filedb: stopped")
+	logger.Info("stopped")
 	return nil
 }
 
@@ -355,15 +388,6 @@ func buildKeys(cfg server.Config) ([]auth.Key, error) {
 		keys = append(keys, auth.Key{Key: cfg.APIKey, Name: "default", Scope: auth.ScopeReadWrite})
 	}
 	return keys, nil
-}
-
-// chainUnary returns a single UnaryServerInterceptor that runs first, then second.
-func chainUnary(first, second grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		return first(ctx, req, info, func(ctx context.Context, req any) (any, error) {
-			return second(ctx, req, info, handler)
-		})
-	}
 }
 
 // metricsUnaryInterceptor records request duration and gRPC status code.

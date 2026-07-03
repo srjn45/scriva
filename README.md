@@ -70,6 +70,8 @@ Key properties:
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
+- **Structured logging** — leveled `log/slog` output (`--log-level`, `--log-format json|text`); one record per RPC with method, principal, duration, and status code
+- **Health & readiness** — standard `grpc.health.v1.Health` service (SERVING → NOT_SERVING on graceful shutdown) plus HTTP `/healthz` (liveness) and `/readyz` (DB open + data dir writable) probes
 - **Single binary** — no JVM, no Python, no config files required to get started
 - **Web admin UI** — browser-based collection and record manager at `clients/web/` (React + Vite, talks to the REST gateway)
 
@@ -151,7 +153,7 @@ covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
 
 | Document | Description |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics |
+| [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics, logging, health probes |
 | [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, secondary indexes, crash safety |
 | [Embedding](docs/embedding.md) | Use FileDB as an in-process Go library: `filedb`/`engine` API, keyed ops, CAS, Watch, migration, versioning policy |
 

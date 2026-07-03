@@ -594,6 +594,24 @@ All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors 
 
 **Rotation.** The active key set lives behind an `atomic.Pointer`; sending the server `SIGHUP` re-reads the config file and swaps in the new set atomically, with in-flight requests finishing against the set they started on. Keys can therefore be added, removed, or re-scoped without a restart.
 
+### Interceptor pipeline
+
+Both gRPC servers install the same interceptor chain, in this order:
+
+```
+auth → logging → metrics → handler
+```
+
+Auth runs first: on success it resolves the principal and attaches it to the request context (via a stream wrapper for streaming RPCs). Logging runs next so it can read that principal; it times the handler and, once the call returns, emits one structured record. Metrics is innermost and records the Prometheus request histogram. Because logging and metrics sit *inside* auth, a call rejected by auth is not double-counted as a served request.
+
+### Request logging
+
+The server owns a single `*slog.Logger` (`log/slog`, no third-party dependency), built from `--log-level` and `--log-format`. The logging interceptor (`server/logging.go`) writes exactly one record per RPC — `method`, `principal`, `duration`, `code` — at `info` for success and `error` for failure, letting an operator filter noise with the level while still capturing every error. The **engine package never imports the logger**: it stays embeddable and dependency-free, surfacing anything it needs to report through the existing `engine.CollectionConfig` hooks (the same rule metrics follows via `OnCompaction`), and `make deps-check` enforces this.
+
+### Health & readiness
+
+The standard `grpc.health.v1.Health` service (`server/health.go`) is registered on both the TCP and Unix gRPC servers via a shared `HealthService`. It starts `NOT_SERVING`, is marked `SERVING` once the listeners are accepting connections, and is flipped back to `NOT_SERVING` at the start of graceful shutdown — so a load balancer stops routing new work while `GracefulStop` drains the in-flight RPCs. Two HTTP probes are registered directly on the grpc-gateway mux: `GET /healthz` (liveness — `200` whenever the process can answer) and `GET /readyz` (readiness — `200` when the DB is open and the data directory accepts a probe write, else `503` with the reason). Readiness is deliberately data-plane aware: a full or read-only data volume makes the node *unready* without making it *dead*, so it is pulled from rotation rather than restarted.
+
 ---
 
 ## Web Admin UI

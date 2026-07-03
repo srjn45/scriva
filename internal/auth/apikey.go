@@ -29,6 +29,40 @@ type principal struct {
 	scope Scope
 }
 
+// Principal is the authenticated identity resolved from a valid API key. It is
+// stored on the request context after a successful authorization so downstream
+// interceptors (logging, audit) can attribute the RPC to a principal.
+type Principal struct {
+	Name  string
+	Scope Scope
+}
+
+// principalContextKey is the context key under which the resolved Principal is
+// stored.
+type principalContextKey struct{}
+
+// PrincipalFromContext returns the authenticated principal the auth interceptor
+// attached to ctx. ok is false when auth is disabled or the RPC was not
+// authenticated (no principal was resolved).
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(principalContextKey{}).(Principal)
+	return p, ok
+}
+
+// withPrincipal returns a copy of ctx carrying p.
+func withPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, p)
+}
+
+// wrappedServerStream overrides Context so a stream interceptor can thread a
+// derived context (carrying the resolved principal) down to the handler.
+type wrappedServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (w *wrappedServerStream) Context() context.Context { return w.ctx }
+
 type keyEntry struct {
 	key       []byte
 	principal principal
@@ -120,45 +154,48 @@ func (a *Authenticator) Reload(keys []Key) error {
 // authentication and scoping using this Authenticator's current key set.
 func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
 	unary := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := a.authorize(ctx, info.FullMethod); err != nil {
+		ctx, err := a.authorize(ctx, info.FullMethod)
+		if err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
 	}
 	stream := func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := a.authorize(ss.Context(), info.FullMethod); err != nil {
+		ctx, err := a.authorize(ss.Context(), info.FullMethod)
+		if err != nil {
 			return err
 		}
-		return handler(srv, ss)
+		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx})
 	}
 	return unary, stream
 }
 
 // authorize validates the request's API key and checks that the resolved
-// principal's scope permits fullMethod.
-func (a *Authenticator) authorize(ctx context.Context, fullMethod string) error {
+// principal's scope permits fullMethod. On success it returns a context
+// carrying the resolved Principal (unchanged when auth is disabled).
+func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (context.Context, error) {
 	ks := a.keys.Load()
 	if !ks.enabled() {
-		return nil // auth disabled
+		return ctx, nil // auth disabled
 	}
 
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "missing metadata")
+		return ctx, status.Error(codes.Unauthenticated, "missing metadata")
 	}
 	vals := md.Get(metadataKey)
 	if len(vals) == 0 {
-		return status.Errorf(codes.Unauthenticated, "missing %s", metadataKey)
+		return ctx, status.Errorf(codes.Unauthenticated, "missing %s", metadataKey)
 	}
 
 	p, ok := ks.lookup([]byte(vals[0]))
 	if !ok {
-		return status.Error(codes.Unauthenticated, "invalid api key")
+		return ctx, status.Error(codes.Unauthenticated, "invalid api key")
 	}
 
 	if methodRequiresWrite(fullMethod) && p.scope != ScopeReadWrite {
-		return status.Errorf(codes.PermissionDenied,
+		return ctx, status.Errorf(codes.PermissionDenied,
 			"api key %q has read-only scope; %s requires read-write", p.name, fullMethod)
 	}
-	return nil
+	return withPrincipal(ctx, Principal{Name: p.name, Scope: p.scope}), nil
 }

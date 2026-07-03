@@ -348,8 +348,8 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 ## Checklist
 
 **v0.6.0 — Operability & observability**
-- [ ] O1 — structured, leveled logging (`slog`)
-- [ ] O2 — health & readiness (gRPC health + REST probes)
+- [x] O1 — structured, leveled logging (`slog`)
+- [x] O2 — health & readiness (gRPC health + REST probes)
 - [ ] O3 — request backpressure & limits
 - [ ] O4 — OpenTelemetry tracing (opt-in)
 - [ ] O5 — slow-query log & richer stats
