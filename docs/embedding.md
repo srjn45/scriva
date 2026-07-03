@@ -346,3 +346,107 @@ go run ./examples/watch
 
 There is also an `Example_watch` in the `engine` package
 (`engine/example_watch_test.go`) exercised by `make test`.
+
+---
+
+## Migrating an existing JSON store
+
+When you already have data on disk — a directory of per-entity JSON files, an
+append log, a `context.json` — you migrate it into FileDB by **streaming NDJSON
+into `Collection.LoadJSONL`**. One reader, one call per collection:
+
+```go
+func (c *engine.Collection) LoadJSONL(r io.Reader, keyField string) (n int, err error)
+```
+
+`LoadJSONL` reads newline-delimited JSON (one record object per line) from `r`
+and inserts every record through the **normal write path** — each row is
+appended to a segment, added to the primary and every secondary index (including
+the unique `_key` index), emitted to any Watch subscribers, and covered by the
+collection's durability/sync mode, exactly as an individual `Insert` /
+`InsertWithKey` would be. There is no fast side-door that skips indexing or
+durability; a bulk load and a run of single writes leave identical state on disk.
+
+- **Unkeyed** (`keyField == ""`): each record gets an engine-assigned `uint64`
+  id, like `Insert`. A record carrying the reserved `_key` field is rejected
+  with `engine.ErrReservedField`.
+- **Keyed** (`keyField != ""`): the named field is read from each record and used
+  as that record's caller-supplied string key, like `InsertWithKey`. The value
+  must be present and a string. A key already held by another record — whether
+  already on disk or appearing twice within the same load — is rejected with
+  `engine.ErrDuplicateKey`.
+
+### Error semantics — the load is atomic
+
+`LoadJSONL` validates the entire input **before writing anything**, then applies
+the whole batch under a single write-lock critical section. Any failure aborts
+the load with **no partial application** — the segments and indexes are left
+exactly as they were:
+
+- a malformed JSON line → error naming the 1-based physical **line number**;
+- a missing or non-string key field (keyed load) → error with the line number;
+- a smuggled reserved `_key` field → `engine.ErrReservedField`;
+- a duplicate key → `engine.ErrDuplicateKey`.
+
+Blank and whitespace-only lines are skipped, so a trailing newline is not an
+error. The return value `n` is the number of records loaded (`0` on any error).
+Match the typed errors with `errors.Is`. Because the load is all-or-nothing, an
+importer can safely retry a failed batch after fixing the offending line without
+worrying about double-inserting the rows that preceded it.
+
+### The division of labour
+
+**The importer is warden-side, not FileDB's job.** FileDB does not know the shape
+of your old store — where the files live, how a session file maps to records, or
+which field is the natural key. That translation is the migration script's
+responsibility. FileDB provides the **destination contract**: `LoadJSONL`, the
+keyed/unkeyed choice, and the atomic error semantics above. A migration tool
+walks the old layout, emits NDJSON, and streams it into the right collection.
+
+### Worked example: the warden layout
+
+warden's on-disk store maps onto a handful of FileDB collections. For each, the
+importer produces an NDJSON stream and picks a `keyField`:
+
+**Per-file sessions → a `sessions` collection, keyed by session id.** Each
+session file becomes one line. If a session file embeds an `Events` array, the
+importer **splits it out**: the session record drops (or keeps a summary of) the
+array, and each element becomes its own line in a separate `events` stream.
+
+```go
+// One session per line, keyed on the session id field.
+sessions := db.MustCollection("sessions")
+n, err := sessions.LoadJSONL(sessionsNDJSON, "id")
+
+// Each embedded event, flattened to its own keyed record. The importer stamps a
+// stable per-event id (e.g. "<session>:<seq>") so re-running the migration is
+// idempotent — a second run hits ErrDuplicateKey instead of duplicating rows.
+events := db.MustCollection("events")
+n, err = events.LoadJSONL(eventsNDJSON, "event_id")
+```
+
+**Mailbox files → a `messages` collection.** Each queued message is one line.
+Messages usually carry their own id, so key on it; if a message has no natural
+identity, load unkeyed (`""`) and let FileDB assign the `uint64` id:
+
+```go
+messages := db.MustCollection("messages")
+n, err := messages.LoadJSONL(messagesNDJSON, "message_id") // or "" for engine ids
+```
+
+**`context.json` → a keyed `context` collection.** A single file that is really a
+map of key → value becomes one line per entry, keyed on the entry's key field, so
+the embedded API can address each with `FindByKey` / `Upsert` afterwards:
+
+```go
+// context.json: {"model":{…},"budget":{…}} → one NDJSON line per top-level key:
+//   {"key":"model","value":{…}}
+//   {"key":"budget","value":{…}}
+context := db.MustCollection("context")
+n, err := context.LoadJSONL(contextNDJSON, "key")
+```
+
+Producing those NDJSON streams (walking the directories, splitting `Events`,
+choosing the key fields, stamping idempotent ids) is the warden-side importer's
+work. Everything below the `LoadJSONL` call — indexing, uniqueness enforcement,
+durability, Watch delivery, and the all-or-nothing guarantee — is FileDB's.

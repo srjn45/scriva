@@ -332,7 +332,7 @@ commit style, one PR per task. Commits must use the
 | T7 | QRY-3 count/exists | T4 (after T6) | ☑ done | [#30](https://github.com/srjn45/FileDBv2/pull/30) |
 | T8 | EMB-2 + OPS-1 façade | T5 | ☑ done | [#31](https://github.com/srjn45/FileDBv2/pull/31) |
 | T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/FileDBv2/pull/22) |
-| T10 | OPS-3 bulk load | T4 | ☐ todo | |
+| T10 | OPS-3 bulk load | T4 | ☑ done | [#PENDING](https://github.com/srjn45/FileDBv2/pull/PENDING) |
 | T11 | EMB-4 semver + docs | T2–T10 | ☐ todo | |
 
 Cross-referenced release-roadmap dependencies (no tasks here): QRY-1 → Q2,
