@@ -268,6 +268,27 @@ revision bumps and a normal update `WatchEvent` is emitted; the string key is
 preserved. Reads expose the revision through a `Record{ID, Key, Rev, Ts, Data}`
 struct returned by `Get`/`GetByKey`, and through `ScanResult.Rev`.
 
+### Key-based upsert
+
+`Upsert(key, data)` is a create-or-replace on a string key, for the many
+call sites that would otherwise do a get-then-branch (e.g. archiving a record to
+its final state). It runs the whole decision in one `c.mu.Lock` critical
+section, so concurrent upserts on the same key serialise cleanly with no lost
+updates:
+
+- The `_key` index is looked up under the write lock. If a live record carries
+  the key, the upsert appends an **update** (`rev+1`, preserving the id); if not,
+  it appends an **insert** (`rev 1`, a freshly assigned id) — the same revision
+  convention `InsertWithKey`/`UpdateByKey` follow.
+- The key is stamped into `_key` either way, so supplying `_key` inside `data` is
+  rejected with `ErrReservedField`, and unique indexes on other fields are still
+  enforced before the append.
+- It returns the resulting `Record{ID, Key, Rev, Ts, Data}` and emits the
+  matching `WatchEvent` — `OpInsert` for a create, `OpUpdate` for a replace.
+
+Because a replace is an ordinary update entry, the stale versions collapse on
+compaction to a single live line, exactly as with `UpdateByKey`.
+
 ---
 
 ## Change Feed (Watch)

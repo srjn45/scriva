@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/srjn45/filedbv2/store"
 )
 
 // KeyField is the reserved data field that stores a caller-supplied string
@@ -79,6 +81,91 @@ func (c *Collection) DeleteByKey(key string) error {
 		return err
 	}
 	return c.Delete(id)
+}
+
+// Upsert inserts data under key if no live record carries it, or replaces the
+// existing record's data if one does — in a single c.mu.Lock critical section,
+// so concurrent upserts on the same key serialise and cannot lose an update. The
+// key is stamped into the reserved _key field either way; supplying _key inside
+// data is rejected with ErrReservedField. Following the same revision convention
+// as InsertWithKey/UpdateByKey, an insert starts the record at revision 1 and a
+// replace bumps the current revision by one. It returns the resulting Record and
+// emits the matching Watch event (OpInsert or OpUpdate).
+func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
+	if _, ok := data[KeyField]; ok {
+		return Record{}, reservedFieldErr()
+	}
+	// Ensure the mandatory unique _key index exists before entering the critical
+	// section: ensureKeyIndex acquires c.mu (read) internally, so it must not run
+	// while we hold c.mu (write).
+	if err := c.ensureKeyIndex(); err != nil {
+		return Record{}, err
+	}
+
+	stamped := stampKey(data, key)
+	ts := time.Now().UTC()
+
+	c.mu.Lock()
+
+	// Resolve the key under the write lock so the present/absent decision and the
+	// append are atomic with respect to every other writer. IndexLookup takes
+	// sidxMu (read) after c.mu (write), matching the insert/update lock order, so
+	// there is no deadlock.
+	var (
+		id  uint64
+		rev uint64
+		op  store.Op
+		e   store.Entry
+	)
+	if ids, hit := c.IndexLookup(KeyField, key); hit && len(ids) > 0 {
+		if cur, ok := c.index.Get(ids[0]); ok {
+			id, rev, op = ids[0], cur.Rev+1, store.OpUpdate
+			e = store.NewUpdate(id, stamped)
+		}
+	}
+	if op == "" {
+		// No live record carries the key → insert a fresh one at revision 1.
+		id, rev, op = c.idSeq.Add(1), 1, store.OpInsert
+		e = store.NewInsert(id, stamped)
+	}
+	e.Ts = ts
+	e.Rev = rev
+
+	// Enforce unique indexes before writing so a rejected upsert appends nothing
+	// and mutates no index. The _key index never conflicts here (insert: no live
+	// record holds key; replace: the key maps to id itself), but other unique
+	// indexes on data fields still apply.
+	if err := c.sidxCheckUnique(id, stamped); err != nil {
+		c.mu.Unlock()
+		return Record{}, err
+	}
+	offset, err := c.active.Append(e)
+	if err != nil {
+		c.mu.Unlock()
+		return Record{}, fmt.Errorf("collection: upsert: %w", err)
+	}
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev})
+	if op == store.OpInsert {
+		c.sidxIndexEntry(id, stamped)
+	} else {
+		c.sidxUpdateEntry(id, stamped)
+	}
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return Record{}, fmt.Errorf("collection: upsert: %w", err)
+	}
+	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
+	c.mu.Unlock()
+
+	rec := Record{ID: id, Key: key, Rev: rev, Ts: ts, Data: stamped}
+	if needRotate {
+		if err := c.rotateSegment(); err != nil {
+			return rec, fmt.Errorf("collection: rotate after upsert: %w", err)
+		}
+	}
+
+	c.emit(WatchEvent{Op: op, ID: id, Data: stamped, Ts: ts})
+	return rec, nil
 }
 
 // ensureKeyIndex lazily creates the mandatory unique index on the reserved _key
