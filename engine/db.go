@@ -65,6 +65,38 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	return col, nil
 }
 
+// CollectionWithConfig returns the collection named name, opening it under cfg.
+// Unlike Collection (which never creates) and CreateCollection (which fails if
+// the collection already exists), this method is open-or-create: if the
+// collection is not open it is opened under cfg; if it is already open — including
+// collections Open discovered on disk and pre-opened under the DB's default
+// config — it is closed and reopened under cfg so a per-collection override (for
+// example SyncModeAlways on a ledger) actually takes effect. Reopening reloads
+// from disk, so no committed data is lost.
+//
+// It is the entry point the embedded façade (the filedb package) uses to give
+// each collection its own durability/compaction settings. The behavior of
+// Collection and CreateCollection is unchanged — this method is additive.
+func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collection, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if existing, ok := db.collections[name]; ok {
+		// Already open, possibly under a different (default) config. Close and
+		// reopen under the requested config so the override takes effect.
+		if err := existing.Close(); err != nil {
+			return nil, fmt.Errorf("db: reopen collection %q: %w", name, err)
+		}
+		delete(db.collections, name)
+	}
+	col, err := OpenCollection(name, db.dataDir, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("db: open collection %q: %w", name, err)
+	}
+	db.collections[name] = col
+	return col, nil
+}
+
 // DropCollection closes and deletes a collection and all its data.
 func (db *DB) DropCollection(name string) error {
 	db.mu.Lock()
