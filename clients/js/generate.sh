@@ -1,29 +1,18 @@
 #!/usr/bin/env bash
-# generate.sh — regenerate proto stubs using grpc-tools and grpc_tools_node_protoc_ts
+# generate.sh — refresh the vendored proto used by the client.
 #
-# Requirements (install as devDependencies if needed):
-#   npm install --save-dev grpc-tools grpc_tools_node_protoc_ts
-#
-# Output goes to src/proto/ — commit the results.
+# The client loads the schema dynamically at runtime with @grpc/proto-loader
+# (see src/client.ts), so there is no static stub codegen step: the only build
+# artifact it needs is a copy of the canonical proto. This script copies
+# ../../proto/filedb.proto into ./proto/ (alongside the vendored google/api
+# dependencies) so the published package is self-contained. Commit the result.
 
 set -euo pipefail
 
-PROTO_SRC="$(cd "$(dirname "$0")/../../proto" && pwd)"
-DEPS_DIR="$(cd "$(dirname "$0")/proto" && pwd)"
-OUT_DIR="$(cd "$(dirname "$0")/src/proto" && pwd)"
-PLUGIN="$(cd "$(dirname "$0")/node_modules/.bin" && pwd)/grpc_tools_node_protoc_plugin"
-TS_PLUGIN="$(cd "$(dirname "$0")/node_modules/.bin" && pwd)/protoc-gen-ts"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PROTO_SRC="$(cd "$HERE/../../proto" && pwd)"
+DEST_DIR="$HERE/proto"
 
-mkdir -p "$OUT_DIR"
+cp "$PROTO_SRC/filedb.proto" "$DEST_DIR/filedb.proto"
 
-npx grpc_tools_node_protoc \
-  --js_out=import_style=commonjs,binary:"$OUT_DIR" \
-  --grpc_out=grpc_js:"$OUT_DIR" \
-  --plugin=protoc-gen-grpc="$PLUGIN" \
-  --ts_out=grpc_js:"$OUT_DIR" \
-  --plugin=protoc-gen-ts="$TS_PLUGIN" \
-  -I "$PROTO_SRC" \
-  -I "$DEPS_DIR" \
-  "$PROTO_SRC/filedb.proto"
-
-echo "Done. Stubs written to $OUT_DIR"
+echo "Done. Vendored proto refreshed at $DEST_DIR/filedb.proto"

@@ -91,6 +91,10 @@ const db = FileDB.fromTlsCertPath(host, port, apiKey, '/path/to/ca.crt');
 const name: string      = await db.createCollection('col');
 const ok: boolean       = await db.dropCollection('col');
 const names: string[]   = await db.listCollections();
+
+// Optional per-collection default TTL (seconds) — records without their own TTL
+// expire after this long. Persisted; overrides the server-wide default.
+await db.createCollection('sessions', 3600);
 ```
 
 ---
@@ -123,6 +127,18 @@ const updatedId: string = await db.update('col', id, { field: 'new value' });
 
 // Delete — returns true if record existed
 const deleted: boolean = await db.delete('col', id);
+```
+
+Each write takes an optional trailing `ttlSeconds` argument. When greater than
+0 the record expires that many seconds from the write, overriding the
+collection default:
+
+```typescript
+await db.insert('col', { field: 'value' }, 60);          // expires in 60s
+await db.insertMany('col', [{ n: 1 }, { n: 2 }], 120);   // whole batch in 120s
+await db.update('col', id, { field: 'v' }, 30);          // reset expiry to 30s
+// ttlSeconds omitted (or 0): insert/insertMany apply the collection default;
+// update leaves any existing deadline untouched (a plain update is sticky).
 ```
 
 `DBRecord` shape:
@@ -187,6 +203,31 @@ Break out of the `for await` loop to stop watching.
 ```typescript
 const s = await db.stats('col');
 // s.collection, s.record_count, s.segment_count, s.dirty_entries, s.size_bytes (all strings)
+```
+
+---
+
+### Maintenance
+
+```typescript
+// Force a synchronous compaction pass — merges/deduplicates sealed segments and
+// reclaims space from deleted or expired records. Resolves true on success.
+const ok: boolean = await db.compact('col');
+```
+
+---
+
+### Backup
+
+```typescript
+// Stream a consistent gzip snapshot of the whole database straight to a file.
+// Resolves with the number of bytes written; restore with `tar xzf backup.tar.gz`.
+const bytes: number = await db.snapshotToFile('backup.tar.gz');
+
+// Or consume the raw gzip byte chunks yourself (Snapshot is server-streaming):
+for await (const chunk of db.snapshot()) {
+  // chunk: Buffer
+}
 ```
 
 ---
