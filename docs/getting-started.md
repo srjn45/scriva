@@ -68,6 +68,8 @@ All flags and their defaults:
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
 | `--default-ttl` | `0` | Default expiry applied to inserted records (`0` = never expire), e.g. `24h` |
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
+| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, or `error` |
+| `--log-format` | `text` | Log output format: `json` or `text` |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -92,6 +94,8 @@ sync_interval: 1s           # used when sync_mode: interval
 tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
 default_ttl: 0              # expire inserted records after this long (0 = never), e.g. 24h
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
+log_level: info             # debug | info | warn | error
+log_format: text            # json | text
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -1094,3 +1098,68 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 ```
+---
+
+## Structured logging
+
+FileDB logs through the standard library [`log/slog`](https://pkg.go.dev/log/slog).
+Every gRPC request produces exactly one structured record once it returns,
+carrying the method, the authenticated principal, the wall-clock duration, and
+the gRPC status code. Successful calls log at `info`; failed calls at `error`.
+
+Two flags control output:
+
+| Flag | Default | Values | Description |
+|---|---|---|---|
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` | Minimum level emitted |
+| `--log-format` | `text` | `json`, `text` | Handler format (JSON for machines, text for humans) |
+
+```bash
+# machine-parseable JSON logs at info and above
+filedb serve --data ./data --log-format json --log-level info
+```
+
+A JSON request record looks like:
+
+```json
+{"time":"2026-07-03T12:00:00Z","level":"INFO","msg":"grpc request","method":"/filedb.v1.FileDB/Insert","principal":"default","duration":"412.7µs","code":"OK"}
+```
+
+The `principal` is the `name` of the API key that authenticated the call (or
+`anonymous` when authentication is disabled). Logs are written to standard error.
+
+---
+
+## Health & readiness probes
+
+FileDB exposes both a standard gRPC health service and two HTTP probes so load
+balancers and orchestrators (e.g. Kubernetes) can gate traffic.
+
+### gRPC health
+
+The standard [`grpc.health.v1.Health`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)
+service is registered on both the TCP and Unix gRPC servers. It reports
+`SERVING` once the listeners are up and flips to `NOT_SERVING` at the start of
+graceful shutdown so in-flight RPCs drain before the process exits.
+
+```bash
+grpc_health_probe -addr localhost:5433   # NOT_SERVING during shutdown
+```
+
+### HTTP probes
+
+Two routes are served on the REST gateway (default `:8080`):
+
+| Route | Meaning | Response |
+|---|---|---|
+| `GET /healthz` | **Liveness** — the process is running | `200 ok` always |
+| `GET /readyz` | **Readiness** — the DB is open and the data directory is writable | `200 ready`, or `503` with the reason |
+
+```bash
+curl -i http://localhost:8080/healthz   # 200 ok
+curl -i http://localhost:8080/readyz    # 200 ready  (503 if the data dir is unwritable)
+```
+
+A Kubernetes deployment typically wires `/healthz` to `livenessProbe` and
+`/readyz` to `readinessProbe`, so a node with a full or read-only data volume is
+pulled out of rotation without being killed.

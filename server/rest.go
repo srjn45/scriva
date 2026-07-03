@@ -36,14 +36,34 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// registerProbes wires GET /healthz (liveness) and GET /readyz (readiness) onto
+// the gateway mux. ready reports whether the node can serve traffic (DB open,
+// data dir writable); a nil ready means always ready.
+func registerProbes(mux *runtime.ServeMux, ready func() error) error {
+	liveness := LivenessHandler()
+	readiness := ReadinessHandler(ready)
+	if err := mux.HandlePath("GET", "/healthz", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		liveness(w, r)
+	}); err != nil {
+		return err
+	}
+	return mux.HandlePath("GET", "/readyz", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		readiness(w, r)
+	})
+}
+
 // NewRESTGateway returns an http.Handler that proxies requests to the gRPC
-// server listening on grpcAddr via the grpc-gateway.
+// server listening on grpcAddr via the grpc-gateway. It also exposes the
+// process probes GET /healthz and GET /readyz (the latter gated by ready).
 // creds controls how the gateway dials gRPC (pass insecure.NewCredentials() when TLS is off).
-func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials) (http.Handler, error) {
+func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials, ready func() error) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
+		return nil, err
+	}
+	if err := registerProbes(mux, ready); err != nil {
 		return nil, err
 	}
 
@@ -61,8 +81,9 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
 // Unix domain socket. Unix sockets are always local, so insecure credentials
-// are used regardless of the server's TLS setting.
-func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, error) {
+// are used regardless of the server's TLS setting. ready gates GET /readyz (nil
+// = always ready).
+func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() error) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -71,6 +92,9 @@ func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, e
 		}),
 	}
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, "unix://"+socketPath, opts); err != nil {
+		return nil, err
+	}
+	if err := registerProbes(mux, ready); err != nil {
 		return nil, err
 	}
 

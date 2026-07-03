@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,11 +21,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/srjn45/filedbv2/engine"
+	"github.com/srjn45/filedbv2/internal/auth"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"github.com/srjn45/filedbv2/server"
 )
@@ -748,3 +754,244 @@ func TestIntegration_TTL(t *testing.T) {
 // It lets a status-code assertion read as one line regardless of the RPC's
 // response type.
 func mustErr[T any](_ T, err error) error { return err }
+
+// ---- O1: structured logging interceptor -------------------------------------
+
+// newInstrumentedServer spins up an in-process gRPC server with the auth and
+// (optionally) logging interceptors chained exactly as cmd/filedb wires them,
+// plus an optional health service. It returns a connected client and the raw
+// connection (so callers can build a health client).
+func newInstrumentedServer(t *testing.T, logger *slog.Logger, keys []auth.Key, healthSvc *server.HealthService) *grpc.ClientConn {
+	t.Helper()
+
+	dir := t.TempDir()
+	db, err := engine.Open(dir, engine.CollectionConfig{
+		SegmentMaxSize:  4 * 1024 * 1024,
+		CompactInterval: 24 * time.Hour,
+		CompactDirtyPct: 0.30,
+	})
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	gs := server.NewGRPCServer(db, 5*time.Minute)
+	t.Cleanup(gs.Close)
+
+	authn, err := auth.New(keys)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	au, as := authn.Interceptors()
+	var opts []grpc.ServerOption
+	if logger != nil {
+		lu, ls := server.LoggingInterceptors(logger)
+		opts = append(opts,
+			grpc.ChainUnaryInterceptor(au, lu),
+			grpc.ChainStreamInterceptor(as, ls),
+		)
+	} else {
+		opts = append(opts,
+			grpc.ChainUnaryInterceptor(au),
+			grpc.ChainStreamInterceptor(as),
+		)
+	}
+	grpcSrv := grpc.NewServer(opts...)
+	pb.RegisterFileDBServer(grpcSrv, gs)
+	if healthSvc != nil {
+		healthSvc.Register(grpcSrv)
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go grpcSrv.Serve(lis)
+	t.Cleanup(grpcSrv.Stop)
+
+	conn, err := grpc.NewClient(
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// keyCtx returns a context carrying the x-api-key header.
+func keyCtx(key string) context.Context {
+	return metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-api-key", key))
+}
+
+func TestIntegration_LoggingInterceptor_OneRecordPerCall(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := server.NewLogger(&buf, "info", "json")
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	keys := []auth.Key{{Key: "sekret", Name: "tester", Scope: auth.ScopeReadWrite}}
+	conn := newInstrumentedServer(t, logger, keys, nil)
+	c := pb.NewFileDBClient(conn)
+
+	if _, err := c.CreateCollection(keyCtx("sekret"), &pb.CreateCollectionRequest{Name: "logs"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// Exactly one structured record for the single RPC, with all fields.
+	lines := logLines(t, &buf)
+	if len(lines) != 1 {
+		t.Fatalf("want 1 log record, got %d: %v", len(lines), lines)
+	}
+	rec := lines[0]
+	if rec["msg"] != "grpc request" {
+		t.Errorf("msg = %v, want %q", rec["msg"], "grpc request")
+	}
+	if rec["method"] != "/filedb.v1.FileDB/CreateCollection" {
+		t.Errorf("method = %v", rec["method"])
+	}
+	if rec["principal"] != "tester" {
+		t.Errorf("principal = %v, want tester", rec["principal"])
+	}
+	if rec["code"] != "OK" {
+		t.Errorf("code = %v, want OK", rec["code"])
+	}
+	if rec["level"] != "INFO" {
+		t.Errorf("level = %v, want INFO", rec["level"])
+	}
+	if _, ok := rec["duration"]; !ok {
+		t.Errorf("record missing duration field: %v", rec)
+	}
+}
+
+func TestIntegration_LoggingInterceptor_LevelFiltering(t *testing.T) {
+	// At warn level the info-level success record is suppressed, while a failing
+	// RPC (logged at error) still comes through.
+	var buf bytes.Buffer
+	logger, err := server.NewLogger(&buf, "warn", "json")
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	conn := newInstrumentedServer(t, logger, nil, nil) // auth disabled
+	c := pb.NewFileDBClient(conn)
+
+	// Success → info → suppressed at warn.
+	if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "ok"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if lines := logLines(t, &buf); len(lines) != 0 {
+		t.Fatalf("info record should be filtered at warn level, got %d: %v", len(lines), lines)
+	}
+
+	// Failure → error → emitted even at warn.
+	if _, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "missing", Id: 1}); err == nil {
+		t.Fatal("expected error for missing collection")
+	}
+	lines := logLines(t, &buf)
+	if len(lines) != 1 {
+		t.Fatalf("want 1 error record, got %d: %v", len(lines), lines)
+	}
+	if lines[0]["level"] != "ERROR" {
+		t.Errorf("level = %v, want ERROR", lines[0]["level"])
+	}
+	if lines[0]["code"] != "NotFound" {
+		t.Errorf("code = %v, want NotFound", lines[0]["code"])
+	}
+	if lines[0]["principal"] != "anonymous" {
+		t.Errorf("principal = %v, want anonymous (auth disabled)", lines[0]["principal"])
+	}
+}
+
+// logLines parses newline-delimited JSON log records out of buf, draining it.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("parse log line %q: %v", line, err)
+		}
+		out = append(out, m)
+	}
+	buf.Reset()
+	return out
+}
+
+// ---- O2: health & readiness -------------------------------------------------
+
+func TestIntegration_Health_ServingLifecycle(t *testing.T) {
+	healthSvc := server.NewHealthService()
+	conn := newInstrumentedServer(t, nil, nil, healthSvc)
+	hc := healthpb.NewHealthClient(conn)
+
+	// Starts NOT_SERVING until listeners are marked up.
+	resp, err := hc.Check(ctx(), &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("Check (initial): %v", err)
+	}
+	if resp.Status != healthpb.HealthCheckResponse_NOT_SERVING {
+		t.Errorf("initial status = %v, want NOT_SERVING", resp.Status)
+	}
+
+	healthSvc.SetServing()
+	resp, err = hc.Check(ctx(), &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("Check (serving): %v", err)
+	}
+	if resp.Status != healthpb.HealthCheckResponse_SERVING {
+		t.Errorf("status after SetServing = %v, want SERVING", resp.Status)
+	}
+
+	// Graceful shutdown flips to NOT_SERVING so in-flight drains.
+	healthSvc.SetNotServing()
+	resp, err = hc.Check(ctx(), &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("Check (draining): %v", err)
+	}
+	if resp.Status != healthpb.HealthCheckResponse_NOT_SERVING {
+		t.Errorf("status after SetNotServing = %v, want NOT_SERVING", resp.Status)
+	}
+}
+
+func TestReadinessHandler_DataDirWritable(t *testing.T) {
+	dir := t.TempDir()
+
+	// Writable dir → 200 ready.
+	rr := httptest.NewRecorder()
+	server.ReadinessHandler(func() error { return server.CheckDataDirWritable(dir) })(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("writable dir: status = %d, want 200 (body %q)", rr.Code, rr.Body.String())
+	}
+
+	// Liveness is unconditional.
+	rr = httptest.NewRecorder()
+	server.LivenessHandler()(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("healthz: status = %d, want 200", rr.Code)
+	}
+}
+
+func TestReadinessHandler_UnwritableDataDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions do not restrict writes")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // restore so TempDir cleanup works
+
+	if err := server.CheckDataDirWritable(dir); err == nil {
+		t.Fatal("CheckDataDirWritable: want error for read-only dir, got nil")
+	}
+
+	rr := httptest.NewRecorder()
+	server.ReadinessHandler(func() error { return server.CheckDataDirWritable(dir) })(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unwritable dir: status = %d, want 503 (body %q)", rr.Code, rr.Body.String())
+	}
+}

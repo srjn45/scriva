@@ -29,6 +29,31 @@ embedding-specific contract.
 
 ---
 
+## [Unreleased]
+
+**Operability & observability (v0.6.0 PR-A).** The server is no longer a black
+box: it emits structured request logs and exposes health/readiness probes for
+load balancers and orchestrators. No breaking changes — logging defaults to
+human-readable text at `info`, and the probes are additive.
+
+### Added
+
+- **Structured, leveled logging (O1).** The server layer now logs through the
+  standard library `log/slog` (zero new dependencies). A unary **and** stream
+  gRPC interceptor emits exactly one structured record per RPC — `method`,
+  `principal` (the authenticated API-key name), `duration`, and status `code` —
+  at `info` for success and `error` for failure. Two flags configure output:
+  `--log-level` (`debug|info|warn|error`, default `info`) and `--log-format`
+  (`json|text`, default `text`), also settable via `log_level` / `log_format`
+  in the config file. The embeddable `engine`/`store`/`query` packages remain
+  free of any logging dependency (enforced by `make deps-check`).
+- **Health & readiness (O2).** The standard `grpc.health.v1.Health` service is
+  registered on the TCP and Unix gRPC servers; it reports `SERVING` once
+  listeners are up and flips to `NOT_SERVING` at the start of graceful shutdown
+  so in-flight RPCs drain cleanly. The REST gateway gains `GET /healthz`
+  (liveness) and `GET /readyz` (readiness — `200` when the DB is open and the
+  data directory is writable, `503` otherwise).
+
 ## [0.3.0] — 2026-07-03
 
 **Client parity release.** Per-record TTL is now exposed over the wire, and all
