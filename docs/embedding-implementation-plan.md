@@ -331,7 +331,7 @@ commit style, one PR per task. Commits must use the
 | T6 | KEY-4 upsert | T4 (after T5) | ☐ todo | |
 | T7 | QRY-3 count/exists | T4 (after T6) | ☐ todo | |
 | T8 | EMB-2 + OPS-1 façade | T5 | ☐ todo | |
-| T9 | OPS-2 Watch docs | T1 | ☐ todo | |
+| T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/FileDBv2/pull/22) |
 | T10 | OPS-3 bulk load | T4 | ☐ todo | |
 | T11 | EMB-4 semver + docs | T2–T10 | ☐ todo | |
 
