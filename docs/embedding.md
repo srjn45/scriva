@@ -29,6 +29,68 @@ default (see `engine.DefaultWatchBufferSize`, `engine.SyncModeNone`, …).
 
 ---
 
+## The stable embedding surface
+
+Embedding FileDB means depending on three public packages. Everything an
+embedded program needs is reachable from them:
+
+| Package | Import path | What it gives you |
+|---|---|---|
+| `filedb` | `github.com/srjn45/filedbv2/filedb` | The recommended façade: `Open`, per-collection options, embedded durability defaults. |
+| `engine` | `github.com/srjn45/filedbv2/engine` | The storage engine: `DB`, `Collection`, keyed ops, CAS, upsert, count/exists, secondary indexes, Watch, `Record`, typed errors. |
+| `query` | `github.com/srjn45/filedbv2/query` | `Filter` and the comparison operators used by `Scan`/`Count`. |
+| `store` | `github.com/srjn45/filedbv2/store` | `Entry` — the on-disk record shape (surfaced through `Watch` and segment I/O). |
+
+The rest of this document is the reference for that surface, in the order you
+meet it:
+
+- [The `filedb` façade](#the-filedb-façade-recommended-entry-point) — `Open`,
+  options, embedded durability default.
+- [String keys](#string-keys-caller-supplied-primary-keys) — `InsertWithKey` /
+  `FindByKey` / `UpdateByKey` / `DeleteByKey`.
+- [Revisions and CAS](#revisions-and-compare-and-swap) — `Record`, `Get` /
+  `GetByKey`, `UpdateIfRev` / `UpdateIfMatch`.
+- [Upsert](#upsert-create-or-replace-by-key) — `Upsert`.
+- [Querying](#querying-filters-scan-count-and-exists) — `query.Filter`, `Scan`,
+  `Count`, `Exists`.
+- [Watching changes](#watching-changes-in-process-subscriptions) — `Subscribe`,
+  `WatchEvent`, the overflow contract.
+- [The on-disk record](#the-on-disk-record-storeentry) — `store.Entry`.
+- [Migrating an existing JSON store](#migrating-an-existing-json-store) —
+  `LoadJSONL`.
+
+### Stability and versioning
+
+This is FileDB's **first embeddable release**, and it follows standard pre-1.0
+semver. In practice, for anyone taking `go get` on the packages above:
+
+- **The import paths are stable.** `engine`, `store`, `query`, and `filedb`
+  are public and will not move back under `internal/` — the whole point of the
+  embedding milestone was to promote them (see the roadmap's EMB-1).
+- **Pin a version.** `go get github.com/srjn45/filedbv2/engine@v0.x.0` and let
+  your `go.mod` hold the line. Do not track `main`; the embedding surface is
+  supported at tagged releases, not between them.
+- **Minor bumps may break until v1.0.0.** Under semver a `0.y.z` project makes
+  no compatibility promise across minor (`0.y`) bumps, and FileDB uses that
+  latitude deliberately while the API settles. A breaking change to any type or
+  signature documented here will land in a **minor** bump (`v0.(x+1).0`), never
+  a patch, and will always be called out in [`CHANGELOG.md`](../CHANGELOG.md)
+  with a migration note. Patch releases (`v0.x.(z+1)`) are bug-fix only and
+  never change the documented surface.
+- **"Stable enough to depend on" means:** the surface below is intentional,
+  tested (race detector on), and won't churn gratuitously — but it is not yet
+  frozen. Depend on it the way you'd depend on any actively-developed `0.x`
+  library: pin the version, read the changelog before upgrading, and expect the
+  occasional mechanical migration on a minor bump. When the surface has proven
+  itself in real embedders it will be frozen under a `v1.0.0` tag, after which
+  the usual "no breaking changes without a major bump" guarantee applies.
+
+The standalone server, its gRPC/REST API, its CLI, and the on-disk segment
+format have their own compatibility story and are **not** covered by this
+contract — this section is strictly about the embedded Go API.
+
+---
+
 ## The `filedb` façade (recommended entry point)
 
 `engine.Open` opens every collection under a single config. When your program
@@ -225,6 +287,83 @@ rec, err = col.Upsert("sess-abc123", map[string]any{"status": "archived"})
 
 ---
 
+## Querying: filters, scan, count, and exists
+
+Beyond key/id lookups, records are queried with a `query.Filter` — the same
+filter model the server exposes, evaluated in-process against each record's data
+map. A filter is either a single-field test or a boolean combination:
+
+```go
+import "github.com/srjn45/filedbv2/query"
+
+// A field test. Value is JSON-encoded: `"open"` matches the string "open",
+// `30` matches the number 30. A bare, non-JSON string is taken literally.
+open := &query.FieldFilter{Field: "status", Op: query.OpEq, Value: `"open"`}
+
+// Boolean combinations nest arbitrarily.
+f := &query.AndFilter{Filters: []query.Filter{
+    open,
+    &query.FieldFilter{Field: "age", Op: query.OpGte, Value: "18"},
+}}
+```
+
+The operators (`query.Op`) are `OpEq`, `OpNeq`, `OpGt`, `OpGte`, `OpLt`,
+`OpLte`, `OpContains`, and `OpRegex`. Numeric comparisons are type-aware
+(`2 < 10`, not the lexical `"10" < "2"`); `OrFilter` mirrors `AndFilter`. A `nil`
+filter — or the shared `query.MatchAll` sentinel — accepts every live record.
+
+### `Scan` — read matching records
+
+```go
+results, err := col.Scan(f) // []engine.ScanResult; nil filter = all live records
+for _, r := range results {
+    // r.ID, r.Rev, r.Ts, r.Data
+}
+```
+
+```go
+type ScanResult struct {
+    ID   uint64
+    Rev  uint64         // current revision (see "Revisions")
+    Data map[string]any
+    Ts   time.Time
+}
+```
+
+`Scan` buffers the whole result set. When a single equality filter targets an
+indexed field, it is served from the secondary index (O(matches)) instead of a
+full segment scan; otherwise it streams every live record through the filter.
+For large collections where you don't want the full slice in memory, drive
+`ScanStream(ctx, ScanOptions{…}, yield)` directly — it honours `Limit`,
+`Offset`, `OrderBy`, and `Descending` and supports context cancellation.
+
+### `Count` — how many match, without materializing
+
+```go
+n, err := col.Count(f) // uint64
+```
+
+`Count` never buffers record data and equals `len(Scan(f))` for every filter. It
+takes the cheapest path the filter allows: a nil/`MatchAll` filter is answered
+from the primary index in O(1) (no segment reads at all); a single equality
+filter on an indexed field is the size of that index bucket; anything else
+streams and counts without building a result slice. Use it for dashboard/list
+totals that must not pull the whole collection into memory.
+
+### `Exists` — O(1) key presence
+
+```go
+present, err := col.Exists("sess-abc123")
+```
+
+`Exists` reports whether a live record carries the given caller-supplied string
+key. It goes through the unique `_key` index and reads no segment, so it is safe
+on a hot path regardless of collection size. A collection that has never taken a
+keyed write has no `_key` index, so `Exists` is `false` for every key. (It
+returns an `error` only to keep the signature stable; today it never fails.)
+
+---
+
 ## Watching changes (in-process subscriptions)
 
 `Collection.Subscribe` gives you a live feed of every write to a collection.
@@ -329,6 +468,40 @@ Notes on the guarantee:
   dedicated goroutine that does minimal work per event (hand off to a worker),
   or raise `CollectionConfig.WatchBufferSize`. Overflow handling is still
   required — it is a correctness contract, not merely a tuning knob.
+
+---
+
+## The on-disk record (`store.Entry`)
+
+Each line of a segment file is one `store.Entry` — the append-only log record
+the engine reads and writes. You rarely construct one directly (the collection
+API does that for you), but it is part of the public surface because it defines
+the on-disk shape and is what `store.Encode`/`store.Decode` round-trip:
+
+```go
+type Entry struct {
+    ID        uint64         `json:"id"`
+    Op        store.Op       `json:"op"`             // insert | update | delete
+    Ts        time.Time      `json:"ts"`
+    Rev       uint64         `json:"rev,omitempty"`  // record revision; see below
+    Data      map[string]any `json:"data,omitempty"` // nil for delete
+    // plus optional integrity/TTL fields (per-record checksum, expiry)
+}
+```
+
+- **`Op`** is the `store` operation constant — `store.OpInsert`, `store.OpUpdate`,
+  or `store.OpDelete` — the same values that appear on a `WatchEvent`.
+- **`Rev`** is the record's monotonic revision, `1` on insert and `+1` per
+  update. It is `omitempty`, so segment lines written before revisions existed
+  decode as rev `0` — old data is read without migration. This is the same
+  `Rev` surfaced on `Record` and `ScanResult`.
+- **`Data`** carries the record body, including the reserved `_key` field for
+  keyed records. It is `nil` for a delete entry.
+
+Because the format is additive and every new field is `omitempty`, newer engine
+versions read older segments unchanged. Treat `store.Entry` as read-mostly: go
+through `Collection` for writes so indexing, uniqueness, durability, and Watch
+delivery all apply.
 
 ---
 

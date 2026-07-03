@@ -86,6 +86,43 @@ It is **not** the right tool for multi-node replication, complex joins, or datas
 
 ---
 
+## Embedding (use it as a Go library)
+
+FileDB v2's storage engine is a plain Go library, so you can skip the server
+entirely and run the database **in-process** — no gRPC, no network, no separate
+daemon. This is the right choice when your program is the only writer and you
+want FileDB's durability and query model directly inside your binary.
+
+```bash
+go get github.com/srjn45/filedbv2/engine   # the storage engine
+go get github.com/srjn45/filedbv2/filedb   # the ergonomic façade (recommended)
+```
+
+```go
+import "github.com/srjn45/filedbv2/filedb"
+
+db, _ := filedb.Open("./data")            // embedded durability defaults (fsync ~1s)
+defer db.Close()
+
+sessions := db.MustCollection("sessions")
+id, _, _ := sessions.InsertWithKey("sess-1", map[string]any{"status": "open"})
+rec, _   := sessions.GetByKey("sess-1")   // caller-supplied string keys
+_, _ = sessions.UpdateIfRev("sess-1", rec.Rev, map[string]any{"status": "closed"}) // CAS
+```
+
+The embedded surface includes caller-supplied string keys, per-record revisions
+with compare-and-swap, upsert, count/exists, secondary indexes, in-process
+`Watch` subscriptions, and a `LoadJSONL` bulk-import path. The engine pulls in
+**no** gRPC/protobuf/Prometheus/cobra dependencies — a CI gate enforces that.
+
+This is a distinct distribution channel: **`go get` for embedding**, while the
+standalone server ships via Homebrew/apt/GHCR and tagged binary releases. Both
+build from the same repo. See **[docs/embedding.md](docs/embedding.md)** for the
+full API reference, durability modes, the Watch overflow contract, the
+versioning/stability policy, and a migration guide.
+
+---
+
 ## Client SDKs
 
 Idiomatic, hand-written client libraries are available for seven languages. Each
@@ -114,6 +151,7 @@ covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
 |---|---|
 | [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics |
 | [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, secondary indexes, crash safety |
+| [Embedding](docs/embedding.md) | Use FileDB as an in-process Go library: `filedb`/`engine` API, keyed ops, CAS, Watch, migration, versioning policy |
 
 ---
 
