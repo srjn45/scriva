@@ -167,7 +167,11 @@ func (s *Segment) ReadAt(offset int64) (store.Entry, error) {
 		return store.Entry{}, fmt.Errorf("segment: empty at offset %d in %q", offset, s.path)
 	}
 
-	return store.Decode(scanner.Bytes())
+	e, err := store.Decode(scanner.Bytes())
+	if err != nil {
+		return store.Entry{}, fmt.Errorf("segment: decode %q at %d: %w", s.path, offset, err)
+	}
+	return e, nil
 }
 
 // ScanAll reads every entry in the segment in order.

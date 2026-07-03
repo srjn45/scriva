@@ -286,7 +286,7 @@ conventions.
 **v0.2.0 — Hardening**
 - [x] D1 — directory fsync on create/rotate/rename
 - [x] D2 — atomic, off-hot-path `meta.json`
-- [ ] D3 — per-record segment checksums
+- [x] D3 — per-record segment checksums
 - [x] D4 — Watch overflow signal
 - [x] D5 — propagate rotation errors on all write paths
 - [x] D6 — transaction GC / `--tx-timeout`

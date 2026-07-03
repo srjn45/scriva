@@ -55,6 +55,7 @@ Key properties:
 
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
 - **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
+- **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments
 - **In-memory index** — O(1) lookup by id, persisted with a checksum for fast restarts
 - **Secondary indexes** — per-field inverted indexes for O(1) equality lookups; automatically maintained and persisted

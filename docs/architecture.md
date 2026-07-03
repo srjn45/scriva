@@ -26,9 +26,9 @@ data/
 Each line is one operation entry:
 
 ```json
-{"id":1,"op":"insert","ts":"2026-03-29T10:00:00Z","data":{"userName":"admin"}}
-{"id":1,"op":"update","ts":"2026-03-29T11:00:00Z","data":{"userName":"admin2"}}
-{"id":2,"op":"delete","ts":"2026-03-29T12:00:00Z"}
+{"id":1,"op":"insert","ts":"2026-03-29T10:00:00Z","data":{"userName":"admin"},"crc":2872375771}
+{"id":1,"op":"update","ts":"2026-03-29T11:00:00Z","data":{"userName":"admin2"},"crc":1483902337}
+{"id":2,"op":"delete","ts":"2026-03-29T12:00:00Z","crc":1032541209}
 ```
 
 - `op` is one of `insert`, `update`, `delete`
@@ -36,6 +36,14 @@ Each line is one operation entry:
 - The **latest entry for each id wins**
 
 A segment is **sealed** (made immutable) when its file size exceeds `SegmentMaxSize` (default 4 MiB). After sealing a new active segment is created.
+
+#### Per-entry checksums
+
+Every entry carries a `crc` field: a **CRC32C (Castagnoli)** checksum computed over the entry's `id`, `op`, and canonical `data` (the timestamp and the `crc` field itself are excluded, so the value is stable across encode/decode). It is written on `Encode` and verified on `Decode`.
+
+This guards against silent bit-rot in sealed segments: without it, a flipped byte that still parses as JSON would return wrong data with no error. A checksum mismatch instead surfaces as a typed `store.ErrCorruptEntry`, which propagates out of `ScanAll`/`ReadAt` with the segment path and offset.
+
+The field is **backward-compatible**: an entry with no `crc` key (a line written before checksums existed) is decoded without verification. Because compaction rewrites entries through `Encode`, legacy lines gain a checksum the next time their segment is compacted.
 
 ---
 
@@ -234,6 +242,7 @@ regardless of mode.
 ## Crash Safety
 
 - **Partial write recovery**: on segment open, the last line is validated. Any partial line (from a crash mid-write) is detected and truncated before the segment is used.
+- **Bit-rot detection**: each segment entry carries a CRC32C checksum verified on read. A single flipped byte in a sealed segment that still parses as JSON is caught (`store.ErrCorruptEntry`) rather than silently returning wrong data. See *Per-entry checksums* above.
 - **Index recovery**: on startup, both the primary index and each secondary index checksum are verified. A mismatch triggers a full rebuild by replaying all segment entries.
 - **Atomic segment swap**: compaction uses `os.Rename` which is atomic on POSIX filesystems. The old segments are only deleted after the new ones are in place.
 - **Durable metadata writes**: `index.json`, `sidx_*.json`, and `meta.json` are written with a write-temp → `fsync` → atomic `rename` → directory `fsync` sequence, so a crash can never leave a half-written or invisible file. Directory `fsync` after creating or rotating a segment (under `--sync=interval`/`always`) ensures the new segment file's directory entry survives a crash too. (Directory `fsync` is a no-op on Windows, which does not support it; the atomic rename still holds.)
