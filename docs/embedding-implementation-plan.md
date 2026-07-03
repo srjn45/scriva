@@ -328,7 +328,7 @@ commit style, one PR per task. Commits must use the
 | T3 | KEY-2 unique index | T1 | ☑ done | [#25](https://github.com/srjn45/FileDBv2/pull/25) |
 | T4 | KEY-1 string keys 🔴 | T3 | ☑ done | [#26](https://github.com/srjn45/FileDBv2/pull/26) |
 | T5 | KEY-3 CAS / rev 🔴 | T4 | ☑ done | [#28](https://github.com/srjn45/FileDBv2/pull/28) |
-| T6 | KEY-4 upsert | T4 (after T5) | ☐ todo | |
+| T6 | KEY-4 upsert | T4 (after T5) | ☑ done | [#29](https://github.com/srjn45/FileDBv2/pull/29) |
 | T7 | QRY-3 count/exists | T4 (after T6) | ☐ todo | |
 | T8 | EMB-2 + OPS-1 façade | T5 | ☐ todo | |
 | T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/FileDBv2/pull/22) |
