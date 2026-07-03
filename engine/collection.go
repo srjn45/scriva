@@ -104,6 +104,12 @@ type Collection struct {
 	index     *Index
 	idSeq     atomic.Uint64 // monotonically increasing id counter
 
+	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
+	// (in seconds) set at CreateCollection time and persisted in meta.json. It
+	// overrides the server-wide default for this collection. Zero means the
+	// collection inherits the live global default (cfg.DefaultTTL as passed).
+	explicitDefaultTTLSecs int64
+
 	// Watch subscribers.
 	watchMu      sync.Mutex
 	watchers     map[uint64]*watcher
@@ -272,6 +278,7 @@ func (c *Collection) load() error {
 	if meta, err := loadMeta(metaPath); err == nil {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
+		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
 		if amax := c.activeMaxID(); amax > c.idSeq.Load() {
 			c.idSeq.Store(amax)
 		}
@@ -304,7 +311,7 @@ func (c *Collection) load() error {
 	c.createdAt = time.Now().UTC()
 
 	// Write meta.json so the next startup can skip this scan.
-	_ = persistMeta(metaPath, collectionMeta{IDCounter: maxID, CreatedAt: c.createdAt})
+	_ = persistMeta(metaPath, c.metaSnapshot())
 
 	return nil
 }
@@ -667,7 +674,7 @@ func (c *Collection) rotateSegment() error {
 
 	// Persist the id counter now that a segment boundary has been crossed.
 	_ = persistMeta(filepath.Join(c.dir, metaFilename),
-		collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+		c.metaSnapshot())
 
 	// Signal the compactor.
 	select {
@@ -819,7 +826,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 
 	if maxInsertID > 0 {
 		_ = persistMeta(filepath.Join(c.dir, metaFilename),
-			collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+			c.metaSnapshot())
 	}
 
 	return nil
@@ -849,7 +856,7 @@ func (c *Collection) Close() error {
 	}
 	c.sidxMu.RUnlock()
 	return persistMeta(filepath.Join(c.dir, metaFilename),
-		collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+		c.metaSnapshot())
 }
 
 // ---- Secondary index helpers (called under c.mu write lock) ----------------

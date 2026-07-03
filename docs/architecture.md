@@ -322,13 +322,28 @@ decodes as *never expires* and still verifies — fully backward compatible. A
 Unix-nano `int64` (not a `time.Time`) is used precisely so `omitempty` drops it
 when unset; a zero `time.Time` struct would still serialise on every line.
 
-Deadlines are set two ways:
+Deadlines are set three ways, in precedence order:
 
-- **Explicit** — `InsertWithExpiry(data, when)` / `UpdateWithExpiry(id, data, when)`
-  stamp an exact instant.
-- **Default TTL** — `CollectionConfig.DefaultTTL` (server `--default-ttl`) stamps
-  `now + TTL` on every insert that carries no explicit deadline. Zero (the
-  default) means records never expire.
+- **Explicit per-record** — `InsertWithExpiry(data, when)` /
+  `UpdateWithExpiry(id, data, when)` stamp an exact instant. Over the wire these
+  surface as `ttl_seconds` (relative) on the `Insert`/`InsertMany`/`Update`
+  RPCs; the server converts `now + ttl_seconds` into the absolute deadline the
+  engine stores.
+- **Per-collection default** — `CreateCollectionWithDefaultTTL(name, ttl)` (RPC
+  field `default_ttl_seconds`, CLI `create-collection --default-ttl`) pins a
+  default for one collection. It is persisted in that collection's `meta.json`
+  (`default_ttl_seconds`) and reloaded on open, so it survives restarts and
+  **overrides** the server-wide default for that collection. It is stored
+  separately from the inherited global default (a plain collection persists no
+  value and keeps tracking the live `--default-ttl`), so changing the global
+  later still affects collections that never set their own.
+- **Server-wide default** — `CollectionConfig.DefaultTTL` (server
+  `--default-ttl`) stamps `now + TTL` on every insert that carries no explicit
+  deadline. Zero (the default) means records never expire.
+
+Per-record `ttl_seconds` is rejected inside a transaction (the transaction
+staging path does not yet carry a deadline); transaction inserts still honor the
+collection/server default.
 
 A plain `Update` keeps a record's existing deadline (**sticky**) — it is a
 data-only write, not a TTL refresh; `UpdateWithExpiry` is the way to move the

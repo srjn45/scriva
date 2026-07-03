@@ -546,6 +546,26 @@ filedb serve --data ./data --default-ttl 24h   # inserts expire after a day
 
 A default of `0` (the default) means records never expire.
 
+**Per-collection default.** A single collection can pin its own default TTL at
+creation time, overriding the server-wide default and surviving restarts:
+
+```bash
+filedb-cli create-collection sessions --default-ttl 30m
+```
+
+**Per-record TTL.** Individual writes can set (or reset) a record's deadline
+with `--ttl`, overriding any collection default:
+
+```bash
+filedb-cli insert sessions '{"user":"alice"}' --ttl 15m   # expires in 15 min
+filedb-cli update sessions 7 '{"user":"alice"}' --ttl 15m # slide the deadline
+```
+
+Over the API these map to `ttl_seconds` on the `Insert`/`InsertMany`/`Update`
+RPCs and `default_ttl_seconds` on `CreateCollection`. A plain `update` with no
+`--ttl` keeps the record's existing deadline; passing `--ttl` moves it. Setting
+a per-record TTL inside a transaction is not supported and is rejected.
+
 Expiry semantics:
 
 - An expired record is invisible to **every** read the moment its deadline
@@ -570,11 +590,6 @@ col.UpdateWithExpiry(id, map[string]any{"session": "abc"}, later)      // deadli
 // A collection-level default (server maps --default-ttl to this):
 db, _ := engine.Open("./data", engine.CollectionConfig{DefaultTTL: 24 * time.Hour})
 ```
-
-> Per-record `expires_at` / `ttl_seconds` on the gRPC/REST Insert & Update RPCs
-> (and the language SDKs) are a planned follow-up; today per-record deadlines are
-> reachable via the embedded engine, and the wire server exposes the collection
-> default via `--default-ttl`.
 
 ---
 

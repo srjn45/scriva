@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // DB is the top-level database handle. It owns a registry of collections and
@@ -62,6 +63,22 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 		return nil, err
 	}
 	db.collections[name] = col
+	return col, nil
+}
+
+// CreateCollectionWithDefaultTTL creates a new collection whose records expire
+// after defaultTTL by default (unless a write supplies its own deadline). The
+// default is persisted per-collection, so it survives restarts and overrides
+// the server-wide default. A non-positive defaultTTL behaves exactly like
+// CreateCollection.
+func (db *DB) CreateCollectionWithDefaultTTL(name string, defaultTTL time.Duration) (*Collection, error) {
+	col, err := db.CreateCollection(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := col.setDefaultTTL(defaultTTL); err != nil {
+		return nil, fmt.Errorf("db: set default ttl on %q: %w", name, err)
+	}
 	return col, nil
 }
 

@@ -464,10 +464,15 @@ func (x *OrFilter) GetFilters() []*Filter {
 }
 
 type CreateCollectionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional per-collection default record TTL, in seconds. When > 0, records
+	// inserted into this collection expire after this long unless a write
+	// supplies its own TTL. Persisted per-collection and overrides the
+	// server-wide default. 0 (the default) inherits the server-wide default.
+	DefaultTtlSeconds int64 `protobuf:"varint,2,opt,name=default_ttl_seconds,json=defaultTtlSeconds,proto3" json:"default_ttl_seconds,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CreateCollectionRequest) Reset() {
@@ -505,6 +510,13 @@ func (x *CreateCollectionRequest) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *CreateCollectionRequest) GetDefaultTtlSeconds() int64 {
+	if x != nil {
+		return x.DefaultTtlSeconds
+	}
+	return 0
 }
 
 type CreateCollectionResponse struct {
@@ -728,9 +740,13 @@ func (x *ListCollectionsResponse) GetNames() []string {
 }
 
 type InsertRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Data          *structpb.Struct       `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Data       *structpb.Struct       `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	// Optional per-record TTL, in seconds. When > 0, the record expires this long
+	// after insertion, overriding any collection default. 0 (the default)
+	// applies the collection's default TTL, if any.
+	TtlSeconds    int64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -777,6 +793,13 @@ func (x *InsertRequest) GetData() *structpb.Struct {
 		return x.Data
 	}
 	return nil
+}
+
+func (x *InsertRequest) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
 }
 
 type InsertResponse struct {
@@ -832,9 +855,12 @@ func (x *InsertResponse) GetDateAdded() string {
 }
 
 type InsertManyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Records       []*structpb.Struct     `protobuf:"bytes,2,rep,name=records,proto3" json:"records,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Records    []*structpb.Struct     `protobuf:"bytes,2,rep,name=records,proto3" json:"records,omitempty"`
+	// Optional per-record TTL, in seconds, applied to every record in the batch.
+	// Same semantics as InsertRequest.ttl_seconds.
+	TtlSeconds    int64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -881,6 +907,13 @@ func (x *InsertManyRequest) GetRecords() []*structpb.Struct {
 		return x.Records
 	}
 	return nil
+}
+
+func (x *InsertManyRequest) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
 }
 
 type InsertManyResponse struct {
@@ -1108,10 +1141,14 @@ func (x *FindResponse) GetRecord() *Record {
 }
 
 type UpdateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
-	Data          *structpb.Struct       `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Id         uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	Data       *structpb.Struct       `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	// Optional per-record TTL, in seconds, resetting the record's deadline to
+	// this long from now. When > 0 it overrides the collection default; 0 (the
+	// default) re-applies the collection default TTL, if any.
+	TtlSeconds    int64 `protobuf:"varint,4,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1165,6 +1202,13 @@ func (x *UpdateRequest) GetData() *structpb.Struct {
 		return x.Data
 	}
 	return nil
+}
+
+func (x *UpdateRequest) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
 }
 
 type UpdateResponse struct {
@@ -2298,9 +2342,10 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\tAndFilter\x12+\n" +
 	"\afilters\x18\x01 \x03(\v2\x11.filedb.v1.FilterR\afilters\"7\n" +
 	"\bOrFilter\x12+\n" +
-	"\afilters\x18\x01 \x03(\v2\x11.filedb.v1.FilterR\afilters\"-\n" +
+	"\afilters\x18\x01 \x03(\v2\x11.filedb.v1.FilterR\afilters\"]\n" +
 	"\x17CreateCollectionRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"M\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12.\n" +
+	"\x13default_ttl_seconds\x18\x02 \x01(\x03R\x11defaultTtlSeconds\"M\n" +
 	"\x18CreateCollectionResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -2311,21 +2356,25 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x18\n" +
 	"\x16ListCollectionsRequest\"/\n" +
 	"\x17ListCollectionsResponse\x12\x14\n" +
-	"\x05names\x18\x01 \x03(\tR\x05names\"\\\n" +
+	"\x05names\x18\x01 \x03(\tR\x05names\"}\n" +
 	"\rInsertRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12+\n" +
-	"\x04data\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04data\"?\n" +
+	"\x04data\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1f\n" +
+	"\vttl_seconds\x18\x03 \x01(\x03R\n" +
+	"ttlSeconds\"?\n" +
 	"\x0eInsertResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1d\n" +
 	"\n" +
-	"date_added\x18\x02 \x01(\tR\tdateAdded\"f\n" +
+	"date_added\x18\x02 \x01(\tR\tdateAdded\"\x87\x01\n" +
 	"\x11InsertManyRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x121\n" +
-	"\arecords\x18\x02 \x03(\v2\x17.google.protobuf.StructR\arecords\"&\n" +
+	"\arecords\x18\x02 \x03(\v2\x17.google.protobuf.StructR\arecords\x12\x1f\n" +
+	"\vttl_seconds\x18\x03 \x01(\x03R\n" +
+	"ttlSeconds\"&\n" +
 	"\x12InsertManyResponse\x12\x10\n" +
 	"\x03ids\x18\x01 \x03(\x04R\x03ids\"A\n" +
 	"\x0fFindByIdRequest\x12\x1e\n" +
@@ -2345,13 +2394,15 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"descending\x18\x06 \x01(\bR\n" +
 	"descending\"9\n" +
 	"\fFindResponse\x12)\n" +
-	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"l\n" +
+	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"\x8d\x01\n" +
 	"\rUpdateRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\x12+\n" +
-	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\"E\n" +
+	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1f\n" +
+	"\vttl_seconds\x18\x04 \x01(\x03R\n" +
+	"ttlSeconds\"E\n" +
 	"\x0eUpdateResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12#\n" +
 	"\rdate_modified\x18\x02 \x01(\tR\fdateModified\"?\n" +

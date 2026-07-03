@@ -7,6 +7,42 @@ import (
 	"github.com/srjn45/filedbv2/store"
 )
 
+// metaSnapshot builds the current collectionMeta for persistence, carrying the
+// id counter, creation time, and any explicit per-collection default TTL.
+func (c *Collection) metaSnapshot() collectionMeta {
+	return collectionMeta{
+		IDCounter:         c.idSeq.Load(),
+		CreatedAt:         c.createdAt,
+		DefaultTTLSeconds: c.explicitDefaultTTLSecs,
+	}
+}
+
+// applyPersistedDefaultTTL applies a per-collection default TTL loaded from
+// meta.json. A positive value overrides the server-wide default for this
+// collection; zero leaves the inherited global default in place.
+func (c *Collection) applyPersistedDefaultTTL(secs int64) {
+	if secs <= 0 {
+		return
+	}
+	c.explicitDefaultTTLSecs = secs
+	c.cfg.DefaultTTL = time.Duration(secs) * time.Second
+}
+
+// setDefaultTTL records an explicit per-collection default TTL, applies it to
+// the running config, and persists it durably in meta.json. A non-positive ttl
+// is a no-op (the collection keeps inheriting the global default).
+func (c *Collection) setDefaultTTL(ttl time.Duration) error {
+	if ttl <= 0 {
+		return nil
+	}
+	c.mu.Lock()
+	c.explicitDefaultTTLSecs = int64(ttl / time.Second)
+	c.cfg.DefaultTTL = time.Duration(c.explicitDefaultTTLSecs) * time.Second
+	snap := c.metaSnapshot()
+	c.mu.Unlock()
+	return persistMeta(metaPath(c.dir), snap)
+}
+
 // resolveInsertExpiry returns the Unix-nano deadline to stamp on a record: the
 // explicit instant when one is supplied, else now+DefaultTTL when a default TTL
 // is configured, else 0 (the record never expires).

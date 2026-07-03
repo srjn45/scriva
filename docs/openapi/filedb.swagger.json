@@ -597,6 +597,11 @@
       "properties": {
         "data": {
           "type": "object"
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional per-record TTL, in seconds. When \u003e 0, the record expires this long\nafter insertion, overriding any collection default. 0 (the default)\napplies the collection's default TTL, if any."
         }
       }
     },
@@ -608,6 +613,11 @@
           "items": {
             "type": "object"
           }
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional per-record TTL, in seconds, applied to every record in the batch.\nSame semantics as InsertRequest.ttl_seconds."
         }
       }
     },
@@ -616,6 +626,11 @@
       "properties": {
         "data": {
           "type": "object"
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional per-record TTL, in seconds, resetting the record's deadline to\nthis long from now. When \u003e 0 it overrides the collection default; 0 (the\ndefault) re-applies the collection default TTL, if any."
         }
       }
     },
@@ -713,6 +728,11 @@
       "properties": {
         "name": {
           "type": "string"
+        },
+        "defaultTtlSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional per-collection default record TTL, in seconds. When \u003e 0, records\ninserted into this collection expire after this long unless a write\nsupplies its own TTL. Persisted per-collection and overrides the\nserver-wide default. 0 (the default) inherits the server-wide default."
         }
       }
     },

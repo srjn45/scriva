@@ -62,7 +62,7 @@ Key properties:
 - **Secondary indexes** — per-field indexes for O(1) equality lookups and O(matches) range queries (`gt`/`lt`/…); automatically maintained and persisted
 - **Streaming queries** — `Find` pushes `limit`/`offset`/`order_by` into the engine and streams results as it reads; a limited query is bounded by the page size, not the collection size, and honours client cancellation
 - **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
-- **TTL / expiring records** — optional per-record deadlines and a collection-level default (`--default-ttl`); expired records are hidden from reads immediately and reclaimed by compaction
+- **TTL / expiring records** — per-record deadlines (`--ttl` / `ttl_seconds` on Insert & Update), a per-collection default (`create-collection --default-ttl`, persisted), and a server-wide default (`--default-ttl`); expired records are hidden from reads immediately and reclaimed by compaction
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
 - **OpenAPI spec** — `docs/openapi/filedb.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
 - **Official client SDKs** — idiomatic, hand-written libraries for 7 languages (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, C#/.NET) under `clients/`

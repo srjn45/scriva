@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/metadata"
@@ -42,7 +43,8 @@ func collectionsCmd(flags *cliFlags) *cobra.Command {
 }
 
 func createCollectionCmd(flags *cliFlags) *cobra.Command {
-	return &cobra.Command{
+	var defaultTTL time.Duration
+	cmd := &cobra.Command{
 		Use:   "create-collection <name>",
 		Short: "Create a new collection",
 		Args:  cobra.ExactArgs(1),
@@ -53,7 +55,10 @@ func createCollectionCmd(flags *cliFlags) *cobra.Command {
 			}
 			defer cleanup()
 
-			resp, err := client.CreateCollection(ctxWithAuth(flags), &pb.CreateCollectionRequest{Name: args[0]})
+			resp, err := client.CreateCollection(ctxWithAuth(flags), &pb.CreateCollectionRequest{
+				Name:              args[0],
+				DefaultTtlSeconds: int64(defaultTTL / time.Second),
+			})
 			if err != nil {
 				return err
 			}
@@ -61,6 +66,8 @@ func createCollectionCmd(flags *cliFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().DurationVar(&defaultTTL, "default-ttl", 0, "Default record TTL for this collection (e.g. 24h; 0 = inherit server default)")
+	return cmd
 }
 
 func dropCollectionCmd(flags *cliFlags) *cobra.Command {
@@ -89,6 +96,7 @@ func dropCollectionCmd(flags *cliFlags) *cobra.Command {
 
 func insertCmd(flags *cliFlags) *cobra.Command {
 	var txID string
+	var ttl time.Duration
 	cmd := &cobra.Command{
 		Use:   "insert <collection> <json>",
 		Short: "Insert a record",
@@ -108,7 +116,11 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 			if txID != "" {
 				ctx = ctxWithTx(flags, txID)
 			}
-			resp, err := client.Insert(ctx, &pb.InsertRequest{Collection: args[0], Data: data})
+			resp, err := client.Insert(ctx, &pb.InsertRequest{
+				Collection: args[0],
+				Data:       data,
+				TtlSeconds: int64(ttl / time.Second),
+			})
 			if err != nil {
 				return err
 			}
@@ -121,6 +133,7 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Per-record TTL (e.g. 30m; 0 = collection default). Not allowed with --tx-id")
 	return cmd
 }
 
@@ -209,6 +222,7 @@ func findByIDCmd(flags *cliFlags) *cobra.Command {
 
 func updateCmd(flags *cliFlags) *cobra.Command {
 	var txID string
+	var ttl time.Duration
 	cmd := &cobra.Command{
 		Use:   "update <collection> <id> <json>",
 		Short: "Update a record by id",
@@ -234,6 +248,7 @@ func updateCmd(flags *cliFlags) *cobra.Command {
 			}
 			resp, err := client.Update(ctx, &pb.UpdateRequest{
 				Collection: args[0], Id: id, Data: data,
+				TtlSeconds: int64(ttl / time.Second),
 			})
 			if err != nil {
 				return err
@@ -247,6 +262,7 @@ func updateCmd(flags *cliFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Reset the record's TTL (e.g. 30m; 0 = re-apply collection default). Not allowed with --tx-id")
 	return cmd
 }
 

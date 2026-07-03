@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/srjn45/filedbv2/engine"
@@ -684,3 +686,65 @@ func TestIntegration_Errors_UnknownTx(t *testing.T) {
 		t.Error("expected error rolling back unknown tx")
 	}
 }
+
+func TestIntegration_TTL(t *testing.T) {
+	c := newTestServer(t)
+
+	// A per-collection default TTL is accepted at create time.
+	if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{
+		Name: "ttlcol", DefaultTtlSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("CreateCollection with default TTL: %v", err)
+	}
+
+	// A record inserted without an explicit TTL is still readable (its deadline
+	// is an hour out); an explicit per-record TTL is accepted too.
+	d, _ := structpb.NewStruct(map[string]any{"k": "v"})
+	ir, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "ttlcol", Data: d})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if _, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "ttlcol", Id: ir.Id}); err != nil {
+		t.Errorf("FindById on live record: %v", err)
+	}
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "ttlcol", Data: d, TtlSeconds: 1800}); err != nil {
+		t.Errorf("Insert with explicit TTL: %v", err)
+	}
+
+	// Negative TTLs are rejected on every write surface.
+	if got := status.Code(mustErr(c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "bad", DefaultTtlSeconds: -1}))); got != codes.InvalidArgument {
+		t.Errorf("CreateCollection negative default TTL: got %v, want InvalidArgument", got)
+	}
+	if got := status.Code(mustErr(c.Insert(ctx(), &pb.InsertRequest{Collection: "ttlcol", Data: d, TtlSeconds: -1}))); got != codes.InvalidArgument {
+		t.Errorf("Insert negative TTL: got %v, want InvalidArgument", got)
+	}
+	recs := []*structpb.Struct{d}
+	if got := status.Code(mustErr(c.InsertMany(ctx(), &pb.InsertManyRequest{Collection: "ttlcol", Records: recs, TtlSeconds: -1}))); got != codes.InvalidArgument {
+		t.Errorf("InsertMany negative TTL: got %v, want InvalidArgument", got)
+	}
+	if got := status.Code(mustErr(c.Update(ctx(), &pb.UpdateRequest{Collection: "ttlcol", Id: ir.Id, Data: d, TtlSeconds: -1}))); got != codes.InvalidArgument {
+		t.Errorf("Update negative TTL: got %v, want InvalidArgument", got)
+	}
+
+	// A resetting TTL on Update is accepted.
+	if _, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "ttlcol", Id: ir.Id, Data: d, TtlSeconds: 60}); err != nil {
+		t.Errorf("Update with TTL: %v", err)
+	}
+
+	// Per-record TTL is not (yet) supported inside a transaction.
+	btr, err := c.BeginTx(ctx(), &pb.BeginTxRequest{Collection: "ttlcol"})
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if got := status.Code(mustErr(c.Insert(txCtx(btr.TxId), &pb.InsertRequest{Collection: "ttlcol", Data: d, TtlSeconds: 60}))); got != codes.InvalidArgument {
+		t.Errorf("Insert TTL inside tx: got %v, want InvalidArgument", got)
+	}
+	if got := status.Code(mustErr(c.Update(txCtx(btr.TxId), &pb.UpdateRequest{Collection: "ttlcol", Id: ir.Id, Data: d, TtlSeconds: 60}))); got != codes.InvalidArgument {
+		t.Errorf("Update TTL inside tx: got %v, want InvalidArgument", got)
+	}
+}
+
+// mustErr returns the error from a (result, error) pair, ignoring the result.
+// It lets a status-code assertion read as one line regardless of the RPC's
+// response type.
+func mustErr[T any](_ T, err error) error { return err }

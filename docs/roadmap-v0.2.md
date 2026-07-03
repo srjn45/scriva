@@ -341,7 +341,7 @@ conventions.
 - [x] Q4 — context cancellation into the engine
 
 **v0.4.0 — Features**
-- [x] F1 — TTL / expiring records (engine + config; RPC/client surfacing deferred)
+- [x] F1 — TTL / expiring records (engine + config; per-record `ttl_seconds` + per-collection `default_ttl_seconds` surfaced on the RPCs & CLI)
 - [x] F2 — backup / snapshot (streaming `Snapshot` RPC + `filedb-cli backup`)
 - [x] F3 — on-demand compaction (RPC + CLI)
 
