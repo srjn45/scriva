@@ -265,3 +265,83 @@ func TestTTL_SecondaryIndexExcludesExpired(t *testing.T) {
 		t.Errorf("indexed eq surfaced %d records, want 1 (expired excluded)", len(res))
 	}
 }
+
+// TestDefaultTTL_PersistsAcrossReopen verifies that a per-collection default
+// TTL set at CreateCollection time is written to meta.json, survives a restart,
+// and overrides the server-wide default (which is 0/none here). A record
+// inserted after reopen is stamped with a deadline of ~now+ttl.
+func TestDefaultTTL_PersistsAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	cfg := CollectionConfig{
+		SegmentMaxSize:  512,
+		CompactInterval: 24 * time.Hour,
+		DefaultTTL:      0, // server-wide default: never expire
+	}
+
+	db, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := db.CreateCollectionWithDefaultTTL("sessions", time.Hour); err != nil {
+		t.Fatalf("CreateCollectionWithDefaultTTL: %v", err)
+	}
+	db.Close()
+
+	// Reopen with the same server-wide default of 0; the per-collection default
+	// must come back from meta.json, not the global config.
+	db2, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db2.Close()
+
+	col, err := db2.Collection("sessions")
+	if err != nil {
+		t.Fatalf("Collection: %v", err)
+	}
+
+	before := time.Now().Add(time.Hour)
+	id, _, err := col.Insert(map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	after := time.Now().Add(time.Hour)
+
+	loc, ok := col.index.Get(id)
+	if !ok {
+		t.Fatalf("index entry for id %d missing", id)
+	}
+	if loc.ExpiresAt == 0 {
+		t.Fatal("record got no deadline; persisted default TTL was not applied after reopen")
+	}
+	got := time.Unix(0, loc.ExpiresAt)
+	if got.Before(before.Add(-time.Minute)) || got.After(after.Add(time.Minute)) {
+		t.Errorf("deadline %v not within [~now+1h] window [%v, %v]", got, before, after)
+	}
+}
+
+// TestDefaultTTL_ExplicitInsertOverridesCollectionDefault confirms an explicit
+// per-record expiry still wins over a persisted collection default.
+func TestDefaultTTL_ExplicitInsertOverridesCollectionDefault(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, CollectionConfig{CompactInterval: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	col, err := db.CreateCollectionWithDefaultTTL("c", time.Hour)
+	if err != nil {
+		t.Fatalf("CreateCollectionWithDefaultTTL: %v", err)
+	}
+
+	explicit := time.Now().Add(10 * time.Minute)
+	id, _, err := col.InsertWithExpiry(map[string]any{"k": "v"}, explicit)
+	if err != nil {
+		t.Fatalf("InsertWithExpiry: %v", err)
+	}
+	loc, _ := col.index.Get(id)
+	if got := time.Unix(0, loc.ExpiresAt); got.Sub(explicit).Abs() > time.Second {
+		t.Errorf("explicit deadline %v not honored (got %v)", explicit, got)
+	}
+}

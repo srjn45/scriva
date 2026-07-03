@@ -185,6 +185,11 @@ message OrFilter  { repeated Filter filters = 1; }
 
 message CreateCollectionRequest {
   string name = 1;
+  // Optional per-collection default record TTL, in seconds. When > 0, records
+  // inserted into this collection expire after this long unless a write
+  // supplies its own TTL. Persisted per-collection and overrides the
+  // server-wide default. 0 (the default) inherits the server-wide default.
+  int64 default_ttl_seconds = 2;
 }
 message CreateCollectionResponse {
   string name       = 1;
@@ -204,6 +209,10 @@ message ListCollectionsResponse { repeated string names = 1; }
 message InsertRequest {
   string                 collection = 1;
   google.protobuf.Struct data       = 2;
+  // Optional per-record TTL, in seconds. When > 0, the record expires this long
+  // after insertion, overriding any collection default. 0 (the default)
+  // applies the collection's default TTL, if any.
+  int64 ttl_seconds = 3;
 }
 message InsertResponse {
   uint64 id         = 1;
@@ -213,6 +222,9 @@ message InsertResponse {
 message InsertManyRequest {
   string                          collection = 1;
   repeated google.protobuf.Struct records    = 2;
+  // Optional per-record TTL, in seconds, applied to every record in the batch.
+  // Same semantics as InsertRequest.ttl_seconds.
+  int64 ttl_seconds = 3;
 }
 message InsertManyResponse {
   repeated uint64 ids = 1;
@@ -240,6 +252,10 @@ message UpdateRequest {
   string                 collection = 1;
   uint64                 id         = 2;
   google.protobuf.Struct data       = 3;
+  // Optional per-record TTL, in seconds, resetting the record's deadline to
+  // this long from now. When > 0 it overrides the collection default; 0 (the
+  // default) re-applies the collection default TTL, if any.
+  int64 ttl_seconds = 4;
 }
 message UpdateResponse {
   uint64 id            = 1;

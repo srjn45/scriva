@@ -58,7 +58,15 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "collection name required")
 	}
-	if _, err := s.db.CreateCollection(req.Name); err != nil {
+	if req.DefaultTtlSeconds < 0 {
+		return nil, status.Error(codes.InvalidArgument, "default_ttl_seconds must not be negative")
+	}
+	if req.DefaultTtlSeconds > 0 {
+		ttl := time.Duration(req.DefaultTtlSeconds) * time.Second
+		if _, err := s.db.CreateCollectionWithDefaultTTL(req.Name, ttl); err != nil {
+			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		}
+	} else if _, err := s.db.CreateCollection(req.Name); err != nil {
 		return nil, status.Errorf(codes.AlreadyExists, "%v", err)
 	}
 	return &pb.CreateCollectionResponse{
@@ -81,12 +89,18 @@ func (s *GRPCServer) ListCollections(_ context.Context, _ *pb.ListCollectionsReq
 // ---- CRUD -----------------------------------------------------------------
 
 func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.InsertResponse, error) {
+	if req.TtlSeconds < 0 {
+		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
+		if req.TtlSeconds > 0 {
+			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
+		}
 		tx, ok := s.txMgr.Get(txID)
 		if !ok {
 			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
@@ -100,7 +114,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	}
 
 	data := req.Data.AsMap()
-	id, ts, err := col.Insert(data)
+	id, ts, err := col.InsertWithExpiry(data, ttlDeadline(req.TtlSeconds))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "insert: %v", err)
 	}
@@ -108,13 +122,17 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 }
 
 func (s *GRPCServer) InsertMany(_ context.Context, req *pb.InsertManyRequest) (*pb.InsertManyResponse, error) {
+	if req.TtlSeconds < 0 {
+		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
+	deadline := ttlDeadline(req.TtlSeconds)
 	ids := make([]uint64, 0, len(req.Records))
 	for _, r := range req.Records {
-		id, _, err := col.Insert(r.AsMap())
+		id, _, err := col.InsertWithExpiry(r.AsMap(), deadline)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "insertMany: %v", err)
 		}
@@ -180,12 +198,18 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 }
 
 func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.UpdateResponse, error) {
+	if req.TtlSeconds < 0 {
+		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
+		if req.TtlSeconds > 0 {
+			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
+		}
 		tx, ok := s.txMgr.Get(txID)
 		if !ok {
 			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
@@ -197,7 +221,14 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 		return &pb.UpdateResponse{Id: req.Id, DateModified: time.Now().UTC().Format(time.RFC3339)}, nil
 	}
 
-	ts, err := col.Update(req.Id, req.Data.AsMap())
+	// A data-only update keeps the record's existing deadline; an explicit
+	// ttl_seconds resets the deadline to that far from now.
+	var ts time.Time
+	if req.TtlSeconds > 0 {
+		ts, err = col.UpdateWithExpiry(req.Id, req.Data.AsMap(), ttlDeadline(req.TtlSeconds))
+	} else {
+		ts, err = col.Update(req.Id, req.Data.AsMap())
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
@@ -424,6 +455,16 @@ func (s *GRPCServer) RollbackTx(_ context.Context, req *pb.RollbackTxRequest) (*
 }
 
 // ---- Helpers --------------------------------------------------------------
+
+// ttlDeadline converts a relative ttl in seconds into an absolute expiry
+// instant. A non-positive ttl yields the zero time, which the engine treats as
+// "apply the collection's default TTL (if any)".
+func ttlDeadline(ttlSeconds int64) time.Time {
+	if ttlSeconds <= 0 {
+		return time.Time{}
+	}
+	return time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second)
+}
 
 func toProtoRecord(id uint64, data map[string]any, ts time.Time) (*pb.Record, error) {
 	s, err := structpb.NewStruct(data)
