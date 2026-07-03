@@ -56,6 +56,9 @@ pub enum WatchOp {
     Inserted,
     Updated,
     Deleted,
+    /// The server dropped events because this subscriber fell behind; the
+    /// client missed writes and should resync. No record accompanies it.
+    Overflow,
     Unspecified,
 }
 
@@ -292,6 +295,7 @@ fn watch_op_from_proto(op: i32) -> WatchOp {
         Ok(pb::WatchOp::Inserted) => WatchOp::Inserted,
         Ok(pb::WatchOp::Updated) => WatchOp::Updated,
         Ok(pb::WatchOp::Deleted) => WatchOp::Deleted,
+        Ok(pb::WatchOp::Overflow) => WatchOp::Overflow,
         _ => WatchOp::Unspecified,
     }
 }
@@ -358,10 +362,25 @@ impl FileDB {
 
     /// Create a new collection. Returns the collection name.
     pub async fn create_collection(&mut self, name: &str) -> Result<String, tonic::Status> {
+        self.create_collection_with_ttl(name, 0).await
+    }
+
+    /// Create a new collection with a default per-record TTL, in seconds.
+    ///
+    /// When `default_ttl_seconds > 0`, records inserted into this collection
+    /// without an explicit TTL expire that long after being written; the value
+    /// is persisted per-collection and overrides the server-wide default. `0`
+    /// inherits the server-wide default. Returns the collection name.
+    pub async fn create_collection_with_ttl(
+        &mut self,
+        name: &str,
+        default_ttl_seconds: i64,
+    ) -> Result<String, tonic::Status> {
         let resp = self
             .client
             .create_collection(self.req(pb::CreateCollectionRequest {
                 name: name.to_owned(),
+                default_ttl_seconds,
             }))
             .await?
             .into_inner();
@@ -400,11 +419,26 @@ impl FileDB {
         collection: &str,
         data: serde_json::Value,
     ) -> Result<u64, tonic::Status> {
+        self.insert_with_ttl(collection, data, 0).await
+    }
+
+    /// Insert one record with a per-record TTL, in seconds.
+    ///
+    /// When `ttl_seconds > 0`, the record expires that long after insertion,
+    /// overriding the collection default. `0` applies the collection's default
+    /// TTL, if any. Returns the assigned ID.
+    pub async fn insert_with_ttl(
+        &mut self,
+        collection: &str,
+        data: serde_json::Value,
+        ttl_seconds: i64,
+    ) -> Result<u64, tonic::Status> {
         let resp = self
             .client
             .insert(self.req(pb::InsertRequest {
                 collection: collection.to_owned(),
                 data: Some(json_to_struct(data)),
+                ttl_seconds,
             }))
             .await?
             .into_inner();
@@ -417,11 +451,24 @@ impl FileDB {
         collection: &str,
         records: Vec<serde_json::Value>,
     ) -> Result<Vec<u64>, tonic::Status> {
+        self.insert_many_with_ttl(collection, records, 0).await
+    }
+
+    /// Insert multiple records with a per-record TTL applied to every record in
+    /// the batch. Same semantics as [`FileDB::insert_with_ttl`]. Returns the
+    /// assigned IDs in insertion order.
+    pub async fn insert_many_with_ttl(
+        &mut self,
+        collection: &str,
+        records: Vec<serde_json::Value>,
+        ttl_seconds: i64,
+    ) -> Result<Vec<u64>, tonic::Status> {
         let resp = self
             .client
             .insert_many(self.req(pb::InsertManyRequest {
                 collection: collection.to_owned(),
                 records: records.into_iter().map(json_to_struct).collect(),
+                ttl_seconds,
             }))
             .await?
             .into_inner();
@@ -495,12 +542,29 @@ impl FileDB {
         id: u64,
         data: serde_json::Value,
     ) -> Result<u64, tonic::Status> {
+        self.update_with_ttl(collection, id, data, 0).await
+    }
+
+    /// Update a record by ID, resetting its TTL, in seconds.
+    ///
+    /// When `ttl_seconds > 0`, the record's deadline is reset to that long from
+    /// now, overriding the collection default. `0` is sticky — it re-applies
+    /// the collection default TTL and leaves an existing deadline untouched.
+    /// Returns the updated ID.
+    pub async fn update_with_ttl(
+        &mut self,
+        collection: &str,
+        id: u64,
+        data: serde_json::Value,
+        ttl_seconds: i64,
+    ) -> Result<u64, tonic::Status> {
         let resp = self
             .client
             .update(self.req(pb::UpdateRequest {
                 collection: collection.to_owned(),
                 id,
                 data: Some(json_to_struct(data)),
+                ttl_seconds,
             }))
             .await?
             .into_inner();
@@ -676,5 +740,64 @@ impl FileDB {
             dirty_entries: resp.dirty_entries,
             size_bytes: resp.size_bytes,
         })
+    }
+
+    // -------------------------------------------------------------------------
+    // Maintenance
+    // -------------------------------------------------------------------------
+
+    /// Run a forced, synchronous compaction pass on a collection.
+    ///
+    /// Merges dirty segments and reclaims space from deleted or overwritten
+    /// records. Returns only after the pass completes; `true` on success.
+    pub async fn compact(&mut self, collection: &str) -> Result<bool, tonic::Status> {
+        let resp = self
+            .client
+            .compact(self.req(pb::CompactRequest {
+                collection: collection.to_owned(),
+            }))
+            .await?
+            .into_inner();
+        Ok(resp.ok)
+    }
+
+    /// Stream a consistent, gzip-compressed tar snapshot of the whole database.
+    ///
+    /// Returns an async `Stream` yielding the raw archive bytes chunk by chunk.
+    /// Concatenate the chunks to reconstruct the `.tar.gz`; restore by
+    /// extracting it into a data directory. See [`FileDB::snapshot_to_file`] for
+    /// a convenience wrapper that writes straight to disk.
+    pub async fn snapshot(
+        &mut self,
+    ) -> Result<impl Stream<Item = Result<Vec<u8>, tonic::Status>>, tonic::Status> {
+        let streaming = self
+            .client
+            .snapshot(self.req(pb::SnapshotRequest {}))
+            .await?
+            .into_inner();
+
+        Ok(streaming.map(|result| result.map(|chunk| chunk.data)))
+    }
+
+    /// Stream a database snapshot straight to a file at `path`.
+    ///
+    /// Writes the gzip-compressed tar archive chunk by chunk and returns the
+    /// total number of bytes written. Restore with `tar xzf <path>`.
+    pub async fn snapshot_to_file(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<u64, Error> {
+        use tokio::io::AsyncWriteExt;
+
+        let mut stream = self.snapshot().await?;
+        let mut file = tokio::fs::File::create(path).await?;
+        let mut total: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            total += chunk.len() as u64;
+        }
+        file.flush().await?;
+        Ok(total)
     }
 }

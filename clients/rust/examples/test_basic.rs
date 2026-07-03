@@ -114,6 +114,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stats.dirty_entries, stats.size_bytes,
     );
 
+    // --- Compaction ---
+    println!("\n=== Compact ===");
+    let compacted = db.compact("test_rs").await?;
+    println!("Compacted: {}", compacted);
+
+    // --- Per-record TTL ---
+    println!("\n=== Per-record TTL ===");
+    let ttl_id = db
+        .insert_with_ttl("test_rs", serde_json::json!({"name": "Ephemeral", "role": "temp"}), 3600)
+        .await?;
+    println!("Inserted {} with a 3600s TTL", ttl_id);
+    // ttl_seconds 0 is sticky — it keeps the existing deadline.
+    db.update("test_rs", ttl_id, serde_json::json!({"name": "Ephemeral", "role": "temp", "touched": true})).await?;
+    println!("Updated the TTL record (deadline preserved)");
+
+    // --- Snapshot (whole-database backup) ---
+    println!("\n=== Snapshot ===");
+    let backup = std::env::temp_dir().join("filedb_rust_snapshot.tar.gz");
+    let bytes = db.snapshot_to_file(&backup).await?;
+    println!("Snapshot: wrote {} bytes to {}", bytes, backup.display());
+    let _ = std::fs::remove_file(&backup);
+
     // --- Cleanup ---
     println!("\n=== Cleanup ===");
     db.drop_collection("test_rs").await?;

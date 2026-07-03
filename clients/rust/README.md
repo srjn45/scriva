@@ -47,6 +47,10 @@ The API key is sent as `x-api-key` gRPC metadata on every call.
 db.create_collection("users").await?;
 let names: Vec<String> = db.list_collections().await?;
 db.drop_collection("users").await?;
+
+// Give the collection a default per-record TTL (seconds). Records inserted
+// without an explicit TTL then expire this long after being written.
+db.create_collection_with_ttl("sessions", 3600).await?;
 ```
 
 ## CRUD
@@ -73,6 +77,30 @@ db.update("users", id, json!({"name": "Alice", "age": 31})).await?;
 // Delete.
 let existed: bool = db.delete("users", id).await?;
 ```
+
+### Per-record TTL
+
+`insert`, `insert_many`, and `update` each have a `*_with_ttl` variant taking a
+`ttl_seconds: i64`:
+
+```rust
+// Expire this record 60 seconds from now, regardless of the collection default.
+db.insert_with_ttl("sessions", json!({"token": "abc"}), 60).await?;
+
+// Same TTL applied to every record in the batch.
+db.insert_many_with_ttl("sessions", vec![
+    json!({"token": "a"}),
+    json!({"token": "b"}),
+], 60).await?;
+
+// On update, ttl_seconds > 0 resets the deadline; the plain `update` (ttl 0) is
+// sticky and leaves the existing deadline untouched.
+db.update_with_ttl("sessions", id, json!({"token": "abc", "seen": true}), 120).await?;
+```
+
+A `ttl_seconds` of `0` (what the plain `insert`/`insert_many`/`update` methods
+use) inherits the collection's default TTL on insert; a value greater than 0
+overrides it. Negative values are rejected by the server.
 
 ## Find (querying)
 
@@ -181,6 +209,9 @@ while let Some(event) = events.next().await {
         WatchOp::Inserted => println!("INSERT id={} data={}", event.record.id, event.record.data),
         WatchOp::Updated  => println!("UPDATE id={} data={}", event.record.id, event.record.data),
         WatchOp::Deleted  => println!("DELETE id={}", event.record.id),
+        // The server dropped events because this subscriber fell behind —
+        // resync from a fresh `find`. No record accompanies an overflow.
+        WatchOp::Overflow => println!("OVERFLOW — missed events, resync needed"),
         WatchOp::Unspecified => {}
     }
 }
@@ -198,6 +229,27 @@ println!(
     "collection={} records={} segments={} dirty={} size_bytes={}",
     s.collection, s.record_count, s.segment_count, s.dirty_entries, s.size_bytes,
 );
+```
+
+## Maintenance
+
+```rust
+// Force a synchronous compaction of a collection — merges dirty segments and
+// reclaims space from deleted/overwritten records. Returns true on success.
+db.compact("users").await?;
+
+// Stream a consistent gzip-compressed tar snapshot of the whole database
+// straight to a file. Returns the number of bytes written; restore with
+// `tar xzf backup.tar.gz`.
+let bytes = db.snapshot_to_file("backup.tar.gz").await?;
+
+// Or consume the raw archive chunks yourself (Snapshot is server-streaming):
+use futures::StreamExt;
+let mut chunks = db.snapshot().await?;
+while let Some(chunk) = chunks.next().await {
+    let chunk: Vec<u8> = chunk?;   // raw .tar.gz bytes
+    // out.write_all(&chunk)?;
+}
 ```
 
 ## TLS
