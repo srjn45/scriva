@@ -201,18 +201,33 @@ so `Find ... limit 10` still reads the whole collection.
 
 ## v0.4.0 — Feature breadth
 
-### F1 — TTL / expiring records — **M**
+### F1 — TTL / expiring records — **M** ✅ (engine + config; wire-protocol surfacing deferred)
 - **Why:** natural fit for the cache/IoT/session use cases the README targets.
-- **Approach:** optional per-record `expires_at` (or per-collection default TTL).
-  A reaper (reuse the compactor cadence) tombstones expired ids; reads filter
-  out expired records defensively. Surface via Insert/Update options + a
-  collection-level config.
-- **Proto/API:** add `expires_at` / `ttl_seconds` to Insert/Update;
-  collection-level default TTL in `CreateCollection`.
-- **Files:** `proto/filedb.proto`, `collection.go`, `compactor.go`,
-  `server/grpc.go`, CLI, clients, docs.
-- **Tests:** record disappears after TTL; not before; survives reopen.
-- **Acceptance:** expired records are invisible to reads and reclaimed by
+- **Approach:** optional per-record deadline plus a collection-level default TTL.
+  A reaper (on the compactor cadence) tombstones expired ids; compaction drops
+  expired records; reads filter them out defensively so an expired record is
+  invisible the instant its deadline passes, before reclamation.
+- **Delivered:** `store.Entry.ExpiresAt` (Unix-nano, folded into the CRC,
+  omitted when unset — backward compatible) and a mirrored `IndexEntry.ExpiresAt`
+  so reads drop expired records without a disk hit. Engine API:
+  `InsertWithExpiry` / `UpdateWithExpiry` (explicit deadline) and
+  `CollectionConfig.DefaultTTL` (now+TTL on inserts lacking one). Updates keep a
+  record's deadline (sticky) unless `UpdateWithExpiry` overrides it. Server
+  `--default-ttl` flag (Config + YAML + flag). Reaper in `compactLoop`;
+  `resolveEntries` drops expired entries during compaction.
+- **Deferred (follow-up):** per-record `expires_at` / `ttl_seconds` on the
+  Insert/Update RPCs and per-collection default TTL in `CreateCollection`, plus
+  the 7 language clients. Kept out of this PR to keep it engine-first and
+  reviewable, matching the KEY-1 precedent; TTL is fully usable via the embedded
+  engine and the server-wide `--default-ttl`.
+- **Files:** `store/ndjson.go`, `engine/index.go`, `engine/collection.go`,
+  `engine/ttl.go`, `engine/compactor.go`, `engine/keys.go`, `engine/scan.go`,
+  `server/config.go`, `cmd/filedb/main.go`, docs.
+- **Tests:** `engine/ttl_test.go` — hidden after deadline, visible before,
+  default-TTL applied, sticky across update, override, reaped, reclaimed by
+  compaction, survives reopen, excluded from secondary-index lookups;
+  `store` round-trip + omitempty.
+- **Acceptance:** ✅ expired records are invisible to reads and reclaimed by
   compaction.
 
 ### F2 — backup / snapshot — **S/M**
@@ -298,7 +313,7 @@ conventions.
 - [x] Q4 — context cancellation into the engine
 
 **v0.4.0 — Features**
-- [ ] F1 — TTL / expiring records
+- [x] F1 — TTL / expiring records (engine + config; RPC/client surfacing deferred)
 - [ ] F2 — backup / snapshot
 - [ ] F3 — on-demand compaction
 

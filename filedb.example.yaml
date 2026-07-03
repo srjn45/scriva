@@ -70,6 +70,13 @@ sync_interval: 1s
 # committing. Go duration; set "0" to disable expiry entirely.
 tx_timeout: 5m
 
+# --- TTL --------------------------------------------------------------------
+
+# Default expiry for inserted records that carry no explicit deadline. After it
+# elapses the record is hidden from reads and reclaimed by compaction. Go
+# duration (e.g. 24h); set "0" (the default) so records never expire.
+default_ttl: 0
+
 # --- Watch ------------------------------------------------------------------
 
 # Per-subscriber event buffer for the Watch change feed. A subscriber that

@@ -23,6 +23,7 @@ compact_interval: 10m
 compact_dirty_pct: 0.5
 sync_mode: interval
 sync_interval: 2s
+default_ttl: 24h
 `)
 		if err := f.Close(); err != nil {
 			t.Fatal(err)
@@ -62,6 +63,12 @@ sync_interval: 2s
 		}
 		if cfg.SyncInterval != 2*time.Second {
 			t.Errorf("SyncInterval = %v, want 2s", cfg.SyncInterval)
+		}
+		if cfg.DefaultTTL != 24*time.Hour {
+			t.Errorf("DefaultTTL = %v, want 24h", cfg.DefaultTTL)
+		}
+		if ec := cfg.EngineConfig(); ec.DefaultTTL != 24*time.Hour {
+			t.Errorf("EngineConfig.DefaultTTL = %v, want 24h", ec.DefaultTTL)
 		}
 	})
 

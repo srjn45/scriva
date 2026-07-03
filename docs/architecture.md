@@ -310,6 +310,44 @@ without materialising the collection:
   collection that has never taken a keyed write has no `_key` index and reports
   `false` for every key.
 
+### TTL / expiring records
+
+A record can carry an expiry **deadline**, after which it is invisible to reads
+and reclaimed by compaction. The deadline is stored as a Unix-nanosecond
+timestamp on the segment entry (`store.Entry.ExpiresAt`, `json:"expires_at,omitempty"`)
+and mirrored onto the in-memory `IndexEntry`, so a read can drop an expired
+record without touching disk. Like `rev`, it is folded into the entry CRC only
+when non-zero, so a segment line or `index.json` written before TTLs existed
+decodes as *never expires* and still verifies — fully backward compatible. A
+Unix-nano `int64` (not a `time.Time`) is used precisely so `omitempty` drops it
+when unset; a zero `time.Time` struct would still serialise on every line.
+
+Deadlines are set two ways:
+
+- **Explicit** — `InsertWithExpiry(data, when)` / `UpdateWithExpiry(id, data, when)`
+  stamp an exact instant.
+- **Default TTL** — `CollectionConfig.DefaultTTL` (server `--default-ttl`) stamps
+  `now + TTL` on every insert that carries no explicit deadline. Zero (the
+  default) means records never expire.
+
+A plain `Update` keeps a record's existing deadline (**sticky**) — it is a
+data-only write, not a TTL refresh; `UpdateWithExpiry` is the way to move the
+deadline. Compare-and-swap and transaction updates likewise preserve the
+deadline; transaction inserts honor the default TTL.
+
+Two mechanisms make expiry effective:
+
+1. **Defensive read filtering** — `Get` (hence `FindByID`/`GetByKey` and indexed
+   scan candidates) and the streaming scan liveness check both drop any record
+   whose deadline has passed. This makes a record invisible **the instant** it
+   expires, before any background work runs, and independent of clock skew
+   between the reaper and the reader.
+2. **Reaping + reclamation** — a reaper runs on the compactor cadence
+   (`reapExpired`), appends delete tombstones for expired ids, and removes them
+   from the primary and secondary indexes. Compaction additionally drops expired
+   entries during `resolveEntries`, so space is reclaimed even if the reaper has
+   not yet run.
+
 ---
 
 ## Change Feed (Watch)

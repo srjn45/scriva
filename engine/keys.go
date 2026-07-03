@@ -45,7 +45,7 @@ func (c *Collection) InsertWithKey(key string, data map[string]any) (uint64, tim
 	if err := c.ensureKeyIndex(); err != nil {
 		return 0, time.Time{}, err
 	}
-	return c.insert(stampKey(data, key))
+	return c.insert(stampKey(data, key), c.resolveInsertExpiry(time.Time{}))
 }
 
 // FindByKey returns the data and timestamp for the record carrying key. The
@@ -70,7 +70,7 @@ func (c *Collection) UpdateByKey(key string, data map[string]any) (time.Time, er
 	if err != nil {
 		return time.Time{}, err
 	}
-	return c.update(id, stampKey(data, key))
+	return c.update(id, stampKey(data, key), 0, true)
 }
 
 // DeleteByKey removes the record carrying key. A missing key yields
@@ -116,20 +116,27 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		rev uint64
 		op  store.Op
 		e   store.Entry
+		exp int64
 	)
 	if ids, hit := c.IndexLookup(KeyField, key); hit && len(ids) > 0 {
 		if cur, ok := c.index.Get(ids[0]); ok {
 			id, rev, op = ids[0], cur.Rev+1, store.OpUpdate
 			e = store.NewUpdate(id, stamped)
+			// A replace is a data-only write: preserve the record's existing
+			// deadline (sticky), matching UpdateByKey/Update semantics.
+			exp = cur.ExpiresAt
 		}
 	}
 	if op == "" {
-		// No live record carries the key → insert a fresh one at revision 1.
+		// No live record carries the key → insert a fresh one at revision 1,
+		// honoring the collection's default TTL if configured.
 		id, rev, op = c.idSeq.Add(1), 1, store.OpInsert
 		e = store.NewInsert(id, stamped)
+		exp = c.resolveInsertExpiry(time.Time{})
 	}
 	e.Ts = ts
 	e.Rev = rev
+	e.ExpiresAt = exp
 
 	// Enforce unique indexes before writing so a rejected upsert appends nothing
 	// and mutates no index. The _key index never conflicts here (insert: no live
@@ -144,7 +151,7 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		c.mu.Unlock()
 		return Record{}, fmt.Errorf("collection: upsert: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev, ExpiresAt: exp})
 	if op == store.OpInsert {
 		c.sidxIndexEntry(id, stamped)
 	} else {

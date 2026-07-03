@@ -40,6 +40,9 @@ type Config struct {
 	// Transactions
 	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
 
+	// TTL
+	DefaultTTL time.Duration `yaml:"default_ttl"` // default expiry for inserted records (default: 0 = never expire)
+
 	// Watch
 	WatchBufferSize int `yaml:"watch_buffer_size"` // per-subscriber event buffer (default: 64)
 }
@@ -59,6 +62,7 @@ func DefaultConfig() Config {
 		SyncInterval:    engine.DefaultSyncInterval,
 		TxTimeout:       5 * time.Minute,
 		WatchBufferSize: engine.DefaultWatchBufferSize,
+		DefaultTTL:      0,
 	}
 }
 
@@ -71,6 +75,7 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		SyncMode:        engine.SyncMode(c.SyncMode),
 		SyncInterval:    c.SyncInterval,
 		WatchBufferSize: c.WatchBufferSize,
+		DefaultTTL:      c.DefaultTTL,
 	}
 }
 
@@ -92,6 +97,7 @@ type fileConfig struct {
 	SyncInterval    string  `yaml:"sync_interval"`
 	TxTimeout       string  `yaml:"tx_timeout"`
 	WatchBufferSize int     `yaml:"watch_buffer_size"`
+	DefaultTTL      string  `yaml:"default_ttl"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -121,6 +127,7 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncInterval:    defaults.SyncInterval.String(),
 		TxTimeout:       defaults.TxTimeout.String(),
 		WatchBufferSize: defaults.WatchBufferSize,
+		DefaultTTL:      defaults.DefaultTTL.String(),
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -144,6 +151,11 @@ func LoadConfigFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config file tx_timeout %q: %w", fc.TxTimeout, err)
 	}
 
+	defaultTTL, err := time.ParseDuration(fc.DefaultTTL)
+	if err != nil {
+		return Config{}, fmt.Errorf("config file default_ttl %q: %w", fc.DefaultTTL, err)
+	}
+
 	return Config{
 		DataDir:         fc.DataDir,
 		GRPCAddr:        fc.GRPCAddr,
@@ -160,5 +172,6 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncInterval:    syncInterval,
 		TxTimeout:       txTimeout,
 		WatchBufferSize: fc.WatchBufferSize,
+		DefaultTTL:      defaultTTL,
 	}, nil
 }
