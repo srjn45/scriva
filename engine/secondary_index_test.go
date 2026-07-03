@@ -150,7 +150,7 @@ func TestScan_FallsBackWithoutIndex(t *testing.T) {
 
 func TestSecondaryIndex_PersistLoad(t *testing.T) {
 	dir := t.TempDir()
-	sidx := newSecondaryIndex("city")
+	sidx := newSecondaryIndex("city", false)
 	sidx.add("london", 1)
 	sidx.add("london", 2)
 	sidx.add("paris", 3)
@@ -160,7 +160,7 @@ func TestSecondaryIndex_PersistLoad(t *testing.T) {
 		t.Fatalf("Persist: %v", err)
 	}
 
-	sidx2 := newSecondaryIndex("city")
+	sidx2 := newSecondaryIndex("city", false)
 	if err := sidx2.Load(path); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
