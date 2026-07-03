@@ -52,9 +52,13 @@ Compaction:  resolve latest per id → write clean segments → atomic swap → 
 
 ## Release status
 
-**v0.1.0 — released** (`v*` tag → goreleaser → GitHub Releases + GHCR). The core
-is feature-complete; the next arc is tracked in
-[**docs/roadmap-v0.2.md**](docs/roadmap-v0.2.md) — see "Post-v0.1.0 roadmap" below.
+**v0.3.0 — released** (`v*` tag → goreleaser → GitHub Releases + GHCR). The core
+is feature-complete and the entire post-v0.1.0 plan
+([**docs/roadmap-v0.2.md**](docs/roadmap-v0.2.md), milestones v0.2.0–v0.5.0) has
+shipped, including per-record TTL over the wire and full API parity across all
+seven client SDKs. See [CHANGELOG.md](CHANGELOG.md) for the per-release
+breakdown. The next arc is planned in
+[**docs/roadmap-v0.6.md**](docs/roadmap-v0.6.md).
 
 ---
 
