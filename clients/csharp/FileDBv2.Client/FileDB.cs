@@ -85,10 +85,18 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
     // Collection management
     // -----------------------------------------------------------------------
 
-    public async Task<string> CreateCollectionAsync(string name, CancellationToken ct = default)
+    /// <summary>
+    /// Create a collection. When <paramref name="defaultTtlSeconds"/> is greater than 0,
+    /// records inserted without an explicit TTL expire that many seconds after being
+    /// written; the value is persisted per-collection and overrides the server-wide
+    /// default. 0 (the default) inherits the server-wide default.
+    /// </summary>
+    public async Task<string> CreateCollectionAsync(
+        string name, long defaultTtlSeconds = 0, CancellationToken ct = default)
     {
         var resp = await _stub.CreateCollectionAsync(
-            new CreateCollectionRequest { Name = name }, _headers, cancellationToken: ct);
+            new CreateCollectionRequest { Name = name, DefaultTtlSeconds = defaultTtlSeconds },
+            _headers, cancellationToken: ct);
         return resp.Name;
     }
 
@@ -110,27 +118,39 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
     // CRUD
     // -----------------------------------------------------------------------
 
-    /// <summary>Insert one record and return its assigned id.</summary>
+    /// <summary>
+    /// Insert one record and return its assigned id. When <paramref name="ttlSeconds"/>
+    /// is greater than 0, the record expires that many seconds after insertion,
+    /// overriding any collection default; 0 (the default) applies the collection's
+    /// default TTL, if any.
+    /// </summary>
     public async Task<ulong> InsertAsync(
         string collection,
         Dictionary<string, object?> data,
+        long ttlSeconds = 0,
         CancellationToken ct = default)
     {
         var resp = await _stub.InsertAsync(new InsertRequest
         {
             Collection = collection,
             Data       = DictToStruct(data),
+            TtlSeconds = ttlSeconds,
         }, _headers, cancellationToken: ct);
         return resp.Id;
     }
 
-    /// <summary>Insert multiple records and return their assigned ids in insertion order.</summary>
+    /// <summary>
+    /// Insert multiple records and return their assigned ids in insertion order.
+    /// <paramref name="ttlSeconds"/> is applied to every record in the batch, with the
+    /// same semantics as <see cref="InsertAsync"/>.
+    /// </summary>
     public async Task<IReadOnlyList<ulong>> InsertManyAsync(
         string collection,
         IEnumerable<Dictionary<string, object?>> records,
+        long ttlSeconds = 0,
         CancellationToken ct = default)
     {
-        var req = new InsertManyRequest { Collection = collection };
+        var req = new InsertManyRequest { Collection = collection, TtlSeconds = ttlSeconds };
         foreach (var r in records) req.Records.Add(DictToStruct(r));
         var resp = await _stub.InsertManyAsync(req, _headers, cancellationToken: ct);
         return resp.Ids;
@@ -206,11 +226,17 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
         return results;
     }
 
-    /// <summary>Update an existing record and return its id.</summary>
+    /// <summary>
+    /// Update an existing record and return its id. When <paramref name="ttlSeconds"/>
+    /// is greater than 0, the record's deadline is reset to that many seconds from now,
+    /// overriding the collection default; 0 (the default) is sticky — it re-applies the
+    /// collection default TTL and leaves an existing deadline untouched.
+    /// </summary>
     public async Task<ulong> UpdateAsync(
         string collection,
         ulong  id,
         Dictionary<string, object?> data,
+        long ttlSeconds = 0,
         CancellationToken ct = default)
     {
         var resp = await _stub.UpdateAsync(new UpdateRequest
@@ -218,6 +244,7 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
             Collection = collection,
             Id         = id,
             Data       = DictToStruct(data),
+            TtlSeconds = ttlSeconds,
         }, _headers, cancellationToken: ct);
         return resp.Id;
     }
@@ -337,6 +364,52 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
             DirtyEntries = resp.DirtyEntries,
             SizeBytes    = resp.SizeBytes,
         };
+    }
+
+    // -----------------------------------------------------------------------
+    // Maintenance
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Run a forced, synchronous compaction pass on a collection — merges dirty
+    /// segments and reclaims space from deleted or overwritten records. Returns only
+    /// after the pass completes; <c>true</c> on success.
+    /// </summary>
+    public async Task<bool> CompactAsync(string collection, CancellationToken ct = default)
+    {
+        var resp = await _stub.CompactAsync(
+            new CompactRequest { Collection = collection }, _headers, cancellationToken: ct);
+        return resp.Ok;
+    }
+
+    /// <summary>
+    /// Stream a consistent, gzip-compressed tar snapshot of the whole database.
+    /// Chunks are yielded as they arrive (server-streaming RPC); concatenate them to
+    /// reconstruct the <c>.tar.gz</c>. See <see cref="SnapshotToFileAsync"/> for a
+    /// convenience wrapper that writes straight to disk.
+    /// </summary>
+    public async IAsyncEnumerable<ReadOnlyMemory<byte>> SnapshotAsync(
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        using var call = _stub.Snapshot(new SnapshotRequest(), _headers, cancellationToken: ct);
+        await foreach (var chunk in call.ResponseStream.ReadAllAsync(ct))
+            yield return chunk.Data.Memory;
+    }
+
+    /// <summary>
+    /// Stream a database snapshot straight to a file at <paramref name="path"/>,
+    /// returning the total number of bytes written. Restore with <c>tar xzf</c>.
+    /// </summary>
+    public async Task<long> SnapshotToFileAsync(string path, CancellationToken ct = default)
+    {
+        await using var fs = File.Create(path);
+        long total = 0;
+        await foreach (var chunk in SnapshotAsync(ct))
+        {
+            await fs.WriteAsync(chunk, ct);
+            total += chunk.Length;
+        }
+        return total;
     }
 
     // -----------------------------------------------------------------------
@@ -477,7 +550,11 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
 /// <summary>A change-feed event returned by <see cref="FileDB.WatchAsync"/>.</summary>
 public sealed class WatchEventResult
 {
-    /// <summary>One of: <c>Inserted</c>, <c>Updated</c>, <c>Deleted</c>.</summary>
+    /// <summary>
+    /// One of: <c>Inserted</c>, <c>Updated</c>, <c>Deleted</c>, or <c>Overflow</c>.
+    /// <c>Overflow</c> means the server dropped events because this subscriber fell
+    /// behind — the client missed writes and should resync; no record accompanies it.
+    /// </summary>
     public required string Op { get; init; }
 
     public required string Collection { get; init; }

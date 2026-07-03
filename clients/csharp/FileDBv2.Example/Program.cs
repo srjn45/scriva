@@ -102,6 +102,27 @@ static async Task RunBasicExampleAsync(FileDB db)
     var stats = await db.StatsAsync(col);
     Console.WriteLine(stats);
 
+    // ---- Compaction ----
+    Console.WriteLine("\n=== Compact ===");
+    bool compacted = await db.CompactAsync(col);
+    Console.WriteLine($"Compacted: {compacted}");
+
+    // ---- Per-record TTL ----
+    Console.WriteLine("\n=== Per-record TTL ===");
+    ulong ttlId = await db.InsertAsync(col,
+        new() { ["name"] = "Ephemeral", ["role"] = "temp" }, ttlSeconds: 3600);
+    Console.WriteLine($"Inserted {ttlId} with a 3600s TTL");
+    // ttlSeconds 0 (the default) is sticky — it keeps the existing deadline.
+    await db.UpdateAsync(col, ttlId, new() { ["name"] = "Ephemeral", ["role"] = "temp", ["touched"] = true });
+    Console.WriteLine("Updated the TTL record (deadline preserved)");
+
+    // ---- Snapshot (whole-database backup) ----
+    Console.WriteLine("\n=== Snapshot ===");
+    string backup = Path.Combine(Path.GetTempPath(), "filedb_csharp_snapshot.tar.gz");
+    long bytes = await db.SnapshotToFileAsync(backup);
+    Console.WriteLine($"Snapshot: wrote {bytes} bytes to {backup}");
+    File.Delete(backup);
+
     // ---- Drop indexes + collection ----
     Console.WriteLine("\n=== Cleanup ===");
     bool indexDropped = await db.DropIndexAsync(col, "name");

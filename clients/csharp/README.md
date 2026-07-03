@@ -116,6 +116,10 @@ var db = new FileDB(string host, int port, string apiKey, string tlsCaCertPath);
 string             name  = await db.CreateCollectionAsync("col");
 bool               ok    = await db.DropCollectionAsync("col");
 IReadOnlyList<string> ns = await db.ListCollectionsAsync();
+
+// Give the collection a default per-record TTL (seconds). Records inserted
+// without an explicit TTL then expire this long after being written.
+await db.CreateCollectionAsync("sessions", defaultTtlSeconds: 3600);
 ```
 
 ---
@@ -160,6 +164,31 @@ ulong updatedId = await db.UpdateAsync("col", id, new() { ["name"] = "new value"
 bool deleted = await db.DeleteAsync("col", id);
 ```
 
+#### Per-record TTL
+
+`InsertAsync`, `InsertManyAsync`, and `UpdateAsync` each take an optional
+`ttlSeconds` (seconds):
+
+```csharp
+// Expire this record 60 seconds from now, regardless of the collection default.
+await db.InsertAsync("sessions", new() { ["token"] = "abc" }, ttlSeconds: 60);
+
+// Same TTL applied to every record in the batch.
+await db.InsertManyAsync("sessions", new[]
+{
+    new Dictionary<string, object?> { ["token"] = "a" },
+    new Dictionary<string, object?> { ["token"] = "b" },
+}, ttlSeconds: 60);
+
+// On update, ttlSeconds > 0 resets the deadline; ttlSeconds 0 (the default) is
+// sticky and leaves the existing deadline untouched.
+await db.UpdateAsync("sessions", id, new() { ["token"] = "abc", ["seen"] = true }, ttlSeconds: 120);
+```
+
+`ttlSeconds` of `0` (the default) inherits the collection's default TTL on
+insert; a value greater than 0 overrides it. Negative values are rejected by
+the server.
+
 ---
 
 ### Secondary indexes
@@ -190,7 +219,8 @@ using var cts = new CancellationTokenSource();
 await foreach (var evt in db.WatchAsync("col", ct: cts.Token))
 {
     Console.WriteLine($"{evt.Op} id={evt.RecordId} data={evt.Record["name"]}");
-    // evt.Op          — "Inserted" | "Updated" | "Deleted"
+    // evt.Op          — "Inserted" | "Updated" | "Deleted" | "Overflow"
+    //                   ("Overflow" = server dropped events; resync needed)
     // evt.Collection  — collection name
     // evt.RecordId    — ulong record id
     // evt.Record      — Dictionary<string, object?> record data
@@ -221,6 +251,27 @@ CollectionStats stats = await db.StatsAsync("col");
 // stats.SegmentCount  ulong
 // stats.DirtyEntries  ulong
 // stats.SizeBytes     ulong
+```
+
+---
+
+### Maintenance
+
+```csharp
+// Force a synchronous compaction of a collection — merges dirty segments and
+// reclaims space from deleted/overwritten records. Returns true on success.
+await db.CompactAsync("users");
+
+// Stream a consistent gzip-compressed tar snapshot of the whole database
+// straight to a file. Returns the number of bytes written; restore with
+// `tar xzf backup.tar.gz`.
+long bytes = await db.SnapshotToFileAsync("backup.tar.gz");
+
+// Or consume the raw archive chunks yourself (Snapshot is server-streaming):
+await foreach (ReadOnlyMemory<byte> chunk in db.SnapshotAsync())
+{
+    // await outStream.WriteAsync(chunk);
+}
 ```
 
 ---
