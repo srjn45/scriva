@@ -286,7 +286,7 @@ so `Find ... limit 10` still reads the whole collection.
 
 ## v0.5.0 — Auth & multi-tenancy
 
-### A1 — multiple scoped, rotatable API keys — **M/L**
+### A1 — multiple scoped, rotatable API keys — **M/L** — ✅ Delivered
 - **Problem:** one shared static key, no per-client identity, rotation, or
   read/write scoping (`internal/auth/apikey.go`).
 - **Approach:** load a key set (key → {name, scope}) from config/file; interceptor
@@ -346,4 +346,4 @@ conventions.
 - [x] F3 — on-demand compaction (RPC + CLI)
 
 **v0.5.0 — Auth**
-- [ ] A1 — multiple scoped, rotatable API keys
+- [x] A1 — multiple scoped, rotatable API keys (config `keys:` list + `SIGHUP` reload)

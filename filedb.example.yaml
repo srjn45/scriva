@@ -37,9 +37,23 @@ tls_key: ""
 
 # --- Auth -------------------------------------------------------------------
 
-# API key required from clients. Empty disables authentication.
-# Prefer the FILEDB_API_KEY environment variable in production.
+# Single API key required from clients. Empty disables authentication.
+# Prefer the FILEDB_API_KEY environment variable in production. When set, this
+# key is treated as a read-write key named "default".
 api_key: ""
+
+# Optional list of scoped API keys. Each key has a name (for logs) and a scope
+# of "read" (non-mutating RPCs only) or "read-write" (all RPCs). A read-scoped
+# key is rejected with PermissionDenied on writes. These combine with api_key
+# above. Send the server SIGHUP to hot-reload this list for rotation — no
+# restart needed.
+keys: []
+#   - key: "reader-secret"
+#     name: "analytics"
+#     scope: read
+#   - key: "writer-secret"
+#     name: "backend"
+#     scope: read-write
 
 # --- Engine tuning ----------------------------------------------------------
 

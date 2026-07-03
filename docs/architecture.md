@@ -571,7 +571,13 @@ because binary streaming does not map cleanly onto the REST gateway.
 
 ### Auth
 
-All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors that validate the `x-api-key` metadata header using `crypto/subtle.ConstantTimeCompare`. Set `--api-key ""` to disable auth entirely.
+All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors backed by an `auth.Authenticator`. Each request's `x-api-key` metadata header is matched against the configured key set using `crypto/subtle.ConstantTimeCompare` — the lookup compares against *every* key without short-circuiting, so response timing never reveals which (or whether a) key matched.
+
+**Scoped keys.** A key resolves to a principal with a scope of either `read` or `read-write`. The interceptor classifies each RPC by its method name: mutating RPCs (`Insert`, `Update`, `Delete`, `CreateCollection`, `DropCollection`, `EnsureIndex`, `DropIndex`, `Compact`, and the transaction verbs) require `read-write`; the rest (`Find`, `FindById`, `ListCollections`, `ListIndexes`, `CollectionStats`, `Watch`, `Snapshot`) are reads. A read-scoped key presenting on a write RPC is rejected with `PermissionDenied` (distinct from the `Unauthenticated` returned for a missing/unknown key). Unknown method names are treated as writes, so a read-only key can never slip through a newly added RPC that predates its classification.
+
+**Key sources.** Keys come from the config file's `keys:` list (`{key, name, scope}` entries). The legacy single `--api-key` / `FILEDB_API_KEY` still works and is registered as an additional `read-write` key named `default`, so existing single-key and no-auth (empty) deployments are unchanged.
+
+**Rotation.** The active key set lives behind an `atomic.Pointer`; sending the server `SIGHUP` re-reads the config file and swaps in the new set atomically, with in-flight requests finishing against the set they started on. Keys can therefore be added, removed, or re-scoped without a restart.
 
 ---
 

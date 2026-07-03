@@ -66,6 +66,7 @@ Key properties:
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
 - **OpenAPI spec** — `docs/openapi/filedb.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
 - **Official client SDKs** — idiomatic, hand-written libraries for 7 languages (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, C#/.NET) under `clients/`
+- **Scoped API keys** — multiple named keys with `read` or `read-write` scope; a read-only key is refused on writes, and keys hot-reload on `SIGHUP` for rotation without a restart
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`

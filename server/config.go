@@ -9,6 +9,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// APIKeyConfig is one scoped API key entry in the config file's `keys:` list.
+type APIKeyConfig struct {
+	Key   string `yaml:"key"`   // secret presented in the x-api-key header
+	Name  string `yaml:"name"`  // human-readable principal name
+	Scope string `yaml:"scope"` // "read" or "read-write" (default: read)
+}
+
 // Config holds all server configuration, loaded from CLI flags → env vars →
 // config file, in priority order.
 type Config struct {
@@ -26,7 +33,11 @@ type Config struct {
 	TLSKey  string `yaml:"tls_key"`  // path to PEM private key file
 
 	// Auth
-	APIKey string `yaml:"api_key"` // empty = no auth
+	APIKey string `yaml:"api_key"` // legacy single read-write key; empty = no auth
+	// Keys is an optional list of scoped API keys. Combined with APIKey (which,
+	// when set, acts as an additional read-write key named "default"). If both
+	// Keys and APIKey are empty, authentication is disabled.
+	Keys []APIKeyConfig `yaml:"keys"`
 
 	// Engine tuning
 	SegmentMaxSize  int64         `yaml:"segment_max_size"`  // default: 4 MiB
@@ -82,22 +93,23 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 // fileConfig mirrors Config but uses a string for CompactInterval so yaml.v3
 // can unmarshal human-readable durations like "5m" or "1h30m".
 type fileConfig struct {
-	DataDir         string  `yaml:"data_dir"`
-	GRPCAddr        string  `yaml:"grpc_addr"`
-	RESTAddr        string  `yaml:"rest_addr"`
-	UnixSocket      string  `yaml:"unix_socket"`
-	MetricsAddr     string  `yaml:"metrics_addr"`
-	TLSCert         string  `yaml:"tls_cert"`
-	TLSKey          string  `yaml:"tls_key"`
-	APIKey          string  `yaml:"api_key"`
-	SegmentMaxSize  int64   `yaml:"segment_max_size"`
-	CompactInterval string  `yaml:"compact_interval"`
-	CompactDirtyPct float64 `yaml:"compact_dirty_pct"`
-	SyncMode        string  `yaml:"sync_mode"`
-	SyncInterval    string  `yaml:"sync_interval"`
-	TxTimeout       string  `yaml:"tx_timeout"`
-	WatchBufferSize int     `yaml:"watch_buffer_size"`
-	DefaultTTL      string  `yaml:"default_ttl"`
+	DataDir         string         `yaml:"data_dir"`
+	GRPCAddr        string         `yaml:"grpc_addr"`
+	RESTAddr        string         `yaml:"rest_addr"`
+	UnixSocket      string         `yaml:"unix_socket"`
+	MetricsAddr     string         `yaml:"metrics_addr"`
+	TLSCert         string         `yaml:"tls_cert"`
+	TLSKey          string         `yaml:"tls_key"`
+	APIKey          string         `yaml:"api_key"`
+	Keys            []APIKeyConfig `yaml:"keys"`
+	SegmentMaxSize  int64          `yaml:"segment_max_size"`
+	CompactInterval string         `yaml:"compact_interval"`
+	CompactDirtyPct float64        `yaml:"compact_dirty_pct"`
+	SyncMode        string         `yaml:"sync_mode"`
+	SyncInterval    string         `yaml:"sync_interval"`
+	TxTimeout       string         `yaml:"tx_timeout"`
+	WatchBufferSize int            `yaml:"watch_buffer_size"`
+	DefaultTTL      string         `yaml:"default_ttl"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -120,6 +132,7 @@ func LoadConfigFile(path string) (Config, error) {
 		TLSCert:         defaults.TLSCert,
 		TLSKey:          defaults.TLSKey,
 		APIKey:          defaults.APIKey,
+		Keys:            defaults.Keys,
 		SegmentMaxSize:  defaults.SegmentMaxSize,
 		CompactInterval: defaults.CompactInterval.String(),
 		CompactDirtyPct: defaults.CompactDirtyPct,
@@ -165,6 +178,7 @@ func LoadConfigFile(path string) (Config, error) {
 		TLSCert:         fc.TLSCert,
 		TLSKey:          fc.TLSKey,
 		APIKey:          fc.APIKey,
+		Keys:            fc.Keys,
 		SegmentMaxSize:  fc.SegmentMaxSize,
 		CompactInterval: d,
 		CompactDirtyPct: fc.CompactDirtyPct,

@@ -104,6 +104,55 @@ CLI flags always override the config file. Omitted keys fall back to defaults.
 
 ---
 
+## Authentication & scoped API keys
+
+The simplest setup is a single key via `--api-key` (or `$FILEDB_API_KEY`);
+clients send it in the `x-api-key` gRPC metadata header or HTTP header. An empty
+key disables authentication entirely.
+
+For multi-client deployments you can define a list of **scoped keys** in the
+config file. Each key has a `name` (used in logs) and a `scope`:
+
+- `read` — non-mutating RPCs only (`find`, `find-by-id`, `list`, index listing,
+  stats, watch, backup).
+- `read-write` — everything, including inserts, updates, deletes, index
+  management, and compaction.
+
+```yaml
+# filedb.yaml
+keys:
+  - key: reader-secret
+    name: analytics
+    scope: read
+  - key: writer-secret
+    name: backend
+    scope: read-write
+```
+
+A read-scoped key presenting on a write RPC is rejected with `PermissionDenied`
+(a missing or unknown key returns `Unauthenticated`). The legacy `api_key` /
+`--api-key` still works alongside `keys:` and is registered as a `read-write`
+key named `default`.
+
+```bash
+# analytics can read…
+filedb-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key reader-secret
+# …but not write:
+filedb-cli insert users '{"name":"bob"}' --api-key reader-secret
+# Error: rpc error: code = PermissionDenied ...
+```
+
+**Rotation without downtime.** Edit the `keys:` list in the config file and send
+the server `SIGHUP` — it re-reads the file and swaps the key set atomically, so
+you can add, remove, or re-scope keys without dropping connections or
+restarting:
+
+```bash
+kill -HUP $(pgrep -f 'filedb serve')
+```
+
+---
+
 ## Durability
 
 FileDB lets you trade write throughput against how much you can lose on a crash:
