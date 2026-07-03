@@ -120,6 +120,22 @@ service FileDB {
       get: "/v1/{collection}/stats"
     };
   }
+
+  // --- Admin ---
+
+  // Compact runs a forced, synchronous compaction pass on a collection and
+  // returns only after it completes.
+  rpc Compact(CompactRequest) returns (CompactResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/compact"
+      body: "*"
+    };
+  }
+
+  // Snapshot streams a consistent, gzip-compressed tar archive of the whole
+  // database. Restore by extracting it into a data directory. gRPC-only:
+  // binary streaming does not map cleanly onto the REST gateway.
+  rpc Snapshot(SnapshotRequest) returns (stream SnapshotChunk);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +185,11 @@ message OrFilter  { repeated Filter filters = 1; }
 
 message CreateCollectionRequest {
   string name = 1;
+  // Optional per-collection default record TTL, in seconds. When > 0, records
+  // inserted into this collection expire after this long unless a write
+  // supplies its own TTL. Persisted per-collection and overrides the
+  // server-wide default. 0 (the default) inherits the server-wide default.
+  int64 default_ttl_seconds = 2;
 }
 message CreateCollectionResponse {
   string name       = 1;
@@ -188,6 +209,10 @@ message ListCollectionsResponse { repeated string names = 1; }
 message InsertRequest {
   string                 collection = 1;
   google.protobuf.Struct data       = 2;
+  // Optional per-record TTL, in seconds. When > 0, the record expires this long
+  // after insertion, overriding any collection default. 0 (the default)
+  // applies the collection's default TTL, if any.
+  int64 ttl_seconds = 3;
 }
 message InsertResponse {
   uint64 id         = 1;
@@ -197,6 +222,9 @@ message InsertResponse {
 message InsertManyRequest {
   string                          collection = 1;
   repeated google.protobuf.Struct records    = 2;
+  // Optional per-record TTL, in seconds, applied to every record in the batch.
+  // Same semantics as InsertRequest.ttl_seconds.
+  int64 ttl_seconds = 3;
 }
 message InsertManyResponse {
   repeated uint64 ids = 1;
@@ -224,6 +252,10 @@ message UpdateRequest {
   string                 collection = 1;
   uint64                 id         = 2;
   google.protobuf.Struct data       = 3;
+  // Optional per-record TTL, in seconds, resetting the record's deadline to
+  // this long from now. When > 0 it overrides the collection default; 0 (the
+  // default) re-applies the collection default TTL, if any.
+  int64 ttl_seconds = 4;
 }
 message UpdateResponse {
   uint64 id            = 1;
@@ -271,6 +303,9 @@ enum WatchOp {
   INSERTED             = 1;
   UPDATED              = 2;
   DELETED              = 3;
+  // OVERFLOW signals that the server dropped events because this subscriber
+  // fell behind. The client missed writes and should resync. No record is set.
+  OVERFLOW             = 4;
 }
 
 message WatchRequest {
@@ -297,3 +332,13 @@ message CollectionStatsResponse {
   uint64 dirty_entries = 4;
   uint64 size_bytes    = 5;
 }
+
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+message CompactRequest  { string collection = 1; }
+message CompactResponse { bool   ok         = 1; }
+
+message SnapshotRequest {}
+message SnapshotChunk   { bytes data = 1; }
