@@ -32,6 +32,7 @@ module FileDBv2
       1 => "INSERTED",
       2 => "UPDATED",
       3 => "DELETED",
+      4 => "OVERFLOW",
     }.freeze
 
     # @param host        [String]  server hostname
@@ -78,8 +79,14 @@ module FileDBv2
 
     # -- collection management -----------------------------------------------
 
-    def create_collection(name)
-      req  = Filedb::V1::CreateCollectionRequest.new(name: name)
+    # Create a collection. When +default_ttl_seconds+ > 0, records inserted
+    # without an explicit ttl expire that many seconds after being written;
+    # 0 inherits the server-wide default.
+    def create_collection(name, default_ttl_seconds: 0)
+      req  = Filedb::V1::CreateCollectionRequest.new(
+        name:                name,
+        default_ttl_seconds: default_ttl_seconds,
+      )
       resp = @stub.create_collection(req, metadata: metadata)
       resp.name
     end
@@ -99,20 +106,26 @@ module FileDBv2
     # -- CRUD ----------------------------------------------------------------
 
     # Insert one record. Returns the assigned integer ID.
-    def insert(collection, data)
+    #
+    # +ttl_seconds+ > 0 expires the record that long after insertion, overriding
+    # any collection default; 0 applies the collection default (if any).
+    def insert(collection, data, ttl_seconds: 0)
       req  = Filedb::V1::InsertRequest.new(
-        collection: collection,
-        data:       hash_to_struct(data),
+        collection:  collection,
+        data:        hash_to_struct(data),
+        ttl_seconds: ttl_seconds,
       )
       resp = @stub.insert(req, metadata: metadata)
       resp.id
     end
 
     # Insert multiple records. Returns an array of assigned IDs.
-    def insert_many(collection, records)
+    # +ttl_seconds+ is applied uniformly to every record in the batch.
+    def insert_many(collection, records, ttl_seconds: 0)
       req  = Filedb::V1::InsertManyRequest.new(
-        collection: collection,
-        records:    records.map { |r| hash_to_struct(r) },
+        collection:  collection,
+        records:     records.map { |r| hash_to_struct(r) },
+        ttl_seconds: ttl_seconds,
       )
       resp = @stub.insert_many(req, metadata: metadata)
       resp.ids.to_a
@@ -152,11 +165,15 @@ module FileDBv2
       end
     end
 
-    def update(collection, id, data)
+    # Update a record. +ttl_seconds+ > 0 resets the record's expiry deadline to
+    # that long from now; 0 (the default) is sticky and leaves any existing
+    # deadline untouched.
+    def update(collection, id, data, ttl_seconds: 0)
       req  = Filedb::V1::UpdateRequest.new(
-        collection: collection,
-        id:         id,
-        data:       hash_to_struct(data),
+        collection:  collection,
+        id:          id,
+        data:        hash_to_struct(data),
+        ttl_seconds: ttl_seconds,
       )
       resp = @stub.update(req, metadata: metadata)
       resp.id
@@ -256,6 +273,44 @@ module FileDBv2
         dirty_entries: resp.dirty_entries,
         size_bytes:    resp.size_bytes,
       }
+    end
+
+    # -- maintenance ---------------------------------------------------------
+
+    # Force a synchronous compaction of a collection — merges dirty segments and
+    # reclaims space from deleted/overwritten records. Returns only once it is
+    # done. Returns true on success.
+    def compact(collection)
+      req  = Filedb::V1::CompactRequest.new(collection: collection)
+      resp = @stub.compact(req, metadata: metadata)
+      resp.ok
+    end
+
+    # Stream a consistent, gzip-compressed tar snapshot of the whole database.
+    #
+    # Without a block, returns an Enumerator yielding binary String chunks.
+    # With a block, yields each chunk in turn. Concatenate the chunks in order
+    # to reconstruct the archive; restore with `tar xzf backup.tar.gz`.
+    def snapshot(&block)
+      req    = Filedb::V1::SnapshotRequest.new
+      stream = @stub.snapshot(req, metadata: metadata)
+      enum   = Enumerator.new { |y| stream.each { |chunk| y << chunk.data } }
+      if block
+        enum.each(&block)
+        nil
+      else
+        enum
+      end
+    end
+
+    # Stream a whole-database snapshot straight to a file (binary). Returns the
+    # number of bytes written.
+    def snapshot_to_file(path)
+      total = 0
+      File.open(path, "wb") do |f|
+        snapshot { |chunk| total += f.write(chunk) }
+      end
+      total
     end
 
     private

@@ -88,6 +88,10 @@ db = FileDBv2::Client.new(host: "...", port: 5433, api_key: "...", tls_ca_cert: 
 db.create_collection("users")   # => "users"
 db.drop_collection("users")     # => true
 db.list_collections             # => ["users", "orders"]
+
+# Give the collection a default per-record TTL (seconds). Records inserted
+# without an explicit ttl then expire this many seconds after being written.
+db.create_collection("sessions", default_ttl_seconds: 3600)
 ```
 
 ### CRUD
@@ -125,6 +129,25 @@ db.update("users", id, { name: "Alice", age: 31 })  # => id
 # Delete
 db.delete("users", id)  # => true
 ```
+
+#### Per-record TTL
+
+`insert`, `insert_many`, and `update` each take a `ttl_seconds:` keyword:
+
+```ruby
+# Expire this record 60 seconds from now, regardless of the collection default.
+db.insert("sessions", { token: "abc" }, ttl_seconds: 60)
+
+# Same TTL applied to every record in the batch.
+db.insert_many("sessions", [{ token: "a" }, { token: "b" }], ttl_seconds: 60)
+
+# On update, ttl_seconds > 0 resets the expiry; ttl_seconds: 0 (the default) is
+# sticky and leaves the existing deadline untouched.
+db.update("sessions", id, { token: "abc", seen: true }, ttl_seconds: 120)
+```
+
+`ttl_seconds: 0` (the default) inherits the collection's default TTL on insert;
+a value greater than 0 overrides it. Negative values are rejected by the server.
 
 ### Filter syntax
 
@@ -187,7 +210,7 @@ Each event is a Hash:
 
 ```ruby
 {
-  op:         "INSERTED",          # "INSERTED" | "UPDATED" | "DELETED"
+  op:         "INSERTED",          # "INSERTED" | "UPDATED" | "DELETED" | "OVERFLOW"
   collection: "users",
   record:     { "id" => 1, "data" => { ... }, "date_added" => "..." },
   ts:         "2026-06-29T12:00:00.000000000Z",
@@ -205,6 +228,22 @@ s = db.stats("users")
 #   dirty_entries: 0,
 #   size_bytes:    8192,
 # }
+```
+
+### Maintenance
+
+```ruby
+# Force a synchronous compaction of a collection — merges dirty segments and
+# reclaims space from deleted/overwritten records. Returns true on success.
+db.compact("users")
+
+# Stream a consistent gzip-compressed tar snapshot of the whole database
+# straight to a file. Returns the number of bytes written; restore with
+# `tar xzf backup.tar.gz`.
+bytes = db.snapshot_to_file("backup.tar.gz")
+
+# Or consume the raw archive chunks yourself (Snapshot is server-streaming):
+db.snapshot { |chunk| out.write(chunk) }   # chunk is a binary String
 ```
 
 ---

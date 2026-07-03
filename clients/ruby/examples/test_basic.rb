@@ -95,6 +95,23 @@ s = db.stats(COLL)
 puts "Stats: collection=#{s[:collection]} records=#{s[:record_count]} " \
      "segments=#{s[:segment_count]} size=#{s[:size_bytes]}B"
 
+# ── compaction ─────────────────────────────────────────────────────────────────
+puts "Compact: #{db.compact(COLL)}"
+
+# ── per-record TTL ─────────────────────────────────────────────────────────────
+ttl_id = db.insert(COLL, { name: "Ephemeral", role: "temp" }, ttl_seconds: 3600)
+puts "Inserted #{ttl_id} with a 3600s TTL"
+# ttl_seconds: 0 (default) is sticky — it keeps the existing deadline
+db.update(COLL, ttl_id, { name: "Ephemeral", role: "temp", touched: true })
+puts "Updated the TTL record (deadline preserved)"
+
+# ── snapshot (whole-database backup) ───────────────────────────────────────────
+require "tmpdir"
+backup = File.join(Dir.tmpdir, "filedb_ruby_snapshot.tar.gz")
+bytes  = db.snapshot_to_file(backup)
+puts "Snapshot: wrote #{bytes} bytes to #{backup}"
+File.delete(backup) if File.exist?(backup)
+
 # ── teardown ───────────────────────────────────────────────────────────────────
 db.drop_collection(COLL)
 puts "Dropped collection #{COLL}"

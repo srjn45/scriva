@@ -32,7 +32,8 @@ Google::Protobuf::DescriptorPool.generated_pool.build do
       repeated :filters, :message, 1, "filedb.v1.Filter"
     end
     add_message "filedb.v1.CreateCollectionRequest" do
-      optional :name, :string, 1
+      optional :name,               :string, 1
+      optional :default_ttl_seconds, :int64, 2
     end
     add_message "filedb.v1.CreateCollectionResponse" do
       optional :name,       :string, 1
@@ -50,16 +51,18 @@ Google::Protobuf::DescriptorPool.generated_pool.build do
       repeated :names, :string, 1
     end
     add_message "filedb.v1.InsertRequest" do
-      optional :collection, :string,  1
-      optional :data,       :message, 2, "google.protobuf.Struct"
+      optional :collection,  :string,  1
+      optional :data,        :message, 2, "google.protobuf.Struct"
+      optional :ttl_seconds, :int64,   3
     end
     add_message "filedb.v1.InsertResponse" do
       optional :id,         :uint64, 1
       optional :date_added, :string, 2
     end
     add_message "filedb.v1.InsertManyRequest" do
-      optional :collection, :string,  1
-      repeated :records,    :message, 2, "google.protobuf.Struct"
+      optional :collection,  :string,  1
+      repeated :records,     :message, 2, "google.protobuf.Struct"
+      optional :ttl_seconds, :int64,   3
     end
     add_message "filedb.v1.InsertManyResponse" do
       repeated :ids, :uint64, 1
@@ -80,9 +83,10 @@ Google::Protobuf::DescriptorPool.generated_pool.build do
       optional :record, :message, 1, "filedb.v1.Record"
     end
     add_message "filedb.v1.UpdateRequest" do
-      optional :collection, :string,  1
-      optional :id,         :uint64,  2
-      optional :data,       :message, 3, "google.protobuf.Struct"
+      optional :collection,  :string,  1
+      optional :id,          :uint64,  2
+      optional :data,        :message, 3, "google.protobuf.Struct"
+      optional :ttl_seconds, :int64,   4
     end
     add_message "filedb.v1.UpdateResponse" do
       optional :id,            :uint64, 1
@@ -170,6 +174,18 @@ Google::Protobuf::DescriptorPool.generated_pool.build do
       value :INSERTED, 1
       value :UPDATED,  2
       value :DELETED,  3
+      value :OVERFLOW, 4
+    end
+    add_message "filedb.v1.CompactRequest" do
+      optional :collection, :string, 1
+    end
+    add_message "filedb.v1.CompactResponse" do
+      optional :ok, :bool, 1
+    end
+    add_message "filedb.v1.SnapshotRequest" do
+    end
+    add_message "filedb.v1.SnapshotChunk" do
+      optional :data, :bytes, 1
     end
   end
 end
@@ -214,6 +230,10 @@ module Filedb
     WatchEvent               = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.WatchEvent").msgclass
     CollectionStatsRequest   = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.CollectionStatsRequest").msgclass
     CollectionStatsResponse  = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.CollectionStatsResponse").msgclass
+    CompactRequest           = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.CompactRequest").msgclass
+    CompactResponse          = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.CompactResponse").msgclass
+    SnapshotRequest          = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.SnapshotRequest").msgclass
+    SnapshotChunk            = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.SnapshotChunk").msgclass
     FilterOp                 = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.FilterOp").enummodule
     WatchOp                  = ::Google::Protobuf::DescriptorPool.generated_pool.lookup("filedb.v1.WatchOp").enummodule
   end
