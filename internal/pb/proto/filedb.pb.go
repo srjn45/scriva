@@ -2195,6 +2195,86 @@ func (x *CompactResponse) GetOk() bool {
 	return false
 }
 
+type SnapshotRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotRequest) Reset() {
+	*x = SnapshotRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotRequest) ProtoMessage() {}
+
+func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
+func (*SnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{40}
+}
+
+type SnapshotChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotChunk) Reset() {
+	*x = SnapshotChunk{}
+	mi := &file_proto_filedb_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotChunk) ProtoMessage() {}
+
+func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotChunk.ProtoReflect.Descriptor instead.
+func (*SnapshotChunk) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *SnapshotChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 var File_proto_filedb_proto protoreflect.FileDescriptor
 
 const file_proto_filedb_proto_rawDesc = "" +
@@ -2350,7 +2430,10 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\"!\n" +
 	"\x0fCompactResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok*q\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x11\n" +
+	"\x0fSnapshotRequest\"#\n" +
+	"\rSnapshotChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data*q\n" +
 	"\bFilterOp\x12\x19\n" +
 	"\x15FILTER_OP_UNSPECIFIED\x10\x00\x12\x06\n" +
 	"\x02EQ\x10\x01\x12\a\n" +
@@ -2366,7 +2449,7 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\bINSERTED\x10\x01\x12\v\n" +
 	"\aUPDATED\x10\x02\x12\v\n" +
 	"\aDELETED\x10\x03\x12\f\n" +
-	"\bOVERFLOW\x10\x042\xc7\x0e\n" +
+	"\bOVERFLOW\x10\x042\x8b\x0f\n" +
 	"\x06FileDB\x12w\n" +
 	"\x10CreateCollection\x12\".filedb.v1.CreateCollectionRequest\x1a#.filedb.v1.CreateCollectionResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/collections\x12u\n" +
 	"\x0eDropCollection\x12 .filedb.v1.DropCollectionRequest\x1a!.filedb.v1.DropCollectionResponse\"\x1e\x82\xd3\xe4\x93\x02\x18*\x16/v1/collections/{name}\x12q\n" +
@@ -2387,7 +2470,8 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"RollbackTx\x12\x1c.filedb.v1.RollbackTxRequest\x1a\x1d.filedb.v1.RollbackTxResponse\x12\\\n" +
 	"\x05Watch\x12\x17.filedb.v1.WatchRequest\x1a\x15.filedb.v1.WatchEvent\"!\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/v1/{collection}/watch0\x01\x12x\n" +
 	"\x0fCollectionStats\x12!.filedb.v1.CollectionStatsRequest\x1a\".filedb.v1.CollectionStatsResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/{collection}/stats\x12e\n" +
-	"\aCompact\x12\x19.filedb.v1.CompactRequest\x1a\x1a.filedb.v1.CompactResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/{collection}/compactB.Z,github.com/srjn45/filedbv2/internal/pb/protob\x06proto3"
+	"\aCompact\x12\x19.filedb.v1.CompactRequest\x1a\x1a.filedb.v1.CompactResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/{collection}/compact\x12B\n" +
+	"\bSnapshot\x12\x1a.filedb.v1.SnapshotRequest\x1a\x18.filedb.v1.SnapshotChunk0\x01B.Z,github.com/srjn45/filedbv2/internal/pb/protob\x06proto3"
 
 var (
 	file_proto_filedb_proto_rawDescOnce sync.Once
@@ -2402,7 +2486,7 @@ func file_proto_filedb_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_filedb_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_proto_filedb_proto_goTypes = []any{
 	(FilterOp)(0),                    // 0: filedb.v1.FilterOp
 	(WatchOp)(0),                     // 1: filedb.v1.WatchOp
@@ -2446,28 +2530,30 @@ var file_proto_filedb_proto_goTypes = []any{
 	(*CollectionStatsResponse)(nil),  // 39: filedb.v1.CollectionStatsResponse
 	(*CompactRequest)(nil),           // 40: filedb.v1.CompactRequest
 	(*CompactResponse)(nil),          // 41: filedb.v1.CompactResponse
-	(*structpb.Struct)(nil),          // 42: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),    // 43: google.protobuf.Timestamp
+	(*SnapshotRequest)(nil),          // 42: filedb.v1.SnapshotRequest
+	(*SnapshotChunk)(nil),            // 43: filedb.v1.SnapshotChunk
+	(*structpb.Struct)(nil),          // 44: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),    // 45: google.protobuf.Timestamp
 }
 var file_proto_filedb_proto_depIdxs = []int32{
-	42, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
-	43, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
-	43, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
+	44, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
+	45, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
+	45, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
 	4,  // 3: filedb.v1.Filter.field:type_name -> filedb.v1.FieldFilter
 	5,  // 4: filedb.v1.Filter.and:type_name -> filedb.v1.AndFilter
 	6,  // 5: filedb.v1.Filter.or:type_name -> filedb.v1.OrFilter
 	0,  // 6: filedb.v1.FieldFilter.op:type_name -> filedb.v1.FilterOp
 	3,  // 7: filedb.v1.AndFilter.filters:type_name -> filedb.v1.Filter
 	3,  // 8: filedb.v1.OrFilter.filters:type_name -> filedb.v1.Filter
-	42, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
-	42, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
+	44, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
+	44, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
 	3,  // 11: filedb.v1.FindRequest.filter:type_name -> filedb.v1.Filter
 	2,  // 12: filedb.v1.FindResponse.record:type_name -> filedb.v1.Record
-	42, // 13: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
+	44, // 13: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
 	3,  // 14: filedb.v1.WatchRequest.filter:type_name -> filedb.v1.Filter
 	1,  // 15: filedb.v1.WatchEvent.op:type_name -> filedb.v1.WatchOp
 	2,  // 16: filedb.v1.WatchEvent.record:type_name -> filedb.v1.Record
-	43, // 17: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
+	45, // 17: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
 	7,  // 18: filedb.v1.FileDB.CreateCollection:input_type -> filedb.v1.CreateCollectionRequest
 	9,  // 19: filedb.v1.FileDB.DropCollection:input_type -> filedb.v1.DropCollectionRequest
 	11, // 20: filedb.v1.FileDB.ListCollections:input_type -> filedb.v1.ListCollectionsRequest
@@ -2486,26 +2572,28 @@ var file_proto_filedb_proto_depIdxs = []int32{
 	36, // 33: filedb.v1.FileDB.Watch:input_type -> filedb.v1.WatchRequest
 	38, // 34: filedb.v1.FileDB.CollectionStats:input_type -> filedb.v1.CollectionStatsRequest
 	40, // 35: filedb.v1.FileDB.Compact:input_type -> filedb.v1.CompactRequest
-	8,  // 36: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
-	10, // 37: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
-	12, // 38: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
-	14, // 39: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
-	16, // 40: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
-	19, // 41: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
-	19, // 42: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
-	21, // 43: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
-	23, // 44: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
-	25, // 45: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
-	27, // 46: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
-	29, // 47: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
-	31, // 48: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
-	33, // 49: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
-	35, // 50: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
-	37, // 51: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
-	39, // 52: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
-	41, // 53: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
-	36, // [36:54] is the sub-list for method output_type
-	18, // [18:36] is the sub-list for method input_type
+	42, // 36: filedb.v1.FileDB.Snapshot:input_type -> filedb.v1.SnapshotRequest
+	8,  // 37: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
+	10, // 38: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
+	12, // 39: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
+	14, // 40: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
+	16, // 41: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
+	19, // 42: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
+	19, // 43: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
+	21, // 44: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
+	23, // 45: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
+	25, // 46: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
+	27, // 47: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
+	29, // 48: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
+	31, // 49: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
+	33, // 50: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
+	35, // 51: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
+	37, // 52: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
+	39, // 53: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
+	41, // 54: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
+	43, // 55: filedb.v1.FileDB.Snapshot:output_type -> filedb.v1.SnapshotChunk
+	37, // [37:56] is the sub-list for method output_type
+	18, // [18:37] is the sub-list for method input_type
 	18, // [18:18] is the sub-list for extension type_name
 	18, // [18:18] is the sub-list for extension extendee
 	0,  // [0:18] is the sub-list for field type_name
@@ -2527,7 +2615,7 @@ func file_proto_filedb_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_filedb_proto_rawDesc), len(file_proto_filedb_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

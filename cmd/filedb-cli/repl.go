@@ -177,6 +177,12 @@ func handleREPLLine(input string, collection *string, flags *cliFlags) error {
 		}
 		return runCLICommand([]string{"compact", col}, flags)
 
+	case "backup":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: backup <dest>")
+		}
+		return runCLICommand([]string{"backup", parts[1]}, flags)
+
 	default:
 		return fmt.Errorf("unknown command %q — type 'help' for a list", cmd)
 	}
@@ -246,6 +252,7 @@ Commands:
   delete [collection] <id>            Delete a record
   stats [collection]                  Show collection stats
   compact [collection]                Force a compaction pass
+  backup <dest>                       Snapshot the database to a .tar.gz file
   help                                Show this help
   exit / quit                         Exit
 

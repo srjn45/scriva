@@ -37,6 +37,7 @@ const (
 	FileDB_Watch_FullMethodName            = "/filedb.v1.FileDB/Watch"
 	FileDB_CollectionStats_FullMethodName  = "/filedb.v1.FileDB/CollectionStats"
 	FileDB_Compact_FullMethodName          = "/filedb.v1.FileDB/Compact"
+	FileDB_Snapshot_FullMethodName         = "/filedb.v1.FileDB/Snapshot"
 )
 
 // FileDBClient is the client API for FileDB service.
@@ -64,6 +65,10 @@ type FileDBClient interface {
 	// Compact runs a forced, synchronous compaction pass on a collection and
 	// returns only after it completes.
 	Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*CompactResponse, error)
+	// Snapshot streams a consistent, gzip-compressed tar archive of the whole
+	// database. Restore by extracting it into a data directory. gRPC-only:
+	// binary streaming does not map cleanly onto the REST gateway.
+	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error)
 }
 
 type fileDBClient struct {
@@ -272,6 +277,25 @@ func (c *fileDBClient) Compact(ctx context.Context, in *CompactRequest, opts ...
 	return out, nil
 }
 
+func (c *fileDBClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[2], FileDB_Snapshot_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SnapshotRequest, SnapshotChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_SnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
+
 // FileDBServer is the server API for FileDB service.
 // All implementations must embed UnimplementedFileDBServer
 // for forward compatibility.
@@ -297,6 +321,10 @@ type FileDBServer interface {
 	// Compact runs a forced, synchronous compaction pass on a collection and
 	// returns only after it completes.
 	Compact(context.Context, *CompactRequest) (*CompactResponse, error)
+	// Snapshot streams a consistent, gzip-compressed tar archive of the whole
+	// database. Restore by extracting it into a data directory. gRPC-only:
+	// binary streaming does not map cleanly onto the REST gateway.
+	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error
 	mustEmbedUnimplementedFileDBServer()
 }
 
@@ -360,6 +388,9 @@ func (UnimplementedFileDBServer) CollectionStats(context.Context, *CollectionSta
 }
 func (UnimplementedFileDBServer) Compact(context.Context, *CompactRequest) (*CompactResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Compact not implemented")
+}
+func (UnimplementedFileDBServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
+	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
 }
 func (UnimplementedFileDBServer) mustEmbedUnimplementedFileDBServer() {}
 func (UnimplementedFileDBServer) testEmbeddedByValue()                {}
@@ -692,6 +723,17 @@ func _FileDB_Compact_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileDB_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SnapshotRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(FileDBServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_SnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
+
 // FileDB_ServiceDesc is the grpc.ServiceDesc for FileDB service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -773,6 +815,11 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Watch",
 			Handler:       _FileDB_Watch_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Snapshot",
+			Handler:       _FileDB_Snapshot_Handler,
 			ServerStreams: true,
 		},
 	},

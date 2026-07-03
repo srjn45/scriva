@@ -57,6 +57,7 @@ Key properties:
 - **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
 - **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments; operators can also force a synchronous pass on demand (`filedb-cli compact`)
+- **Online backup** — `filedb-cli backup` streams a consistent gzip snapshot of the live database; restore is a plain `tar xzf` into a data directory
 - **In-memory index** — O(1) lookup by id, persisted with a checksum for fast restarts
 - **Secondary indexes** — per-field indexes for O(1) equality lookups and O(matches) range queries (`gt`/`lt`/…); automatically maintained and persisted
 - **Streaming queries** — `Find` pushes `limit`/`offset`/`order_by` into the engine and streams results as it reads; a limited query is bounded by the page size, not the collection size, and honours client cancellation
