@@ -8,7 +8,13 @@ GO           := go
 GOFLAGS      := -trimpath
 LDFLAGS      := -s -w
 
-.PHONY: all build proto openapi test bench fuzz lint run cli clean release help
+# Packages that must stay embeddable (no server-only dependencies) and the
+# module-path fragments they are forbidden from pulling in. Keep in sync with
+# the embeddemo module and the deps-check CI job.
+EMBED_PKGS    := ./engine ./store ./query
+FORBIDDEN_DEPS := grpc|protobuf|prometheus|cobra|grpc-gateway
+
+.PHONY: all build proto openapi test bench fuzz lint deps-check run cli clean release help
 
 # FUZZTIME controls how long each fuzz target runs (override on the CLI).
 FUZZTIME     ?= 10s
@@ -56,6 +62,19 @@ lint:
 ## vet: run go vet
 vet:
 	$(GO) vet ./...
+
+## deps-check: assert the embeddable engine packages stay free of server-only deps
+deps-check:
+	@echo "Checking $(EMBED_PKGS) for forbidden dependencies ($(FORBIDDEN_DEPS))..."
+	@if $(GO) list -deps $(EMBED_PKGS) | grep -E -i '$(FORBIDDEN_DEPS)'; then \
+		echo "ERROR: engine/store/query must not depend on grpc, protobuf, prometheus, cobra, or grpc-gateway."; \
+		echo "The engine is meant to be embeddable; metrics enter only via the OnCompaction hook."; \
+		exit 1; \
+	fi
+	@echo "OK: no forbidden dependencies in the embeddable packages"
+	@echo "Building embeddemo/ (engine-only consumer)..."
+	@cd embeddemo && $(GO) build -o /dev/null ./...
+	@echo "OK: embeddemo builds against the public engine package"
 
 ## run: start the filedb server (requires bin/filedb)
 run: build
