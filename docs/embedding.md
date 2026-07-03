@@ -29,6 +29,88 @@ default (see `engine.DefaultWatchBufferSize`, `engine.SyncModeNone`, …).
 
 ---
 
+## The `filedb` façade (recommended entry point)
+
+`engine.Open` opens every collection under a single config. When your program
+hosts several collections — each wanting its own durability or compaction
+settings — the `filedb` package is the ergonomic front door. It opens a store
+rooted at a directory, lazily opens-or-creates named collections with
+per-collection options, and applies **embedded-friendly defaults** so you don't
+have to.
+
+A complete warden-shaped store — `sessions`, `events`, `messages`, `context`,
+and a per-write-durable `spend` ledger — stands up in a handful of lines:
+
+```go
+import (
+    "github.com/srjn45/filedbv2/engine"
+    "github.com/srjn45/filedbv2/filedb"
+)
+
+db, err := filedb.Open("./data")
+if err != nil {
+    log.Fatal(err)
+}
+defer db.Close()
+
+sessions := db.MustCollection("sessions", filedb.WithUniqueIndex("name"))
+events   := db.MustCollection("events")
+messages := db.MustCollection("messages")
+context  := db.MustCollection("context")
+spend    := db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+
+// CRUD goes straight to the returned *engine.Collection:
+id, _, _ := sessions.InsertWithKey("sess-1", map[string]any{"name": "alpha", "status": "open"})
+_ = events.Insert /* … */
+_, _ = context.Upsert("cfg", map[string]any{"model": "opus"})
+_ = id
+```
+
+- `Open(dir string, opts ...filedb.Option)` returns a `*filedb.DB`. Existing
+  collections on disk are discovered automatically.
+- `Collection(name, opts ...filedb.CollectionOption) (*engine.Collection, error)`
+  and `MustCollection` (which panics on error, for init-time convenience) open a
+  collection. The returned value is a plain `*engine.Collection`, so the full
+  keyed / CAS / upsert / Watch API described below is available on it.
+- **First call for a name wins.** Repeat calls return the same cached handle and
+  ignore their options, so open each collection once at startup.
+- Need something the façade doesn't wrap (e.g. `ListCollections`,
+  `DropCollection`)? `db.Engine()` returns the underlying `*engine.DB`.
+
+### Options
+
+DB-wide defaults (passed to `filedb.Open`) — `WithSyncMode`, `WithSyncInterval`,
+`WithSegmentMaxSize`, `WithCompactInterval`, `WithWatchBufferSize`.
+
+Per-collection overrides (passed to `Collection`/`MustCollection`) —
+`WithCollectionSyncMode`, `WithCollectionSyncInterval`,
+`WithCollectionSegmentMaxSize`, `WithCollectionCompactInterval`,
+`WithCollectionWatchBufferSize`, and `WithUniqueIndex(fields…)` (ensures a unique
+secondary index on each field at open time, via `EnsureUniqueIndex`).
+
+### Embedded durability default
+
+The raw engine defaults to `SyncModeNone` — fastest, but a crash can lose
+recently acknowledged writes. A DB opened through **`filedb.Open` defaults every
+collection to `SyncModeInterval` at a 1s cadence** instead. This trades a bounded
+(~1s) durability window for throughput: a crash loses at most the last interval's
+writes, while the append-only, temp-then-rename segment format already rules out
+torn or partial records. It is the right default for a local, single-writer
+daemon that wants crash-safety without paying an `fsync` on every write.
+
+A write path that genuinely needs per-write durability — a spend/ledger
+collection, say — opts back in per collection:
+
+```go
+spend := db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+```
+
+`SyncModeAlways` fsyncs before each write is acknowledged; the override is scoped
+to that one collection and is not clobbered by the global interval default, even
+across reopen.
+
+---
+
 ## String keys (caller-supplied primary keys)
 
 `Insert` returns an engine-assigned `uint64` id. When your records already have
