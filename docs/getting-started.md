@@ -349,7 +349,7 @@ scan promptly instead of running to completion.
 
 ## Secondary indexes
 
-Secondary indexes accelerate equality lookups on any field from O(n) full scan to O(1).
+Secondary indexes accelerate equality lookups on any field from O(n) full scan to O(1), and **range** queries (`gt`/`gte`/`lt`/`lte`) from O(n) to O(matches).
 
 ```bash
 # Create an index on the "email" field
@@ -362,12 +362,20 @@ filedb-cli indexes users
 filedb-cli drop-index users email
 ```
 
-Once an index exists, `find` with a single `eq` filter on that field uses the index automatically — no query hint needed.
+Once an index exists, `find` with a single `eq` **or a single range** (`gt`/`gte`/`lt`/`lte`) filter on that field uses the index automatically — no query hint needed. Range ordering is type-aware: a numeric field compares numerically (`age > 9` matches `10`), a string field lexically.
+
+```bash
+# Uses the "age" index to read only the matching rows, not the whole collection
+filedb-cli ensure-index users age
+filedb-cli find users '{"field":"age","op":"gte","value":21}'
+```
 
 Indexes are:
 - Persisted to `sidx_<field>.json` (SHA-256 checksummed) and reloaded on startup
 - Maintained automatically on every insert, update, and delete
 - Rebuilt transparently after compaction
+
+A field that mixes numbers and strings can't define a range order, so range queries on it fall back to a full scan (equality lookups still use the index).
 
 Via REST:
 

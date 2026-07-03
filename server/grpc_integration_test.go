@@ -321,6 +321,47 @@ func TestIntegration_Find_UnorderedLimit(t *testing.T) {
 	}
 }
 
+// TestIntegration_Find_RangeIndexed drives a range predicate end-to-end against
+// a collection with a secondary index on the queried field, and asserts the
+// results match the numeric predicate (2 < 10, not the lexical order).
+func TestIntegration_Find_RangeIndexed(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "ages"})
+	if _, err := c.EnsureIndex(ctx(), &pb.EnsureIndexRequest{Collection: "ages", Field: "age"}); err != nil {
+		t.Fatalf("EnsureIndex: %v", err)
+	}
+	for _, age := range []float64{2, 9, 10, 25, 100} {
+		d, _ := structpb.NewStruct(map[string]any{"age": age})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "ages", Data: d})
+	}
+
+	// age >= 10 → 10, 25, 100 (numeric, so "2" and "9" are excluded).
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection: "ages",
+		Filter: &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
+			Field: "age", Op: pb.FilterOp_GTE, Value: "10",
+		}}},
+		OrderBy: "age",
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs := collectFind(t, stream)
+	got := make([]float64, len(recs))
+	for i, r := range recs {
+		got[i] = r.Data.Fields["age"].GetNumberValue()
+	}
+	want := []float64{10, 25, 100}
+	if len(got) != len(want) {
+		t.Fatalf("gte 10: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("gte 10 ordered[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestIntegration_Find_CancelStops verifies that cancelling the client context
 // mid-stream aborts the Find with a Canceled status.
 func TestIntegration_Find_CancelStops(t *testing.T) {

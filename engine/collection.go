@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/srjn45/filedbv2/query"
 	"github.com/srjn45/filedbv2/store"
 )
 
@@ -873,7 +874,7 @@ func (c *Collection) sidxIndexEntry(id uint64, data map[string]any) {
 	c.sidxMu.RLock()
 	for field, sidx := range c.sidxMap {
 		if val, ok := data[field]; ok {
-			sidx.add(toIndexKey(val), id)
+			sidx.add(val, id)
 		}
 	}
 	c.sidxMu.RUnlock()
@@ -884,7 +885,7 @@ func (c *Collection) sidxUpdateEntry(id uint64, data map[string]any) {
 	c.sidxMu.RLock()
 	for field, sidx := range c.sidxMap {
 		if val, ok := data[field]; ok {
-			sidx.update(id, toIndexKey(val))
+			sidx.update(id, val)
 		} else {
 			sidx.remove(id)
 		}
@@ -1102,4 +1103,19 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 
 	c.emit(WatchEvent{Op: store.OpUpdate, ID: id, Data: stamped, Ts: ts})
 	return true, nil
+}
+
+// indexRangeLookup returns candidate IDs for a range predicate (gt/gte/lt/lte)
+// on an indexed field, and whether an index served the query. It returns
+// false — so the caller falls back to a full scan — when no index exists for the
+// field or the index cannot answer the range (heterogeneous field, or a query
+// value whose type differs from the indexed values).
+func (c *Collection) indexRangeLookup(field string, op query.Op, val any) ([]uint64, bool) {
+	c.sidxMu.RLock()
+	sidx, ok := c.sidxMap[field]
+	c.sidxMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return sidx.LookupRange(op, val)
 }

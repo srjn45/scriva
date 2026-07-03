@@ -58,7 +58,7 @@ Key properties:
 - **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments
 - **In-memory index** — O(1) lookup by id, persisted with a checksum for fast restarts
-- **Secondary indexes** — per-field inverted indexes for O(1) equality lookups; automatically maintained and persisted
+- **Secondary indexes** — per-field indexes for O(1) equality lookups and O(matches) range queries (`gt`/`lt`/…); automatically maintained and persisted
 - **Streaming queries** — `Find` pushes `limit`/`offset`/`order_by` into the engine and streams results as it reads; a limited query is bounded by the page size, not the collection size, and honours client cancellation
 - **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local

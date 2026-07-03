@@ -79,11 +79,11 @@ Find (scan) without index:
     stream segments in insertion order → skip stale/deleted versions via the
     primary index → apply filter → order/paginate → stream results
 
-Find (scan) with secondary index (single eq filter on indexed field):
-    secondary index lookup (O(1)) → fetch candidate ids via primary index → filter → stream
+Find (scan) with secondary index (single eq or range filter on indexed field):
+    secondary index lookup → fetch candidate ids via primary index → filter → stream
 ```
 
-The in-memory primary index makes `FindById` an O(1) index lookup + one disk seek. A secondary index on a field reduces `Find` with a single equality filter from O(n) to O(1).
+The in-memory primary index makes `FindById` an O(1) index lookup + one disk seek. A secondary index on a field reduces `Find` with a single equality filter from O(n) to O(1), and a single range filter (`gt`/`gte`/`lt`/`lte`) from O(n) to O(matches) via the index's ordered key view.
 
 ### Streaming, push-down `Find`
 
@@ -104,8 +104,9 @@ paid before materialization:
 | ordered, no limit | all candidates | O(matches) — an inherent full sort |
 
 So `Find … limit 10` over a million-row collection reads and holds ~10 rows, not
-a million. (Range/`gt`/`lt` predicates and ordering by a non-indexed field still
-examine every candidate — ordered indexes to fix that are tracked as Q3.)
+a million. A `gt`/`lt` predicate on an indexed field is likewise served from the
+index's ordered key view (see [Secondary Indexes](#secondary-indexes)); ordering
+by a non-indexed field still examines every candidate.
 
 **Ordering guarantees.** With `order_by`, results are sorted by that field using
 `query.Compare` — the *same* type-aware comparison the `gt`/`gte`/`lt`/`lte`
@@ -157,9 +158,36 @@ map[string]map[string][]uint64
 - Reloaded on startup; rebuilt from segments if the checksum fails
 - Rebuilt transparently after each compaction run
 
+### Range queries (ordered key view)
+
+Alongside the hash buckets, each index keeps its **distinct keys in a sorted
+slice** together with the field's value *kind* (numeric, string, or mixed),
+maintained incrementally as records are inserted, updated, and deleted:
+
+- A range predicate (`gt`/`gte`/`lt`/`lte`) binary-searches the sorted view for
+  the matching key window and unions those buckets' ids — reading O(log k + matches)
+  instead of scanning the whole collection.
+- Ordering is the type-aware `query.Compare` (numbers numerically, strings
+  lexically), so `age > 9` matches `10` rather than falling for the lexical
+  `"10" < "9"`.
+- The candidate ids are then re-validated against the primary index and the
+  filter, so results are **identical** to a full scan.
+- The sorted view is only kept while the field is homogeneous. If a field mixes
+  numbers and strings its range ordering is undefined, so the index reports it
+  cannot serve the range and the query falls back to a full scan (eq lookups
+  still work). A range whose bound type differs from the indexed values falls
+  back the same way.
+
+The kind is persisted in `sidx_<field>.json` (outside the checksum, so old files
+stay valid) and the sorted view is rebuilt from the buckets on load and after
+compaction.
+
 ### Query acceleration
 
-`Scan` uses the secondary index when the filter is a single `eq` on an indexed field. All other filter shapes (composite filters, non-eq ops, non-indexed fields) fall back to a full segment scan.
+`Scan` uses the secondary index when the filter is a single `eq` **or a single
+range** (`gt`/`gte`/`lt`/`lte`) on an indexed field. All other filter shapes
+(composite filters, `contains`/`regex`, non-indexed fields) fall back to a full
+segment scan.
 
 ### Unique indexes
 
