@@ -181,10 +181,19 @@ class FileDB:
 
     # -- collection management ----------------------------------------------
 
-    def create_collection(self, name: str) -> str:
-        """Create a new collection. Returns the collection name."""
+    def create_collection(self, name: str, default_ttl_seconds: int = 0) -> str:
+        """Create a new collection. Returns the collection name.
+
+        ``default_ttl_seconds`` sets an optional per-collection default record
+        TTL: when greater than 0, records inserted without their own TTL expire
+        after this many seconds. It is persisted per-collection and overrides
+        the server-wide default. 0 (the default) inherits the server-wide TTL.
+        """
         resp = self._stub.CreateCollection(
-            pb.CreateCollectionRequest(name=name), metadata=self._metadata()
+            pb.CreateCollectionRequest(
+                name=name, default_ttl_seconds=default_ttl_seconds
+            ),
+            metadata=self._metadata(),
         )
         return resp.name
 
@@ -204,22 +213,41 @@ class FileDB:
 
     # -- CRUD ----------------------------------------------------------------
 
-    def insert(self, collection: str, data: Mapping[str, Any]) -> int:
-        """Insert one record. Returns the assigned ID."""
+    def insert(
+        self, collection: str, data: Mapping[str, Any], ttl_seconds: int = 0
+    ) -> int:
+        """Insert one record. Returns the assigned ID.
+
+        ``ttl_seconds`` sets an optional per-record TTL: when greater than 0 the
+        record expires this many seconds after insertion, overriding any
+        collection default. 0 (the default) applies the collection's default TTL.
+        """
         resp = self._stub.Insert(
-            pb.InsertRequest(collection=collection, data=_dict_to_struct(data)),
+            pb.InsertRequest(
+                collection=collection,
+                data=_dict_to_struct(data),
+                ttl_seconds=ttl_seconds,
+            ),
             metadata=self._metadata(),
         )
         return resp.id
 
     def insert_many(
-        self, collection: str, records: Sequence[Mapping[str, Any]]
+        self,
+        collection: str,
+        records: Sequence[Mapping[str, Any]],
+        ttl_seconds: int = 0,
     ) -> List[int]:
-        """Insert multiple records. Returns the assigned IDs in insertion order."""
+        """Insert multiple records. Returns the assigned IDs in insertion order.
+
+        ``ttl_seconds`` applies the same per-record TTL to every record in the
+        batch; see :meth:`insert` for the semantics.
+        """
         resp = self._stub.InsertMany(
             pb.InsertManyRequest(
                 collection=collection,
                 records=[_dict_to_struct(r) for r in records],
+                ttl_seconds=ttl_seconds,
             ),
             metadata=self._metadata(),
         )
@@ -260,11 +288,26 @@ class FileDB:
             for resp in self._stub.Find(req, metadata=self._metadata())
         ]
 
-    def update(self, collection: str, id: int, data: Mapping[str, Any]) -> int:
-        """Update a record by ID. Returns the updated ID."""
+    def update(
+        self,
+        collection: str,
+        id: int,
+        data: Mapping[str, Any],
+        ttl_seconds: int = 0,
+    ) -> int:
+        """Update a record by ID. Returns the updated ID.
+
+        ``ttl_seconds`` greater than 0 resets the record's expiry to this many
+        seconds from now, overriding the collection default. 0 (the default)
+        leaves any existing deadline in place (a plain update is sticky and does
+        not clear a previously set TTL).
+        """
         resp = self._stub.Update(
             pb.UpdateRequest(
-                collection=collection, id=id, data=_dict_to_struct(data)
+                collection=collection,
+                id=id,
+                data=_dict_to_struct(data),
+                ttl_seconds=ttl_seconds,
             ),
             metadata=self._metadata(),
         )
@@ -368,3 +411,45 @@ class FileDB:
             "dirty_entries": resp.dirty_entries,
             "size_bytes": resp.size_bytes,
         }
+
+    # -- maintenance ---------------------------------------------------------
+
+    def compact(self, collection: str) -> bool:
+        """Force a synchronous compaction pass on a collection.
+
+        Merges and deduplicates sealed segments and reclaims space from deleted
+        or expired records, blocking until the pass completes. Returns ``True``
+        on success.
+        """
+        resp = self._stub.Compact(
+            pb.CompactRequest(collection=collection), metadata=self._metadata()
+        )
+        return resp.ok
+
+    # -- backup --------------------------------------------------------------
+
+    def snapshot(self) -> Iterator[bytes]:
+        """Stream a consistent gzip backup of the entire database.
+
+        The ``Snapshot`` RPC is server-streaming; this yields the raw gzip
+        archive bytes chunk by chunk so large databases never have to be held in
+        memory. Concatenate the chunks (or use :meth:`snapshot_to_file`) to
+        reconstruct the archive, then restore it with ``tar xzf`` into a data
+        directory.
+        """
+        for chunk in self._stub.Snapshot(
+            pb.SnapshotRequest(), metadata=self._metadata()
+        ):
+            yield chunk.data
+
+    def snapshot_to_file(self, path: str) -> int:
+        """Stream a gzip backup straight to a file. Returns the bytes written.
+
+        Convenience wrapper over :meth:`snapshot` that writes each chunk to
+        ``path`` as it arrives. Restore with ``tar xzf <path>``.
+        """
+        written = 0
+        with open(path, "wb") as fh:
+            for chunk in self.snapshot():
+                written += fh.write(chunk)
+        return written

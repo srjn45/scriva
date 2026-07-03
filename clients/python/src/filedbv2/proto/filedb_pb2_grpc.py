@@ -124,6 +124,16 @@ class FileDBStub:
                 request_serializer=filedb__pb2.CollectionStatsRequest.SerializeToString,
                 response_deserializer=filedb__pb2.CollectionStatsResponse.FromString,
                 _registered_method=True)
+        self.Compact = channel.unary_unary(
+                '/filedb.v1.FileDB/Compact',
+                request_serializer=filedb__pb2.CompactRequest.SerializeToString,
+                response_deserializer=filedb__pb2.CompactResponse.FromString,
+                _registered_method=True)
+        self.Snapshot = channel.unary_stream(
+                '/filedb.v1.FileDB/Snapshot',
+                request_serializer=filedb__pb2.SnapshotRequest.SerializeToString,
+                response_deserializer=filedb__pb2.SnapshotChunk.FromString,
+                _registered_method=True)
 
 
 class FileDBServicer:
@@ -247,6 +257,25 @@ class FileDBServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Compact(self, request, context):
+        """--- Admin ---
+
+        Compact runs a forced, synchronous compaction pass on a collection and
+        returns only after it completes.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Snapshot(self, request, context):
+        """Snapshot streams a consistent, gzip-compressed tar archive of the whole
+        database. Restore by extracting it into a data directory. gRPC-only:
+        binary streaming does not map cleanly onto the REST gateway.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_FileDBServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -334,6 +363,16 @@ def add_FileDBServicer_to_server(servicer, server):
                     servicer.CollectionStats,
                     request_deserializer=filedb__pb2.CollectionStatsRequest.FromString,
                     response_serializer=filedb__pb2.CollectionStatsResponse.SerializeToString,
+            ),
+            'Compact': grpc.unary_unary_rpc_method_handler(
+                    servicer.Compact,
+                    request_deserializer=filedb__pb2.CompactRequest.FromString,
+                    response_serializer=filedb__pb2.CompactResponse.SerializeToString,
+            ),
+            'Snapshot': grpc.unary_stream_rpc_method_handler(
+                    servicer.Snapshot,
+                    request_deserializer=filedb__pb2.SnapshotRequest.FromString,
+                    response_serializer=filedb__pb2.SnapshotChunk.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -800,6 +839,60 @@ class FileDB:
             '/filedb.v1.FileDB/CollectionStats',
             filedb__pb2.CollectionStatsRequest.SerializeToString,
             filedb__pb2.CollectionStatsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Compact(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/Compact',
+            filedb__pb2.CompactRequest.SerializeToString,
+            filedb__pb2.CompactResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Snapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/filedb.v1.FileDB/Snapshot',
+            filedb__pb2.SnapshotRequest.SerializeToString,
+            filedb__pb2.SnapshotChunk.FromString,
             options,
             channel_credentials,
             insecure,

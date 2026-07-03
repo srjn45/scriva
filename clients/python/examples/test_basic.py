@@ -97,6 +97,23 @@ def main() -> None:
     print("\n=== Stats ===")
     print("Stats:", db.stats("test_py"))
 
+    # --- TTL (per-record and per-collection default) ---
+    print("\n=== TTL ===")
+    db.create_collection("test_py_ttl", default_ttl_seconds=3600)
+    db.insert("test_py_ttl", {"kind": "inherits-collection-default"})
+    db.insert("test_py_ttl", {"kind": "own-ttl"}, ttl_seconds=60)
+    print("TTL collection stats:", db.stats("test_py_ttl"))
+    db.drop_collection("test_py_ttl")
+
+    # --- Maintenance ---
+    print("\n=== Compact ===")
+    print("Compacted:", db.compact("test_py"))
+
+    # --- Backup ---
+    print("\n=== Snapshot ===")
+    n = db.snapshot_to_file("filedb-backup.tar.gz")
+    print(f"Wrote {n} bytes to filedb-backup.tar.gz (restore with: tar xzf ...)")
+
     # --- Cleanup ---
     print("\n=== Cleanup ===")
     db.drop_collection("test_py")
