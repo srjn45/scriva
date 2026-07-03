@@ -29,7 +29,53 @@ embedding-specific contract.
 
 ---
 
-## [0.2.0] — unreleased
+## [0.3.0] — 2026-07-03
+
+**Client parity release.** Per-record TTL is now exposed over the wire, and all
+seven client SDKs reach the full server API surface. No breaking changes — every
+addition is optional and backward compatible.
+
+### Added
+
+- **TTL on the gRPC/REST API (F1 completion).** `ttl_seconds` on `Insert`,
+  `InsertMany`, and `Update`, and `default_ttl_seconds` on `CreateCollection`.
+  On insert, `0` inherits the collection default and a value `> 0` overrides it;
+  on update, `0` is sticky (keeps the record's existing deadline) and `> 0`
+  resets it; negative values are rejected. TTL was previously usable only via the
+  embedded engine and the server-wide `--default-ttl`; it is now a first-class
+  wire parameter. (#38)
+- **All seven client SDKs at API parity.** Python (#39), JavaScript/TypeScript
+  (#40), PHP (#41), Java (#42), Ruby (#43), Rust (#44), and C#/.NET (#45) each
+  gain `compact`, `snapshot` / snapshot-to-file, and the per-record TTL
+  parameters, and surface the `OVERFLOW` watch op.
+
+### Fixed
+
+- **JavaScript client repaired** (#40) — restored to a working state alongside
+  the parity additions.
+- **Stale vendored proto** refreshed in the Java, Rust, and C# clients. Each
+  vendored its own copy of `proto/filedb.proto` that had drifted behind
+  canonical — missing the `Compact`/`Snapshot` RPCs, the TTL fields, and the
+  `OVERFLOW` enum value — so the generated stubs could not reach the new surface.
+
+### Notes
+
+- Backward compatible: all new fields are additive; omitting them preserves prior
+  behavior. No migration needed.
+
+---
+
+## [0.2.1] — 2026-07-03
+
+Maintenance release.
+
+- **Module hygiene** — renamed the stray top-level `roadmap.md` to
+  `docs/warden-roadmap.md` so it no longer ships in the module root. No API,
+  on-disk-format, or behavior change.
+
+---
+
+## [0.2.0] — 2026-07-03
 
 This release makes FileDB **embeddable as a Go library** for the first time, in
 addition to the standalone server. The storage engine can now run entirely
@@ -136,5 +182,7 @@ Initial release: the feature-complete core.
 - Idiomatic client SDKs for Python, JavaScript/TypeScript, PHP, Java, Ruby,
   Rust, and C#/.NET, plus a generated OpenAPI spec and a React web admin UI.
 
+[0.3.0]: https://github.com/srjn45/filedbv2/releases/tag/v0.3.0
+[0.2.1]: https://github.com/srjn45/filedbv2/releases/tag/v0.2.1
 [0.2.0]: https://github.com/srjn45/filedbv2/releases/tag/v0.2.0
 [0.1.0]: https://github.com/srjn45/filedbv2/releases/tag/v0.1.0
