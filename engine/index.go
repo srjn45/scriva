@@ -16,10 +16,15 @@ import (
 // not match, indicating the index must be rebuilt from segment files.
 var ErrIndexStale = errors.New("index: checksum mismatch — rebuild required")
 
-// IndexEntry records the location of the latest version of a record.
+// IndexEntry records the location of the latest version of a record, plus its
+// current revision so callers can read the rev without a segment read.
 type IndexEntry struct {
 	SegmentPath string `json:"segment"`
 	Offset      int64  `json:"offset"`
+	// Rev is the record's current revision (1 on insert, +1 per update). It is
+	// omitted when zero so an index.json written before revisions existed still
+	// verifies its checksum and loads unchanged.
+	Rev uint64 `json:"rev,omitempty"`
 }
 
 // indexFile is the on-disk representation persisted to index.json.
@@ -131,7 +136,12 @@ func (idx *Index) Load(path string) error {
 }
 
 // Rebuild constructs the index by replaying all entries from the provided
-// segments in order. The latest entry for each id wins.
+// segments in order. The latest entry for each id wins. Revisions are recomputed
+// by replay order — each surviving insert/update bumps a per-id counter — but
+// never fall below a revision already recorded in the entry itself, so a
+// compacted record (whose full write history was collapsed into a single line
+// that still carries its latest rev) keeps that rev instead of resetting to 1.
+// A delete clears the counter so a re-inserted id restarts at rev 1.
 func (idx *Index) Rebuild(segments []*Segment) error {
 	fresh := make(map[uint64]IndexEntry)
 
@@ -150,7 +160,11 @@ func (idx *Index) Rebuild(segments []*Segment) error {
 		for i, e := range entries {
 			switch e.Op {
 			case store.OpInsert, store.OpUpdate:
-				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i]}
+				rev := fresh[e.ID].Rev + 1
+				if e.Rev > rev {
+					rev = e.Rev
+				}
+				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev}
 			case store.OpDelete:
 				delete(fresh, e.ID)
 			}

@@ -32,27 +32,39 @@ var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 // Entry is one line in a segment file. It captures the operation, the record
 // id, a timestamp, and — for insert/update — the full record data.
 type Entry struct {
-	ID   uint64         `json:"id"`
-	Op   Op             `json:"op"`
-	Ts   time.Time      `json:"ts"`
+	ID uint64    `json:"id"`
+	Op Op        `json:"op"`
+	Ts time.Time `json:"ts"`
+	// Rev is the record's monotonic revision: 1 on insert, +1 on each update.
+	// It is omitted when zero, so segment lines written before revisions existed
+	// decode as rev 0 — fully backward compatible.
+	Rev  uint64         `json:"rev,omitempty"`
 	Data map[string]any `json:"data,omitempty"` // nil for OpDelete
 	// CRC is an optional CRC32C (Castagnoli) checksum over the entry's id, op,
-	// and canonical data. It is written by Encode and verified by Decode when
-	// present. A nil CRC marks a legacy line written before checksums existed;
-	// such lines are decoded without verification for backward compatibility.
+	// rev, and canonical data. It is written by Encode and verified by Decode
+	// when present. A nil CRC marks a legacy line written before checksums
+	// existed; such lines are decoded without verification for backward
+	// compatibility.
 	CRC *uint32 `json:"crc,omitempty"`
 }
 
-// checksum computes the CRC32C over the entry's id, op, and canonical data.
-// The timestamp and the crc field itself are excluded so the value is stable
-// across encode/decode round-trips. Data is canonicalised via json.Marshal,
-// which sorts map keys deterministically.
+// checksum computes the CRC32C over the entry's id, op, rev, and canonical
+// data. The timestamp and the crc field itself are excluded so the value is
+// stable across encode/decode round-trips. Rev bytes are folded in only when
+// non-zero, so a legacy line (rev 0, written before revisions existed) hashes
+// exactly as it did originally and its stored crc still verifies. Data is
+// canonicalised via json.Marshal, which sorts map keys deterministically.
 func checksum(e Entry) (uint32, error) {
 	h := crc32.New(crc32cTable)
 	var idbuf [8]byte
 	binary.LittleEndian.PutUint64(idbuf[:], e.ID)
 	_, _ = h.Write(idbuf[:])
 	_, _ = h.Write([]byte(e.Op))
+	if e.Rev != 0 {
+		var revbuf [8]byte
+		binary.LittleEndian.PutUint64(revbuf[:], e.Rev)
+		_, _ = h.Write(revbuf[:])
+	}
 	if e.Data != nil {
 		b, err := json.Marshal(e.Data)
 		if err != nil {

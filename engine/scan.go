@@ -15,6 +15,7 @@ import (
 // ScanResult holds a single matched record from a scan.
 type ScanResult struct {
 	ID   uint64
+	Rev  uint64
 	Data map[string]any
 	Ts   time.Time
 }
@@ -140,14 +141,14 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, visit fun
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				data, ts, err := c.FindByID(id)
+				rec, err := c.Get(id)
 				if err != nil {
 					continue // deleted since the index was consulted
 				}
-				if !f.Match(data) {
+				if !f.Match(rec.Data) {
 					continue
 				}
-				if err := visit(ScanResult{ID: id, Data: data, Ts: ts}); err != nil {
+				if err := visit(ScanResult{ID: id, Rev: rec.Rev, Data: rec.Data, Ts: rec.Ts}); err != nil {
 					return err
 				}
 			}
@@ -187,7 +188,7 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, visit func(
 			if !f.Match(e.Data) {
 				return nil
 			}
-			return visit(ScanResult{ID: e.ID, Data: e.Data, Ts: e.Ts})
+			return visit(ScanResult{ID: e.ID, Rev: loc.Rev, Data: e.Data, Ts: e.Ts})
 		})
 		if err != nil {
 			return fmt.Errorf("collection: scan %q: %w", path, err)
@@ -265,10 +266,10 @@ func (t *topK) sorted() []ScanResult {
 
 // heap.Interface — ordered as a max-heap so buf[0] is the largest retained
 // result (the eviction candidate). Less is therefore reversed.
-func (t *topK) Len() int            { return len(t.buf) }
-func (t *topK) Less(i, j int) bool  { return t.less(t.buf[j], t.buf[i]) }
-func (t *topK) Swap(i, j int)       { t.buf[i], t.buf[j] = t.buf[j], t.buf[i] }
-func (t *topK) Push(x any)          { t.buf = append(t.buf, x.(ScanResult)) }
+func (t *topK) Len() int           { return len(t.buf) }
+func (t *topK) Less(i, j int) bool { return t.less(t.buf[j], t.buf[i]) }
+func (t *topK) Swap(i, j int)      { t.buf[i], t.buf[j] = t.buf[j], t.buf[i] }
+func (t *topK) Push(x any)         { t.buf = append(t.buf, x.(ScanResult)) }
 func (t *topK) Pop() any {
 	old := t.buf
 	n := len(old)

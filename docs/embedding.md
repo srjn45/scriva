@@ -62,6 +62,60 @@ returned data includes the `_key` field.
 
 ---
 
+## Revisions and compare-and-swap
+
+Every record carries a monotonic **revision** (`rev`): it is `1` on insert and
+increments by one on every update. The revision is available without reading the
+record body via `Get`/`GetByKey`, which return a small `Record`:
+
+```go
+type Record struct {
+    ID   uint64
+    Key  string // the caller-supplied _key, or "" if none
+    Rev  uint64
+    Ts   time.Time
+    Data map[string]any
+}
+
+rec, err := col.GetByKey("sess-abc123")
+// rec.Rev is the current revision; ScanResult also carries Rev.
+```
+
+Two conditional-update primitives let you write **without an application-side
+lock**. Both address the record by its string key, preserve the key, and apply
+their write only if a condition on the *current* record still holds. The
+condition check and the write happen in a single critical section, so two
+goroutines racing the same swap can never both apply:
+
+```go
+// Optimistic-concurrency form: apply only if the record is still at expectedRev.
+applied, err := col.UpdateIfRev("sess-abc123", rec.Rev,
+    map[string]any{"status": "closed"})
+
+// Predicate form: apply only if the current data still satisfies pred.
+applied, err = col.UpdateIfMatch("sess-abc123",
+    func(cur map[string]any) bool { return cur["status"] == "running" },
+    map[string]any{"status": "exited"})
+```
+
+- Both return `(applied bool, err error)`. A **stale revision**, a **false
+  predicate**, or a **missing key** is reported as `(false, nil)` — a clean
+  no-op, never an error. A non-nil `err` means something actually went wrong
+  (e.g. a reserved-field violation or an I/O failure).
+- On success the revision bumps by one, exactly as a plain `UpdateByKey` would,
+  and a normal update `WatchEvent` is emitted.
+- `UpdateIfMatch`'s predicate runs under the collection write lock with the
+  current committed data; keep it cheap, and do not call back into the
+  collection or retain the map it is passed.
+
+These map directly onto optimistic patterns like "advance status only if it is
+still `running`" or "claim this job only if it is unclaimed" without any
+read-modify-write race. Revisions survive compaction (the collapsed line keeps
+its latest rev), index rebuild (revs are recomputed by replay order), and
+reopen.
+
+---
+
 ## Watching changes (in-process subscriptions)
 
 `Collection.Subscribe` gives you a live feed of every write to a collection.
