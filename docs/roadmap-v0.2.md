@@ -243,16 +243,29 @@ so `Find ... limit 10` still reads the whole collection.
 - **Acceptance:** a backup taken under concurrent writes restores to a
   consistent state.
 
-### F3 — on-demand compaction (RPC + CLI) — **S**
+### F3 — on-demand compaction (RPC + CLI) — **S** ✅
 - **Why:** today compaction is only automatic (dirty-ratio/timer); operators
   want to force it (e.g. before backup).
-- **Approach:** add a `Compact(collection)` RPC that signals the existing
-  `compactC` channel and waits for completion; `filedb-cli compact <collection>`.
+- **Approach:** add a `Compact(collection)` RPC that runs a synchronous,
+  forced compaction pass and returns only after it completes;
+  `filedb-cli compact <collection>`.
+- **Delivered:** `Collection.CompactNow()` runs a forced pass (bypassing the
+  dirty-ratio gate) and `DB.Compact(name)` wraps it. Background and on-demand
+  passes serialize via a new `compactMu` so they never race the sealed-segment
+  swap; `compact(force bool)` skips the dirty gate when forced. New `Compact`
+  RPC (`POST /v1/{collection}/compact`), `server/grpc.go` handler, and
+  `filedb-cli compact <collection>` (plus a REPL `compact` verb). A closed
+  collection refuses to compact.
 - **Proto/API:** new `Compact` RPC.
-- **Files:** `proto/filedb.proto`, `collection.go` (synchronous compact entry),
-  `server/grpc.go`, CLI, docs.
-- **Tests:** integration — compact reduces segment count on demand.
-- **Acceptance:** `compact` returns after a full compaction pass completes.
+- **Files:** `proto/filedb.proto`, `engine/compactor.go` (synchronous forced
+  entry + serialization), `engine/collection.go`, `engine/db.go`,
+  `server/grpc.go`, `cmd/filedb-cli/commands.go`, `cmd/filedb-cli/main.go`,
+  `cmd/filedb-cli/repl.go`, docs.
+- **Tests:** `engine/compact_ondemand_test.go` — forces a merge below the dirty
+  threshold and reduces segment count, refuses on a closed collection;
+  `server/grpc_integration_test.go` `TestIntegration_Compact` — RPC round-trip,
+  records survive, unknown collection is NotFound.
+- **Acceptance:** ✅ `compact` returns after a full compaction pass completes.
 
 ---
 
@@ -315,7 +328,7 @@ conventions.
 **v0.4.0 — Features**
 - [x] F1 — TTL / expiring records (engine + config; RPC/client surfacing deferred)
 - [ ] F2 — backup / snapshot
-- [ ] F3 — on-demand compaction
+- [x] F3 — on-demand compaction (RPC + CLI)
 
 **v0.5.0 — Auth**
 - [ ] A1 — multiple scoped, rotatable API keys

@@ -394,6 +394,8 @@ Runs as a goroutine per collection. Two trigger conditions (whichever fires firs
 1. **Dirty ratio**: >30% of entries in sealed segments are stale (overwritten or deleted)
 2. **Time interval**: every 5 minutes (configurable)
 
+A third, explicit trigger exists — see [On-demand compaction](#on-demand-compaction).
+
 ### Compaction algorithm
 
 ```
@@ -413,6 +415,24 @@ Runs as a goroutine per collection. Two trigger conditions (whichever fires firs
 ### Rebalancer
 
 After compaction, adjacent segments smaller than 10% of `SegmentMaxSize` are merged to prevent segment count bloat from many small leftover files.
+
+### On-demand compaction
+
+Operators can force a compaction pass without waiting for the dirty-ratio or
+timer trigger — for example to reclaim space immediately or to quiesce a
+collection before a backup. `Collection.CompactNow()` (exposed as the `Compact`
+RPC and `filedb-cli compact <collection>`) runs the same algorithm as the
+background pass with two differences:
+
+- **The dirty-ratio gate is skipped** (`compact(force=true)`), so the merge runs
+  even when stale entries are below the 30% threshold.
+- **It is synchronous** — the call returns only after the pass (and the reaper
+  that precedes it) has fully completed, so a client knows the collection is
+  compacted when the RPC returns.
+
+Background and on-demand passes are serialized by a dedicated `compactMu`, so a
+timer-triggered run and a forced run can never concurrently snapshot, remove,
+and rename the same sealed segments. A closed collection refuses to compact.
 
 ---
 

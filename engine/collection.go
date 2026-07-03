@@ -115,6 +115,7 @@ type Collection struct {
 
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
+	compactMu sync.Mutex    // serializes compaction passes (background + on-demand)
 	closeOnce sync.Once
 	closed    chan struct{}
 }

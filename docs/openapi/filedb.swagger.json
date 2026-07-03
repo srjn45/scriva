@@ -98,6 +98,45 @@
         ]
       }
     },
+    "/v1/{collection}/compact": {
+      "post": {
+        "summary": "Compact runs a forced, synchronous compaction pass on a collection and\nreturns only after it completes.",
+        "operationId": "FileDB_Compact",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompactResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/FileDBCompactBody"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/{collection}/indexes": {
       "get": {
         "operationId": "FileDB_ListIndexes",
@@ -518,6 +557,9 @@
     }
   },
   "definitions": {
+    "FileDBCompactBody": {
+      "type": "object"
+    },
     "FileDBEnsureIndexBody": {
       "type": "object",
       "properties": {
@@ -655,6 +697,14 @@
         "sizeBytes": {
           "type": "string",
           "format": "uint64"
+        }
+      }
+    },
+    "v1CompactResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
         }
       }
     },

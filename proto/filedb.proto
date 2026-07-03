@@ -120,6 +120,17 @@ service FileDB {
       get: "/v1/{collection}/stats"
     };
   }
+
+  // --- Admin ---
+
+  // Compact runs a forced, synchronous compaction pass on a collection and
+  // returns only after it completes.
+  rpc Compact(CompactRequest) returns (CompactResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/compact"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,3 +311,10 @@ message CollectionStatsResponse {
   uint64 dirty_entries = 4;
   uint64 size_bytes    = 5;
 }
+
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+message CompactRequest  { string collection = 1; }
+message CompactResponse { bool   ok         = 1; }

@@ -167,6 +167,7 @@ filedb-cli get products 1
 filedb-cli update products 1 '{"name":"widget","price":8.99}'
 filedb-cli delete products 1
 filedb-cli stats products
+filedb-cli compact products
 ```
 
 ### Batch script (.fql)
@@ -423,6 +424,29 @@ committing or rolling back, the server reaps the transaction once it has been
 idle longer than `--tx-timeout` (default `5m`); a later commit on a reaped
 transaction returns a not-found error. Set `--tx-timeout 0` to keep
 transactions indefinitely.
+
+---
+
+## On-demand compaction
+
+Compaction normally runs on its own — triggered when a collection's sealed
+segments cross the dirty-ratio threshold or on the compaction timer. You can
+also force a pass immediately, for example to reclaim space after a bulk delete
+or to shrink a collection before backing it up:
+
+```bash
+filedb-cli compact products
+```
+
+The command runs a **synchronous, forced** compaction: it ignores the
+dirty-ratio gate and returns only once the pass has finished, so when the prompt
+comes back the collection is fully compacted. It maps to the `Compact` RPC
+(`POST /v1/{collection}/compact`), so you can trigger it over REST too:
+
+```bash
+curl -H "x-api-key: dev-key" -X POST \
+  http://localhost:8080/v1/products/compact
+```
 
 ---
 

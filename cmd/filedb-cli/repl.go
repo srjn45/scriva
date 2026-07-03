@@ -170,6 +170,13 @@ func handleREPLLine(input string, collection *string, flags *cliFlags) error {
 		}
 		return runCLICommand([]string{"stats", col}, flags)
 
+	case "compact":
+		col, _, err := resolveCollection(parts[1:], *collection)
+		if err != nil {
+			return err
+		}
+		return runCLICommand([]string{"compact", col}, flags)
+
 	default:
 		return fmt.Errorf("unknown command %q — type 'help' for a list", cmd)
 	}
@@ -238,6 +245,7 @@ Commands:
   update [collection] <id> <json>     Update a record
   delete [collection] <id>            Delete a record
   stats [collection]                  Show collection stats
+  compact [collection]                Force a compaction pass
   help                                Show this help
   exit / quit                         Exit
 

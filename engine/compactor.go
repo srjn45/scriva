@@ -24,13 +24,13 @@ func (c *Collection) compactLoop() {
 				return
 			}
 			_ = c.reapExpired()
-			_ = c.compact()
+			_ = c.compact(false)
 		case <-c.compactC:
 			if c.isClosed() {
 				return
 			}
 			_ = c.reapExpired()
-			_ = c.compact()
+			_ = c.compact(false)
 		}
 	}
 }
@@ -49,10 +49,31 @@ func (c *Collection) isClosed() bool {
 	}
 }
 
+// CompactNow runs a compaction pass synchronously and returns only after it has
+// completed. Unlike the background compactor it ignores the dirty-ratio gate, so
+// operators can force a full merge on demand (e.g. before taking a backup). It
+// serializes with the background compactor via compactMu, so a concurrent
+// automatic pass cannot race the on-demand one.
+func (c *Collection) CompactNow() error {
+	if c.isClosed() {
+		return fmt.Errorf("compactor: collection %q is closed", c.name)
+	}
+	if err := c.reapExpired(); err != nil {
+		return err
+	}
+	return c.compact(true)
+}
+
 // compact merges and deduplicates sealed segments.
 // It operates only on sealed (immutable) segments so writes are never blocked
-// except during the brief atomic swap at the end.
-func (c *Collection) compact() error {
+// except during the brief atomic swap at the end. When force is true the
+// dirty-ratio gate is skipped so a caller can compel a full merge on demand.
+func (c *Collection) compact(force bool) error {
+	// Serialize passes so the background compactor and an on-demand CompactNow
+	// never snapshot, remove, and rename the same sealed segments concurrently.
+	c.compactMu.Lock()
+	defer c.compactMu.Unlock()
+
 	start := time.Now()
 
 	// --- Step 1: Snapshot sealed segments under read lock ---
@@ -65,8 +86,8 @@ func (c *Collection) compact() error {
 	copy(toCompact, c.sealed)
 	c.mu.RUnlock()
 
-	// --- Step 2: Check dirty ratio ---
-	if !c.isDirty(toCompact) {
+	// --- Step 2: Check dirty ratio (skipped for a forced compaction) ---
+	if !force && !c.isDirty(toCompact) {
 		return nil
 	}
 

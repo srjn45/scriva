@@ -340,6 +340,22 @@ func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsR
 	}, nil
 }
 
+// ---- Admin ----------------------------------------------------------------
+
+func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.CompactResponse, error) {
+	if req.Collection == "" {
+		return nil, status.Error(codes.InvalidArgument, "collection required")
+	}
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	if err := col.CompactNow(); err != nil {
+		return nil, status.Errorf(codes.Internal, "compact failed: %v", err)
+	}
+	return &pb.CompactResponse{Ok: true}, nil
+}
+
 // ---- Transactions ---------------------------------------------------------
 
 func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {

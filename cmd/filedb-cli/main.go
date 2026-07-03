@@ -65,6 +65,7 @@ func rootCmd() *cobra.Command {
 		createCollectionCmd(flags),
 		dropCollectionCmd(flags),
 		statsCmd(flags),
+		compactCmd(flags),
 		exportCmd(flags),
 		importCmd(flags),
 		ensureIndexCmd(flags),

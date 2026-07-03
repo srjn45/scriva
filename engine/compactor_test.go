@@ -100,7 +100,7 @@ func TestCompact_ReducesSegments(t *testing.T) {
 	beforeCount := len(col.sealed)
 	col.mu.RUnlock()
 
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
@@ -128,7 +128,7 @@ func TestCompact_RecordsReadableAfter(t *testing.T) {
 	col.Delete(3)
 	col.rotateSegment()
 
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
