@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // SecondaryIndex is an in-memory inverted index: field-value → set of IDs.

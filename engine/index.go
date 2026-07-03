@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // ErrIndexStale is returned by Load when the persisted index checksum does

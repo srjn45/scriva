@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/query"
+	"github.com/srjn45/filedbv2/query"
 )
 
 // openCompactionCollection creates a collection tuned for compaction testing:

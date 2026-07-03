@@ -10,13 +10,13 @@ This file is read by Claude Code at the start of every session. It documents how
 cmd/
   filedb/           # server binary (cobra: "filedb serve")
   filedb-cli/       # CLI client binary (cobra subcommands + REPL)
+engine/             # public: storage engine — segments, index, compactor, secondary indexes, db
+store/              # public: NDJSON entry encoding/decoding (store.Entry)
+query/              # public: filter types and evaluation (query.Filter)
 internal/
   auth/             # gRPC interceptors, API key validation
-  engine/           # storage engine: segments, index, compactor, secondary indexes, db
   metrics/          # Prometheus instrumentation
   pb/proto/         # generated gRPC stubs (do not edit by hand)
-  query/            # filter types and evaluation
-  store/            # NDJSON entry encoding/decoding
 server/
   config.go         # Config struct, defaults, YAML loader
   grpc.go           # FileDBServer — proto ↔ engine mapping
@@ -56,7 +56,7 @@ make test         # go test ./... -race -count=1 -coverprofile=coverage.out
 Run a specific package:
 
 ```bash
-go test ./internal/engine/... -race -v
+go test ./engine/... -race -v
 go test ./server/... -race -v -run TestInsert
 ```
 
@@ -145,7 +145,7 @@ docker run -p 5433:5433 -p 8080:8080 \
 1. Edit `proto/filedb.proto` — add the RPC and message types.
 2. Run `make proto` to regenerate stubs.
 3. Implement the handler in `server/grpc.go`.
-4. Add the engine method to `internal/engine/collection.go` (or `db.go`).
+4. Add the engine method to `engine/collection.go` (or `db.go`).
 5. Add a CLI command in `cmd/filedb-cli/commands.go` and register it in `rootCmd()`.
 6. Write tests: engine unit tests + `server/grpc_integration_test.go`.
 
@@ -156,7 +156,7 @@ docker run -p 5433:5433 -p 8080:8080 \
 - Mark the ROADMAP item as done in `ROADMAP.md`.
 
 ### Testing rules
-- Engine tests live in `internal/engine/`.
+- Engine tests live in `engine/`.
 - Server-level tests live in `server/grpc_integration_test.go` and use an in-process gRPC server.
 - Never mock the engine in integration tests — the whole point is testing real disk I/O.
 - Use `t.TempDir()` for data directories; tests must be hermetic and parallel-safe.

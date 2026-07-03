@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/query"
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // ScanResult holds a single matched record from a scan.

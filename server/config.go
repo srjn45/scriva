@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/engine"
+	"github.com/srjn45/filedbv2/engine"
 	"gopkg.in/yaml.v3"
 )
 

@@ -65,8 +65,8 @@ is feature-complete; the next arc is tracked in
   - `engine.SyncMode` on `CollectionConfig`; `Segment.Sync()` (fsync); per-write fsync for `always`; background flush loop for `interval`
   - Wired through `server.Config`, YAML (`sync_mode` / `sync_interval`), and CLI flags with validation
   - Zero-value `CollectionConfig` is now normalized to safe defaults
-  - Tests in `internal/engine/durability_test.go` (CRUD + reopen under every mode)
-- [x] Engine benchmark suite (`internal/engine/bench_test.go`, `make bench`) — insert per sync mode, FindByID, full vs indexed scan
+  - Tests in `engine/durability_test.go` (CRUD + reopen under every mode)
+- [x] Engine benchmark suite (`engine/bench_test.go`, `make bench`) — insert per sync mode, FindByID, full vs indexed scan
 - [x] OpenAPI/Swagger spec generated from proto (`docs/openapi/filedb.swagger.json`, `make openapi`) — universal client-generation path
 - [x] `LICENSE` file added (MIT)
 
@@ -102,14 +102,14 @@ BeginTx  CommitTx  RollbackTx
 ```
 
 ### Phase 3 — Storage Engine
-- [x] `internal/store/ndjson.go` — Entry struct, Encode/Decode, NewInsert/NewUpdate/NewDelete
-- [x] `internal/engine/segment.go` — Append, ReadAt, ScanAll, Seal, crash recovery (partial line truncation)
-- [x] `internal/engine/index.go` — In-memory `map[uint64]IndexEntry`, SHA-256 checksum persist/load, Rebuild from segments
-- [x] `internal/engine/collection.go` — RWMutex, Insert/Update/Delete/FindByID/Scan, segment rotation, Watch subscribers
-- [x] `internal/engine/secondary_index.go` — Field-value → ID set inverted index, EnsureIndex/DropIndex/ListIndexes/IndexLookup, persist/load/rebuild
-- [x] `internal/engine/compactor.go` — Background goroutine, dirty-ratio trigger, timer trigger, rebalancer (merge small segments)
-- [x] `internal/engine/db.go` — Collection registry, Open/CreateCollection/DropCollection/ListCollections/Close
-- [x] `internal/query/filter.go` — FieldFilter, AndFilter, OrFilter, ops: eq/neq/gt/gte/lt/lte/contains/regex
+- [x] `store/ndjson.go` — Entry struct, Encode/Decode, NewInsert/NewUpdate/NewDelete
+- [x] `engine/segment.go` — Append, ReadAt, ScanAll, Seal, crash recovery (partial line truncation)
+- [x] `engine/index.go` — In-memory `map[uint64]IndexEntry`, SHA-256 checksum persist/load, Rebuild from segments
+- [x] `engine/collection.go` — RWMutex, Insert/Update/Delete/FindByID/Scan, segment rotation, Watch subscribers
+- [x] `engine/secondary_index.go` — Field-value → ID set inverted index, EnsureIndex/DropIndex/ListIndexes/IndexLookup, persist/load/rebuild
+- [x] `engine/compactor.go` — Background goroutine, dirty-ratio trigger, timer trigger, rebalancer (merge small segments)
+- [x] `engine/db.go` — Collection registry, Open/CreateCollection/DropCollection/ListCollections/Close
+- [x] `query/filter.go` — FieldFilter, AndFilter, OrFilter, ops: eq/neq/gt/gte/lt/lte/contains/regex
 
 ### Phase 4 — Server
 - [x] `internal/auth/apikey.go` — gRPC unary + stream interceptors, `crypto/subtle.ConstantTimeCompare`
@@ -136,13 +136,13 @@ BeginTx  CommitTx  RollbackTx
 - [x] `docs/architecture.md` — Storage model, write/read paths, compaction, crash safety, network layer
 
 ### Tests
-- [x] `internal/store/ndjson_test.go` — encode/decode parity, delete entry
-- [x] `internal/engine/segment_test.go` — append + readAt, scanAll, crash recovery, seal
-- [x] `internal/engine/collection_test.go` — insert/findById, update, delete, scan, persist across reopen, concurrent writes (race detector), watcher
-- [x] `internal/engine/index_test.go` — Set/Get/Delete, Len, Persist+Load, checksum mismatch, Rebuild from segments
-- [x] `internal/engine/compactor_test.go` — isDirty threshold, compact reduces segments, records readable after compact, rebalancer merges tiny segments
-- [x] `internal/engine/secondary_index_test.go` — EnsureIndex/DropIndex/ListIndexes, insert/update/delete maintenance, Scan uses index, Scan falls back, Persist+Load, rebuild from existing data, survives compaction
-- [x] `internal/query/filter_test.go` — all 8 ops, And/Or/nested, MatchAll, missing field, invalid regex
+- [x] `store/ndjson_test.go` — encode/decode parity, delete entry
+- [x] `engine/segment_test.go` — append + readAt, scanAll, crash recovery, seal
+- [x] `engine/collection_test.go` — insert/findById, update, delete, scan, persist across reopen, concurrent writes (race detector), watcher
+- [x] `engine/index_test.go` — Set/Get/Delete, Len, Persist+Load, checksum mismatch, Rebuild from segments
+- [x] `engine/compactor_test.go` — isDirty threshold, compact reduces segments, records readable after compact, rebalancer merges tiny segments
+- [x] `engine/secondary_index_test.go` — EnsureIndex/DropIndex/ListIndexes, insert/update/delete maintenance, Scan uses index, Scan falls back, Persist+Load, rebuild from existing data, survives compaction
+- [x] `query/filter_test.go` — all 8 ops, And/Or/nested, MatchAll, missing field, invalid regex
 - [x] `server/grpc_integration_test.go` — in-process gRPC server, CRUD, Find with filter/order/limit, transactions, error paths
 
 **All 50+ tests pass with `go test ./... -race`**
@@ -191,7 +191,7 @@ Each client needs:
 ### Low Priority / Future
 
 #### ~~3. Secondary indexes~~ ✅ Done
-`internal/engine/secondary_index.go` — in-memory inverted index (field-value → ID set).
+`engine/secondary_index.go` — in-memory inverted index (field-value → ID set).
 - `EnsureIndex(field)` / `DropIndex(field)` / `ListIndexes()` on `Collection`
 - `Scan` uses the index for single eq-filters (O(1)), falls back to full scan otherwise
 - Index maintained on Insert/Update/Delete and rebuilt after compaction
@@ -238,10 +238,10 @@ files, tests, and acceptance criteria in
 | File | Purpose |
 |---|---|
 | [proto/filedb.proto](proto/filedb.proto) | Single source of truth for all APIs — edit here first |
-| [internal/engine/collection.go](internal/engine/collection.go) | Core read/write logic, RWMutex, Watch |
-| [internal/engine/compactor.go](internal/engine/compactor.go) | Background compaction goroutine |
-| [internal/engine/index.go](internal/engine/index.go) | In-memory index, checksum, rebuild |
-| [internal/engine/segment.go](internal/engine/segment.go) | NDJSON file I/O, crash recovery |
+| [engine/collection.go](engine/collection.go) | Core read/write logic, RWMutex, Watch |
+| [engine/compactor.go](engine/compactor.go) | Background compaction goroutine |
+| [engine/index.go](engine/index.go) | In-memory index, checksum, rebuild |
+| [engine/segment.go](engine/segment.go) | NDJSON file I/O, crash recovery |
 | [server/grpc.go](server/grpc.go) | gRPC handlers — proto → engine mapping |
 | [cmd/filedb/main.go](cmd/filedb/main.go) | Server binary, startup, graceful shutdown |
 | [cmd/filedb-cli/repl.go](cmd/filedb-cli/repl.go) | Interactive REPL |

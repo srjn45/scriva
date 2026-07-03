@@ -12,10 +12,10 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/srjn45/filedbv2/internal/engine"
+	"github.com/srjn45/filedbv2/engine"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/internal/query"
-	"github.com/srjn45/filedbv2/internal/store"
+	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/filedbv2/store"
 )
 
 // GRPCServer implements pb.FileDBServer.
