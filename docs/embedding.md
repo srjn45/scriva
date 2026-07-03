@@ -116,6 +116,33 @@ reopen.
 
 ---
 
+## Upsert (create-or-replace by key)
+
+`Upsert` is a single-call "insert if absent, replace if present" on a string
+key. It saves the common get-then-branch dance for archive/move-style flows
+(e.g. writing a record to its final, closed state whether or not it already
+exists):
+
+```go
+// Inserts a new record at rev 1 if "sess-abc123" is free…
+rec, err := col.Upsert("sess-abc123", map[string]any{"status": "open"})
+
+// …and replaces it in place (same id, rev bumped) if it already exists.
+rec, err = col.Upsert("sess-abc123", map[string]any{"status": "archived"})
+```
+
+- The whole present/absent decision and the write happen in one critical
+  section, so concurrent upserts on the same key serialise with **no lost
+  updates** — the first inserts at `rev 1`, each later one replaces at `rev+1`.
+- It returns the resulting `Record{ID, Key, Rev, Ts, Data}`, and emits an
+  `OpInsert` `WatchEvent` for a create or an `OpUpdate` one for a replace.
+- The key is stamped into `_key`, so passing `_key` inside `data` is rejected
+  with `engine.ErrReservedField`; unique indexes on other fields still apply.
+- A replace is an ordinary update entry, so the superseded versions collapse to
+  a single live line on compaction.
+
+---
+
 ## Watching changes (in-process subscriptions)
 
 `Collection.Subscribe` gives you a live feed of every write to a collection.
