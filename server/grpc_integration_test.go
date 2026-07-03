@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -1358,4 +1361,194 @@ func TestIntegration_SlowQuery_IndexedUnderThresholdNoLog(t *testing.T) {
 	if s := logBuf.String(); s != "" {
 		t.Errorf("expected no slow-query log under threshold, got:\n%s", s)
 	}
+}
+
+// ---- Tracing (O4) -----------------------------------------------------------
+
+// newTracedServer spins up an in-process gRPC server wired exactly as
+// cmd/filedb does when --otlp-endpoint is set: the tracing interceptor is
+// chained outermost and the engine's OnScan hook turns scans into child spans.
+// Spans are captured by an in-memory exporter (no live collector) via a
+// synchronous span processor, so they are readable the moment an RPC returns.
+func newTracedServer(t *testing.T) (pb.FileDBClient, *tracetest.InMemoryExporter) {
+	t.Helper()
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	dir := t.TempDir()
+	db, err := engine.Open(dir, engine.CollectionConfig{
+		SegmentMaxSize:  4 * 1024 * 1024,
+		CompactInterval: 24 * time.Hour,
+		CompactDirtyPct: 0.30,
+		OnScan:          server.ScanTraceHook(tp),
+	})
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	gs := server.NewGRPCServer(db, 5*time.Minute)
+	t.Cleanup(gs.Close)
+
+	tu, ts := server.TracingInterceptors(tp)
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(tu),
+		grpc.ChainStreamInterceptor(ts),
+	)
+	pb.RegisterFileDBServer(grpcSrv, gs)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go grpcSrv.Serve(lis)
+	t.Cleanup(grpcSrv.Stop)
+
+	conn, err := grpc.NewClient(
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return pb.NewFileDBClient(conn), exp
+}
+
+// spanByName returns the first captured span with the given name, or nil.
+func spanByName(spans tracetest.SpanStubs, name string) *tracetest.SpanStub {
+	for i := range spans {
+		if spans[i].Name == name {
+			return &spans[i]
+		}
+	}
+	return nil
+}
+
+// spanAttr returns the value of a span attribute as a string, or "" if absent.
+func spanAttr(s *tracetest.SpanStub, key string) (attribute.Value, bool) {
+	for _, kv := range s.Attributes {
+		if string(kv.Key) == key {
+			return kv.Value, true
+		}
+	}
+	return attribute.Value{}, false
+}
+
+func TestIntegration_TracingInterceptor_SpanPerRPC(t *testing.T) {
+	c, exp := newTracedServer(t)
+
+	// A unary RPC: exactly one span named after the method, tagged with the
+	// method and an OK status code.
+	if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "traced"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	spans := exp.GetSpans()
+	rpc := spanByName(spans, "/filedb.v1.FileDB/CreateCollection")
+	if rpc == nil {
+		t.Fatalf("no span for CreateCollection; got %v", spanNames(spans))
+	}
+	if v, ok := spanAttr(rpc, "rpc.method"); !ok || v.AsString() != "/filedb.v1.FileDB/CreateCollection" {
+		t.Errorf("rpc.method attr = %v (present=%v), want the full method", v.AsString(), ok)
+	}
+	if v, ok := spanAttr(rpc, "rpc.grpc.status_code"); !ok || v.AsInt64() != int64(codes.OK) {
+		t.Errorf("rpc.grpc.status_code attr = %d (present=%v), want %d", v.AsInt64(), ok, codes.OK)
+	}
+	exp.Reset()
+
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{
+		Collection: "traced",
+		Data:       mustStruct(t, map[string]any{"n": 1}),
+	}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	exp.Reset()
+
+	// A streaming Find drives an engine scan, which the OnScan hook records as an
+	// "engine.scan" child span of the Find RPC span.
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "traced"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	for {
+		if _, err := stream.Recv(); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("Find recv: %v", err)
+		}
+	}
+
+	spans = exp.GetSpans()
+	find := spanByName(spans, "/filedb.v1.FileDB/Find")
+	if find == nil {
+		t.Fatalf("no span for Find; got %v", spanNames(spans))
+	}
+	scan := spanByName(spans, "engine.scan")
+	if scan == nil {
+		t.Fatalf("no engine.scan span; got %v", spanNames(spans))
+	}
+	// The engine span must nest under the RPC span (same trace, parent = RPC).
+	if scan.Parent.SpanID() != find.SpanContext.SpanID() {
+		t.Errorf("engine.scan parent = %v, want Find span %v", scan.Parent.SpanID(), find.SpanContext.SpanID())
+	}
+	if scan.SpanContext.TraceID() != find.SpanContext.TraceID() {
+		t.Errorf("engine.scan trace = %v, want Find trace %v", scan.SpanContext.TraceID(), find.SpanContext.TraceID())
+	}
+}
+
+// TestIntegration_Tracing_DisabledIsNoop verifies the default path: with no
+// --otlp-endpoint the server wires no tracing interceptor and no exporter, and
+// RPCs still succeed. newTestServer builds exactly that (no tracing) server.
+func TestIntegration_Tracing_DisabledIsNoop(t *testing.T) {
+	c := newTestServer(t)
+
+	if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "plain"}); err != nil {
+		t.Fatalf("CreateCollection with tracing disabled: %v", err)
+	}
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{
+		Collection: "plain",
+		Data:       mustStruct(t, map[string]any{"n": 1}),
+	}); err != nil {
+		t.Fatalf("Insert with tracing disabled: %v", err)
+	}
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "plain"})
+	if err != nil {
+		t.Fatalf("Find with tracing disabled: %v", err)
+	}
+	n := 0
+	for {
+		if _, err := stream.Recv(); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("Find recv with tracing disabled: %v", err)
+		}
+		n++
+	}
+	if n != 1 {
+		t.Fatalf("Find returned %d records, want 1", n)
+	}
+}
+
+// mustStruct builds a *structpb.Struct or fails the test.
+func mustStruct(t *testing.T, m map[string]any) *structpb.Struct {
+	t.Helper()
+	s, err := structpb.NewStruct(m)
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	return s
+}
+
+// spanNames lists captured span names for failure messages.
+func spanNames(spans tracetest.SpanStubs) []string {
+	names := make([]string, len(spans))
+	for i := range spans {
+		names[i] = spans[i].Name
+	}
+	return names
 }

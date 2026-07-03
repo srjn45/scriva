@@ -351,7 +351,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] O1 — structured, leveled logging (`slog`)
 - [x] O2 — health & readiness (gRPC health + REST probes)
 - [x] O3 — request backpressure & limits
-- [ ] O4 — OpenTelemetry tracing (opt-in)
+- [x] O4 — OpenTelemetry tracing (opt-in)
 - [x] O5 — slow-query log & richer stats
 
 **v0.7.0 — Network/engine API parity + query breadth**

@@ -67,6 +67,13 @@ var errStopScan = errors.New("engine: scan limit reached")
 // emitted, and whether an index served it) and are valid even when a non-nil
 // error is returned — they reflect the work done up to the point of failure.
 func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield func(ScanResult) error) (ScanStats, error) {
+	// Report scan cost through the optional hook (the server turns it into a
+	// tracing span). Timing the whole scan keeps the engine dependency-free.
+	if c.cfg.OnScan != nil {
+		start := time.Now()
+		defer func() { c.cfg.OnScan(ctx, c.name, time.Since(start)) }()
+	}
+
 	f := opts.Filter
 	if f == nil {
 		f = query.MatchAll

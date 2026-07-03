@@ -34,10 +34,11 @@ embedding-specific contract.
 **Operability & observability (v0.6.0).** The server is no longer a black box:
 it emits structured request logs (PR-A), exposes health/readiness probes for
 load balancers and orchestrators (PR-A), can shed load under pressure with
-opt-in concurrency, in-flight, and per-key rate limits (PR-B), and surfaces
-per-query cost through a slow-query log and a rows-scanned metric (PR-D). No
-breaking changes — logging defaults to human-readable text at `info`, the probes
-are additive, and every limit and the slow-query log are off by default.
+opt-in concurrency, in-flight, and per-key rate limits (PR-B), can emit
+OpenTelemetry traces to an OTLP collector (PR-C), and surfaces per-query cost
+through a slow-query log and a rows-scanned metric (PR-D). No breaking changes —
+logging defaults to human-readable text at `info`, the probes are additive, and
+every limit, tracing, and the slow-query log are off by default.
 
 ### Added
 
@@ -70,6 +71,18 @@ are additive, and every limit and the slow-query log are off by default.
   before logging (so a shed request is still logged); the embeddable engine
   keeps its zero transport dependencies (rate limiting lives entirely in the
   server layer via `golang.org/x/time/rate`).
+- **OpenTelemetry tracing (O4).** Opt-in distributed tracing, off unless
+  `--otlp-endpoint` is set. When enabled, a tracing interceptor (unary **and**
+  stream) starts one span per RPC named after the method and tagged with
+  `rpc.method` and the returned `rpc.grpc.status_code`; it is chained outermost
+  so the span wraps the whole handler and its context flows into the engine.
+  `--otlp-sample-ratio` (default `1.0`) sets the root sampling fraction. Spans
+  export to an OTLP/gRPC collector. Engine scan and compaction cost surface as
+  child `engine.scan` / `engine.compaction` spans through the existing
+  `engine.CollectionConfig` hook pattern (new `OnScan` hook), so a slow `Find`
+  shows which segment scan dominated — the embeddable engine gains **no** OTel
+  dependency (the server owns the SDK; enforced by `make deps-check`). Both flags
+  are also settable via `otlp_endpoint` / `otlp_sample_ratio` in the config file.
 - **Slow-query log & scan stats (O5).** `Collection.ScanStream` now returns a
   `ScanStats` value alongside its error — `RowsScanned` (live records examined),
   `RowsReturned` (records emitted), and `IndexUsed` (whether a secondary index

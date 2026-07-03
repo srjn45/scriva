@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -64,6 +65,14 @@ type CollectionConfig struct {
 	// OnCompaction is called after each successful compaction run with the
 	// collection name and elapsed wall-clock duration. May be nil.
 	OnCompaction func(collection string, dur time.Duration)
+
+	// OnScan is called after each ScanStream completes with the scan's context,
+	// the collection name, and the elapsed wall-clock duration. It lets an
+	// embedder observe scan cost — the server turns it into a tracing span — while
+	// keeping the engine free of any tracing/metrics dependency. The context is
+	// the one passed to ScanStream, so a span started from it nests under the
+	// caller's (e.g. per-RPC) span. May be nil.
+	OnScan func(ctx context.Context, collection string, dur time.Duration)
 
 	// DefaultTTL, when > 0, sets an expiry of now+DefaultTTL on every inserted
 	// record that does not carry an explicit expiry. Records already present keep
