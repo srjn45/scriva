@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -149,50 +149,31 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 		return status.Errorf(codes.InvalidArgument, "filter: %v", err)
 	}
 
-	results, err := col.Scan(f)
-	if err != nil {
-		return status.Errorf(codes.Internal, "scan: %v", err)
+	// The engine honours order/offset/limit and streams matches as it reads,
+	// so a limited query never materialises the whole collection. stream.Context()
+	// is threaded through so a client cancelling the RPC stops server-side work.
+	opts := engine.ScanOptions{
+		Filter:     f,
+		Limit:      int(req.Limit),
+		Offset:     int(req.Offset),
+		OrderBy:    req.OrderBy,
+		Descending: req.Descending,
 	}
-
-	// Sort if requested.
-	if req.OrderBy != "" {
-		sort.Slice(results, func(i, j int) bool {
-			vi := fmt.Sprintf("%v", results[i].Data[req.OrderBy])
-			vj := fmt.Sprintf("%v", results[j].Data[req.OrderBy])
-			// Numeric comparison when both values parse as float64.
-			fi, ei := results[i].Data[req.OrderBy].(float64)
-			fj, ej := results[j].Data[req.OrderBy].(float64)
-			if ei && ej {
-				if req.Descending {
-					return fi > fj
-				}
-				return fi < fj
-			}
-			if req.Descending {
-				return vi > vj
-			}
-			return vi < vj
-		})
-	}
-
-	// Apply offset and limit.
-	start := int(req.Offset)
-	if start > len(results) {
-		start = len(results)
-	}
-	results = results[start:]
-	if req.Limit > 0 && int(req.Limit) < len(results) {
-		results = results[:req.Limit]
-	}
-
-	for _, r := range results {
+	err = col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
 		rec, err := toProtoRecord(r.ID, r.Data, r.Ts)
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
 		}
-		if err := stream.Send(&pb.FindResponse{Record: rec}); err != nil {
-			return err
+		return stream.Send(&pb.FindResponse{Record: rec})
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return status.FromContextError(err).Err()
 		}
+		if _, ok := status.FromError(err); ok {
+			return err // already a gRPC status (stream.Send / marshal error) — preserve its code
+		}
+		return status.Errorf(codes.Internal, "find: %v", err)
 	}
 	return nil
 }

@@ -326,6 +326,23 @@ Key points:
 }
 ```
 
+### Ordering & pagination
+
+`Find` accepts `order_by`, `descending`, `limit`, and `offset`. These are pushed
+into the storage engine and applied *as it reads*, so a limited query never
+loads the whole collection into memory:
+
+- **`limit` / `offset` without `order_by`** — results stream in insertion (id)
+  order and the scan stops after `offset + limit` matches. `Find … limit 10`
+  over a huge collection reads about ten rows, not all of them.
+- **`order_by`** — results are sorted by that field (numerically when both
+  values are numbers, otherwise by their string form), ties broken by ascending
+  `id` so pages are stable. With a `limit`, only a bounded top-`(offset+limit)`
+  buffer is kept rather than sorting every row.
+
+Cancelling the request (client disconnect or context cancellation) stops the
+scan promptly instead of running to completion.
+
 ---
 
 ## Secondary indexes
