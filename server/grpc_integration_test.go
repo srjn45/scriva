@@ -263,6 +263,71 @@ func TestIntegration_Find_LimitOffset(t *testing.T) {
 	if len(recs) != 4 {
 		t.Errorf("expected 4 records with limit=4, got %d", len(recs))
 	}
+	// offset 3, limit 4 over 1..10 ordered by n → 4,5,6,7.
+	want := []float64{4, 5, 6, 7}
+	for i, r := range recs {
+		if got := r.Data.Fields["n"].GetNumberValue(); got != want[i] {
+			t.Errorf("page[%d]=%v want %v (full page %v)", i, got, want[i], want)
+		}
+	}
+}
+
+// TestIntegration_Find_UnorderedLimit checks the push-down streaming path:
+// an unordered limited query returns exactly the requested number of records.
+func TestIntegration_Find_UnorderedLimit(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "big"})
+	for i := 1; i <= 500; i++ {
+		d, _ := structpb.NewStruct(map[string]any{"n": float64(i)})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "big", Data: d})
+	}
+
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "big", Limit: 7})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs := collectFind(t, stream)
+	if len(recs) != 7 {
+		t.Errorf("unordered limit=7: got %d records", len(recs))
+	}
+}
+
+// TestIntegration_Find_CancelStops verifies that cancelling the client context
+// mid-stream aborts the Find with a Canceled status.
+func TestIntegration_Find_CancelStops(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "cancelme"})
+	for i := 1; i <= 500; i++ {
+		d, _ := structpb.NewStruct(map[string]any{"n": float64(i)})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "cancelme", Data: d})
+	}
+
+	cctx, cancel := context.WithCancel(ctx())
+	defer cancel()
+	stream, err := c.Find(cctx, &pb.FindRequest{Collection: "cancelme"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+
+	// Read a couple, then cancel and confirm the stream ends with an error.
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	cancel()
+	sawErr := false
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			sawErr = true
+			break
+		}
+	}
+	if !sawErr {
+		t.Error("expected a stream error after cancellation")
+	}
 }
 
 // ---- CollectionStats --------------------------------------------------------

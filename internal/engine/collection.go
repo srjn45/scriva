@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/srjn45/filedbv2/internal/query"
 	"github.com/srjn45/filedbv2/internal/store"
 )
 
@@ -441,78 +440,6 @@ func (c *Collection) FindByID(id uint64) (map[string]any, time.Time, error) {
 		return nil, time.Time{}, fmt.Errorf("collection: findById: %w", err)
 	}
 	return e.Data, e.Ts, nil
-}
-
-// Scan iterates all live records and returns those matching f.
-// If f is a simple eq-filter on an indexed field, the secondary index is used
-// to look up candidate IDs in O(1) instead of scanning every segment.
-// Results are returned in an undefined order.
-func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
-	if f == nil {
-		f = query.MatchAll
-	}
-
-	// Fast path: single FieldFilter with OpEq on an indexed field.
-	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
-		if ids, hit := c.IndexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
-			return c.fetchByIDs(ids, f)
-		}
-	}
-
-	// Slow path: full segment scan.
-	c.mu.RLock()
-	allSegs := make([]*Segment, 0, len(c.sealed)+1)
-	allSegs = append(allSegs, c.sealed...)
-	allSegs = append(allSegs, c.active)
-	c.mu.RUnlock()
-
-	// latest[id] = most recent entry seen (last write wins)
-	latest := make(map[uint64]store.Entry)
-	for _, seg := range allSegs {
-		entries, err := seg.ScanAll()
-		if err != nil {
-			return nil, fmt.Errorf("collection: scan: %w", err)
-		}
-		for _, e := range entries {
-			latest[e.ID] = e
-		}
-	}
-
-	var results []ScanResult
-	for _, e := range latest {
-		if e.Op == store.OpDelete {
-			continue
-		}
-		if f.Match(e.Data) {
-			results = append(results, ScanResult{ID: e.ID, Data: e.Data, Ts: e.Ts})
-		}
-	}
-	return results, nil
-}
-
-// fetchByIDs resolves a slice of IDs via the primary index and returns their
-// current records. It post-filters with f so that the caller can still apply
-// any additional predicates beyond the eq-index lookup.
-func (c *Collection) fetchByIDs(ids []uint64, f query.Filter) ([]ScanResult, error) {
-	var results []ScanResult
-	for _, id := range ids {
-		data, ts, err := c.FindByID(id)
-		if err != nil {
-			// record was deleted since the index was consulted — skip
-			continue
-		}
-		if f.Match(data) {
-			results = append(results, ScanResult{ID: id, Data: data, Ts: ts})
-		}
-	}
-	return results, nil
-}
-
-// ScanResult holds a single matched record from a Scan.
-type ScanResult struct {
-	ID   uint64
-	Data map[string]any
-	Ts   time.Time
 }
 
 // Stats returns diagnostic information about the collection.

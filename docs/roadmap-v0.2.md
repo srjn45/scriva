@@ -292,10 +292,10 @@ conventions.
 - [x] D6 — transaction GC / `--tx-timeout`
 
 **v0.3.0 — Query at scale**
-- [ ] Q1 — streaming, push-down Find
+- [x] Q1 — streaming, push-down Find
 - [ ] Q2 — typed, directional `order_by`
 - [ ] Q3 — range-capable secondary indexes
-- [ ] Q4 — context cancellation into the engine
+- [x] Q4 — context cancellation into the engine
 
 **v0.4.0 — Features**
 - [ ] F1 — TTL / expiring records

@@ -2,6 +2,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -96,6 +97,50 @@ func BenchmarkScanFull(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// BenchmarkFindLimitVsFull contrasts an unordered `limit 10` streaming query
+// against draining the whole collection. The limited query stops after the
+// first ten matches, so its cost is bounded by the limit rather than the
+// collection size — this is the Q1 push-down guarantee. Run:
+//
+//	go test ./internal/engine -bench BenchmarkFindLimitVsFull -benchmem
+func BenchmarkFindLimitVsFull(b *testing.B) {
+	col, err := OpenCollection("bench", b.TempDir(), benchCfg(SyncModeNone))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer col.Close()
+
+	const n = 50000
+	for i := 0; i < n; i++ {
+		if _, _, err := col.Insert(sampleRecord(i)); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	drain := func(opts ScanOptions) {
+		count := 0
+		if err := col.ScanStream(context.Background(), opts, func(ScanResult) error {
+			count++
+			return nil
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.Run("limit10", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			drain(ScanOptions{Limit: 10})
+		}
+	})
+	b.Run("full", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			drain(ScanOptions{})
+		}
+	})
 }
 
 // BenchmarkScanIndexed measures the same single-eq query accelerated by a

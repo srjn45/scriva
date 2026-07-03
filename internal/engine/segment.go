@@ -206,6 +206,46 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 	return entries, nil
 }
 
+// ScanFrom reads every entry in the segment in order, invoking yield with each
+// entry's start byte offset. The offset matches the value Append returned for
+// that entry, so callers can cross-check liveness against the primary index.
+// Returning an error from yield stops the scan and returns that error, which
+// lets callers terminate early (e.g. once a limit is reached).
+func (s *Segment) ScanFrom(yield func(offset int64, e store.Entry) error) error {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return fmt.Errorf("segment: scanfrom open %q: %w", s.path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	// Allow lines up to 16 MiB (large records).
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+
+	var off int64
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Bytes()
+		start := off
+		off += int64(len(line)) + 1 // + terminating '\n'
+		if len(line) == 0 {
+			continue
+		}
+		e, err := store.Decode(line)
+		if err != nil {
+			return fmt.Errorf("segment: decode line %d in %q: %w", lineNum, s.path, err)
+		}
+		if err := yield(start, e); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("segment: scanfrom %q: %w", s.path, err)
+	}
+	return nil
+}
+
 // Seal marks the segment as immutable and flushes + closes the underlying
 // file. After sealing, only ReadAt and ScanAll are valid.
 func (s *Segment) Seal() error {

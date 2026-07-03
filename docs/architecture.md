@@ -76,13 +76,46 @@ FindById:
     acquire read lock → primary index lookup → seek to offset → read one line → decode
 
 Find (scan) without index:
-    acquire read lock → iterate all segments → apply filter → stream results
+    stream segments in insertion order → skip stale/deleted versions via the
+    primary index → apply filter → order/paginate → stream results
 
 Find (scan) with secondary index (single eq filter on indexed field):
-    acquire read lock → secondary index lookup (O(1)) → fetch matching ids via primary index
+    secondary index lookup (O(1)) → fetch candidate ids via primary index → filter → stream
 ```
 
 The in-memory primary index makes `FindById` an O(1) index lookup + one disk seek. A secondary index on a field reduces `Find` with a single equality filter from O(n) to O(1).
+
+### Streaming, push-down `Find`
+
+`Find` is served by the engine's `ScanStream`, which emits matches to the gRPC
+stream *as it reads* rather than buffering the whole result set. It never builds
+an in-memory `map[id]entry` of the collection: instead it streams each segment
+sequentially and treats an entry as live only when the primary index still
+points at exactly its `(segment, offset)`, skipping superseded versions and
+tombstones. This keeps the deduplication cost off the heap.
+
+`limit`, `offset`, and `order_by` are pushed **into** the engine so their cost is
+paid before materialization:
+
+| Query shape | Rows examined | Memory held |
+|---|---|---|
+| unordered, `limit > 0` | stops after `offset+limit` matches | O(`offset+limit`) |
+| ordered, `limit > 0` | all candidates (needs full comparison) | O(`offset+limit`) — bounded **top-K** buffer |
+| ordered, no limit | all candidates | O(matches) — an inherent full sort |
+
+So `Find … limit 10` over a million-row collection reads and holds ~10 rows, not
+a million. (Range/`gt`/`lt` predicates and ordering by a non-indexed field still
+examine every candidate — ordered indexes to fix that are tracked as Q3.)
+
+**Ordering guarantees.** With `order_by`, results are sorted by that field —
+numerically when both values are numbers, else by their string form — with ties
+broken by ascending `id` so pages are deterministic and a bounded top-K agrees
+with a full sort. Without `order_by`, results are returned in insertion (id)
+order.
+
+**Cancellation.** `ScanStream` threads the request `context` and checks it
+between segments and records, so a client that cancels a long `Find` (or
+disconnects) stops server-side work promptly instead of scanning to completion.
 
 ---
 
