@@ -240,7 +240,8 @@ func (c *Collection) load() error {
 			// derive field name from filename: sidx_<field>.json
 			base := filepath.Base(p)
 			field := base[len("sidx_") : len(base)-len(".json")]
-			sidx := newSecondaryIndex(field)
+			// Load() restores the persisted unique flag; false is a placeholder.
+			sidx := newSecondaryIndex(field, false)
 			if err := sidx.Load(p); err != nil {
 				// stale/corrupt — rebuild from segments
 				if rbErr := sidx.rebuild(all); rbErr != nil {
@@ -333,6 +334,12 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 	e.Ts = ts
 
 	c.mu.Lock()
+	// Enforce unique indexes before writing so a rejected insert appends nothing
+	// and mutates no index.
+	if err := c.sidxCheckUnique(id, data); err != nil {
+		c.mu.Unlock()
+		return 0, time.Time{}, err
+	}
 	offset, err := c.active.Append(e)
 	if err != nil {
 		c.mu.Unlock()
@@ -370,6 +377,12 @@ func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
 	if _, ok := c.index.Get(id); !ok {
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: id %d not found", id)
+	}
+	// Enforce unique indexes before writing so a rejected update appends nothing
+	// and mutates no index.
+	if err := c.sidxCheckUnique(id, data); err != nil {
+		c.mu.Unlock()
+		return time.Time{}, err
 	}
 	offset, err := c.active.Append(e)
 	if err != nil {
@@ -604,6 +617,15 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		}
 	}
 
+	// Pre-validate uniqueness across all staged ops before applying any, so a
+	// violating commit writes nothing. Each insert/update is checked against the
+	// committed data (a different live id) and against values claimed by earlier
+	// ops in this same batch.
+	if err := c.txCheckUnique(ops); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+
 	// Apply all ops sequentially.
 	var events []WatchEvent
 	var maxInsertID uint64
@@ -704,6 +726,70 @@ func (c *Collection) Close() error {
 
 // ---- Secondary index helpers (called under c.mu write lock) ----------------
 
+// sidxCheckUnique verifies that applying data to id would not collide with a
+// different live record on any unique secondary index. It returns an
+// ErrDuplicateKey-wrapped error on the first violation. It must be called while
+// c.mu (write lock) is held so the check and the subsequent index mutation are
+// atomic with respect to other writers.
+func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
+	c.sidxMu.RLock()
+	defer c.sidxMu.RUnlock()
+	for field, sidx := range c.sidxMap {
+		if !sidx.unique {
+			continue
+		}
+		val, ok := data[field]
+		if !ok {
+			continue
+		}
+		key := toIndexKey(val)
+		if sidx.conflict(key, id) {
+			return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
+		}
+	}
+	return nil
+}
+
+// txCheckUnique pre-validates a batch of staged ops against every unique
+// secondary index. It must be called while c.mu (write lock) is held. A
+// violation — either against already-committed data or against another op in
+// the same batch — returns an ErrDuplicateKey-wrapped error.
+func (c *Collection) txCheckUnique(ops []txOp) error {
+	c.sidxMu.RLock()
+	defer c.sidxMu.RUnlock()
+
+	// claimed[field][value] = id staked by an earlier op in this batch.
+	claimed := make(map[string]map[string]uint64)
+	for _, op := range ops {
+		if op.kind != txOpInsert && op.kind != txOpUpdate {
+			continue
+		}
+		for field, sidx := range c.sidxMap {
+			if !sidx.unique {
+				continue
+			}
+			val, ok := op.data[field]
+			if !ok {
+				continue
+			}
+			key := toIndexKey(val)
+			if sidx.conflict(key, op.id) {
+				return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
+			}
+			byVal := claimed[field]
+			if byVal == nil {
+				byVal = make(map[string]uint64)
+				claimed[field] = byVal
+			}
+			if prev, taken := byVal[key]; taken && prev != op.id {
+				return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
+			}
+			byVal[key] = op.id
+		}
+	}
+	return nil
+}
+
 // sidxIndexEntry adds data[field] to every secondary index for a new id.
 func (c *Collection) sidxIndexEntry(id uint64, data map[string]any) {
 	c.sidxMu.RLock()
@@ -739,15 +825,29 @@ func (c *Collection) sidxRemoveEntry(id uint64) {
 
 // ---- Secondary index management (public API) --------------------------------
 
-// EnsureIndex creates a secondary index on field if one does not already exist.
-// It immediately rebuilds the index from all current segments.
+// EnsureIndex creates a non-unique secondary index on field if one does not
+// already exist. It immediately rebuilds the index from all current segments.
 func (c *Collection) EnsureIndex(field string) error {
+	return c.ensureIndex(field, false)
+}
+
+// EnsureUniqueIndex creates a unique secondary index on field: subsequent
+// inserts or updates that would map field's value to a different live record
+// are rejected with ErrDuplicateKey. Uniqueness is enforced going forward only;
+// historical duplicates already present in the data are tolerated on rebuild.
+// The unique flag is persisted so it survives reload.
+func (c *Collection) EnsureUniqueIndex(field string) error {
+	return c.ensureIndex(field, true)
+}
+
+// ensureIndex creates a secondary index on field if one does not already exist.
+func (c *Collection) ensureIndex(field string, unique bool) error {
 	c.sidxMu.Lock()
 	if _, exists := c.sidxMap[field]; exists {
 		c.sidxMu.Unlock()
 		return nil
 	}
-	sidx := newSecondaryIndex(field)
+	sidx := newSecondaryIndex(field, unique)
 	c.sidxMap[field] = sidx
 	c.sidxMu.Unlock()
 

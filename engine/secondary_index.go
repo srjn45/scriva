@@ -4,12 +4,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/srjn45/filedbv2/store"
 )
+
+// ErrDuplicateKey is returned when a write would map a value already held by a
+// different live record on a unique secondary index. Callers can match it with
+// errors.Is; it is wrapped with the offending field and value for context.
+var ErrDuplicateKey = errors.New("engine: duplicate key")
 
 // SecondaryIndex is an in-memory inverted index: field-value → set of IDs.
 // It makes eq-filter queries O(1) instead of O(n) full-segment scan.
@@ -22,6 +28,7 @@ import (
 //   - Persist takes s.mu.RLock for a safe snapshot.
 type SecondaryIndex struct {
 	field   string
+	unique  bool // when true, a value may map to at most one live id
 	mu      sync.RWMutex
 	buckets map[string]map[uint64]struct{} // value → id set
 	reverse map[uint64]string             // id → value (fast removal on update/delete)
@@ -30,13 +37,15 @@ type SecondaryIndex struct {
 // sidxFile is the on-disk format persisted to sidx_<field>.json.
 type sidxFile struct {
 	Field    string              `json:"field"`
+	Unique   bool                `json:"unique,omitempty"`
 	Buckets  map[string][]uint64 `json:"buckets"`
 	Checksum string              `json:"checksum"`
 }
 
-func newSecondaryIndex(field string) *SecondaryIndex {
+func newSecondaryIndex(field string, unique bool) *SecondaryIndex {
 	return &SecondaryIndex{
 		field:   field,
+		unique:  unique,
 		buckets: make(map[string]map[uint64]struct{}),
 		reverse: make(map[uint64]string),
 	}
@@ -102,6 +111,21 @@ func (s *SecondaryIndex) Lookup(value string) []uint64 {
 	}
 	s.mu.RUnlock()
 	return ids
+}
+
+// conflict reports whether value is already mapped to a live id other than the
+// given one. Used to enforce uniqueness before a write is applied. It only
+// considers other ids, so re-writing a record's own existing value is allowed.
+// Goroutine-safe.
+func (s *SecondaryIndex) conflict(value string, id uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for existing := range s.buckets[value] {
+		if existing != id {
+			return true
+		}
+	}
+	return false
 }
 
 // rebuild reconstructs the index by replaying entries from segs.
@@ -171,6 +195,7 @@ func (s *SecondaryIndex) Persist(path string) error {
 
 	f := sidxFile{
 		Field:    s.field,
+		Unique:   s.unique,
 		Buckets:  bucketsJSON,
 		Checksum: hex.EncodeToString(sum[:]),
 	}
@@ -195,6 +220,13 @@ func (s *SecondaryIndex) Load(path string) error {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return fmt.Errorf("sidx: unmarshal: %w", err)
 	}
+
+	// Restore the unique flag from parsed metadata before the checksum check so
+	// it is preserved even when the caller has to rebuild from a stale file
+	// (rebuild only touches the buckets, not this flag).
+	s.mu.Lock()
+	s.unique = f.Unique
+	s.mu.Unlock()
 
 	payload, err := json.Marshal(f.Buckets)
 	if err != nil {
