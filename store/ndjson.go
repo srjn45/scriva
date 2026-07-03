@@ -40,20 +40,29 @@ type Entry struct {
 	// decode as rev 0 — fully backward compatible.
 	Rev  uint64         `json:"rev,omitempty"`
 	Data map[string]any `json:"data,omitempty"` // nil for OpDelete
+	// ExpiresAt is the record's optional time-to-live deadline, as a Unix
+	// nanosecond timestamp (0 = never expires). When non-zero, the record is
+	// invisible to reads at or after this instant and is reclaimed by compaction.
+	// It is omitted when zero, so segment lines written before TTLs existed
+	// decode with a zero (never-expiring) deadline — fully backward compatible.
+	// A Unix-nano int (rather than time.Time) is used so json omitempty actually
+	// drops it when unset — a zero time.Time struct would still be serialised.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// CRC is an optional CRC32C (Castagnoli) checksum over the entry's id, op,
-	// rev, and canonical data. It is written by Encode and verified by Decode
-	// when present. A nil CRC marks a legacy line written before checksums
+	// rev, expiry, and canonical data. It is written by Encode and verified by
+	// Decode when present. A nil CRC marks a legacy line written before checksums
 	// existed; such lines are decoded without verification for backward
 	// compatibility.
 	CRC *uint32 `json:"crc,omitempty"`
 }
 
-// checksum computes the CRC32C over the entry's id, op, rev, and canonical
-// data. The timestamp and the crc field itself are excluded so the value is
-// stable across encode/decode round-trips. Rev bytes are folded in only when
-// non-zero, so a legacy line (rev 0, written before revisions existed) hashes
-// exactly as it did originally and its stored crc still verifies. Data is
-// canonicalised via json.Marshal, which sorts map keys deterministically.
+// checksum computes the CRC32C over the entry's id, op, rev, expiry, and
+// canonical data. The timestamp and the crc field itself are excluded so the
+// value is stable across encode/decode round-trips. Rev and expiry bytes are
+// folded in only when non-zero, so a legacy line (rev 0, no expiry, written
+// before those fields existed) hashes exactly as it did originally and its
+// stored crc still verifies. Data is canonicalised via json.Marshal, which
+// sorts map keys deterministically.
 func checksum(e Entry) (uint32, error) {
 	h := crc32.New(crc32cTable)
 	var idbuf [8]byte
@@ -64,6 +73,11 @@ func checksum(e Entry) (uint32, error) {
 		var revbuf [8]byte
 		binary.LittleEndian.PutUint64(revbuf[:], e.Rev)
 		_, _ = h.Write(revbuf[:])
+	}
+	if e.ExpiresAt != 0 {
+		var expbuf [8]byte
+		binary.LittleEndian.PutUint64(expbuf[:], uint64(e.ExpiresAt))
+		_, _ = h.Write(expbuf[:])
 	}
 	if e.Data != nil {
 		b, err := json.Marshal(e.Data)

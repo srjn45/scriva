@@ -42,6 +42,43 @@ func TestEncodeDecodeParity(t *testing.T) {
 	}
 }
 
+func TestExpiresAtRoundTrip(t *testing.T) {
+	exp := time.Now().Add(time.Hour).UnixNano()
+	e := Entry{
+		ID:        7,
+		Op:        OpInsert,
+		Ts:        time.Now().UTC(),
+		ExpiresAt: exp,
+		Data:      map[string]any{"k": "v"},
+	}
+	b, err := Encode(e)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	// A non-zero deadline must be present on the wire, protected by the crc.
+	if !bytes.Contains(b, []byte(`"expires_at"`)) {
+		t.Errorf("encoded entry missing expires_at: %s", b)
+	}
+	decoded, err := Decode(b[:len(b)-1]) // crc verification exercises the folded expiry
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if decoded.ExpiresAt != exp {
+		t.Errorf("ExpiresAt mismatch: got %d want %d", decoded.ExpiresAt, exp)
+	}
+}
+
+func TestExpiresAtOmittedWhenZero(t *testing.T) {
+	e := NewInsert(1, map[string]any{"k": "v"}) // no expiry
+	b, err := Encode(e)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if bytes.Contains(b, []byte(`"expires_at"`)) {
+		t.Errorf("zero deadline should be omitted from the wire form: %s", b)
+	}
+}
+
 func TestDeleteEntryHasNoData(t *testing.T) {
 	e := NewDelete(7)
 	b, err := Encode(e)

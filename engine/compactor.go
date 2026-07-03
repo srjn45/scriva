@@ -23,11 +23,13 @@ func (c *Collection) compactLoop() {
 			if c.isClosed() {
 				return
 			}
+			_ = c.reapExpired()
 			_ = c.compact()
 		case <-c.compactC:
 			if c.isClosed() {
 				return
 			}
+			_ = c.reapExpired()
 			_ = c.compact()
 		}
 	}
@@ -188,7 +190,9 @@ func (c *Collection) isDirty(segs []*Segment) bool {
 }
 
 // resolveEntries replays all entries from the given segments and returns only
-// the latest surviving entry per id (deletes are dropped).
+// the latest surviving entry per id (deletes are dropped). Records whose TTL has
+// already passed are dropped too, so compaction reclaims expired data even if
+// the reaper has not yet tombstoned it.
 func resolveEntries(segs []*Segment) ([]store.Entry, error) {
 	latest := make(map[uint64]store.Entry)
 
@@ -202,11 +206,13 @@ func resolveEntries(segs []*Segment) ([]store.Entry, error) {
 		}
 	}
 
+	now := time.Now().UnixNano()
 	var out []store.Entry
 	for _, e := range latest {
-		if e.Op != store.OpDelete {
-			out = append(out, e)
+		if e.Op == store.OpDelete || expired(e.ExpiresAt, now) {
+			continue
 		}
+		out = append(out, e)
 	}
 	return out, nil
 }

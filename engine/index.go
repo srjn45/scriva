@@ -25,6 +25,11 @@ type IndexEntry struct {
 	// omitted when zero so an index.json written before revisions existed still
 	// verifies its checksum and loads unchanged.
 	Rev uint64 `json:"rev,omitempty"`
+	// ExpiresAt is the record's TTL deadline as a Unix nanosecond timestamp
+	// (0 = never). Mirrored from the segment entry so a read can drop an expired
+	// record without touching disk. Omitted when zero for backward-compatible
+	// index.json files.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 // indexFile is the on-disk representation persisted to index.json.
@@ -164,7 +169,7 @@ func (idx *Index) Rebuild(segments []*Segment) error {
 				if e.Rev > rev {
 					rev = e.Rev
 				}
-				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev}
+				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev, ExpiresAt: e.ExpiresAt}
 			case store.OpDelete:
 				delete(fresh, e.ID)
 			}

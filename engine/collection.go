@@ -64,6 +64,12 @@ type CollectionConfig struct {
 	// OnCompaction is called after each successful compaction run with the
 	// collection name and elapsed wall-clock duration. May be nil.
 	OnCompaction func(collection string, dur time.Duration)
+
+	// DefaultTTL, when > 0, sets an expiry of now+DefaultTTL on every inserted
+	// record that does not carry an explicit expiry. Records already present keep
+	// their own deadline; updates preserve a record's existing expiry unless one
+	// is supplied explicitly. Zero (the default) means records never expire.
+	DefaultTTL time.Duration
 }
 
 func defaultConfig() CollectionConfig {
@@ -334,18 +340,32 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 	if _, ok := data[KeyField]; ok {
 		return 0, time.Time{}, reservedFieldErr()
 	}
-	return c.insert(data)
+	return c.insert(data, c.resolveInsertExpiry(time.Time{}))
+}
+
+// InsertWithExpiry inserts data with an explicit expiry deadline, overriding any
+// collection-level DefaultTTL. A zero expiresAt falls back to DefaultTTL (or no
+// expiry when none is configured). The record becomes invisible to reads at or
+// after expiresAt and is reclaimed by compaction. Setting the reserved _key
+// field is rejected with ErrReservedField.
+func (c *Collection) InsertWithExpiry(data map[string]any, expiresAt time.Time) (uint64, time.Time, error) {
+	if _, ok := data[KeyField]; ok {
+		return 0, time.Time{}, reservedFieldErr()
+	}
+	return c.insert(data, c.resolveInsertExpiry(expiresAt))
 }
 
 // insert is the reserved-field-agnostic insert path shared by Insert and
 // InsertWithKey. Callers are responsible for having validated (or intentionally
-// stamped) any reserved fields in data.
-func (c *Collection) insert(data map[string]any) (uint64, time.Time, error) {
+// stamped) any reserved fields in data. expiresAt is the record's resolved
+// Unix-nano deadline (0 = never expires).
+func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.Time, error) {
 	id := c.idSeq.Add(1)
 	ts := time.Now().UTC()
 	e := store.NewInsert(id, data)
 	e.Ts = ts
 	e.Rev = 1 // a fresh record starts at revision 1
+	e.ExpiresAt = expiresAt
 
 	c.mu.Lock()
 	// Enforce unique indexes before writing so a rejected insert appends nothing
@@ -359,7 +379,7 @@ func (c *Collection) insert(data map[string]any) (uint64, time.Time, error) {
 		c.mu.Unlock()
 		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: expiresAt})
 	c.sidxIndexEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -388,13 +408,26 @@ func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
 	if _, ok := data[KeyField]; ok {
 		return time.Time{}, reservedFieldErr()
 	}
-	return c.update(id, data)
+	return c.update(id, data, 0, true)
+}
+
+// UpdateWithExpiry overwrites a record and sets its expiry deadline, overriding
+// whatever deadline the record previously carried. A zero expiresAt falls back
+// to DefaultTTL (or no expiry when none is configured). Setting the reserved
+// _key field is rejected with ErrReservedField.
+func (c *Collection) UpdateWithExpiry(id uint64, data map[string]any, expiresAt time.Time) (time.Time, error) {
+	if _, ok := data[KeyField]; ok {
+		return time.Time{}, reservedFieldErr()
+	}
+	return c.update(id, data, c.resolveInsertExpiry(expiresAt), false)
 }
 
 // update is the reserved-field-agnostic update path shared by Update and
 // UpdateByKey. Callers are responsible for having validated (or intentionally
-// stamped) any reserved fields in data.
-func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
+// stamped) any reserved fields in data. When keepExpiry is true the record's
+// existing deadline is preserved (data-only update); otherwise expiresAt is
+// stamped as the new deadline.
+func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, keepExpiry bool) (time.Time, error) {
 	ts := time.Now().UTC()
 	e := store.NewUpdate(id, data)
 	e.Ts = ts
@@ -411,6 +444,11 @@ func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
 		c.mu.Unlock()
 		return time.Time{}, err
 	}
+	exp := expiresAt
+	if keepExpiry {
+		exp = cur.ExpiresAt // data-only update keeps the record's deadline
+	}
+	e.ExpiresAt = exp
 	newRev := cur.Rev + 1
 	e.Rev = newRev
 	offset, err := c.active.Append(e)
@@ -418,7 +456,7 @@ func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp})
 	c.sidxUpdateEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -481,6 +519,11 @@ func (c *Collection) Get(id uint64) (Record, error) {
 	c.mu.RUnlock()
 
 	if !ok {
+		return Record{}, fmt.Errorf("collection: get: id %d not found", id)
+	}
+	// Defensively hide records whose TTL has passed but which the reaper has not
+	// yet reclaimed, so an expired record is never observable.
+	if c.isExpired(loc) {
 		return Record{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 
@@ -706,12 +749,14 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e := store.NewInsert(op.id, op.data)
 			e.Ts = op.ts
 			e.Rev = 1 // a fresh record starts at revision 1
+			exp := c.resolveInsertExpiry(time.Time{})
+			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp})
 			c.sidxIndexEntry(op.id, op.data)
 			if op.id > maxInsertID {
 				maxInsertID = op.id
@@ -725,16 +770,19 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			// in this same batch may already have updated it (index.Set below runs
 			// per op), so reading it here keeps revs monotonic within the batch.
 			newRev := uint64(1)
+			var exp int64
 			if cur, ok := c.index.Get(op.id); ok {
 				newRev = cur.Rev + 1
+				exp = cur.ExpiresAt // preserve the record's deadline across a tx update
 			}
 			e.Rev = newRev
+			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp})
 			c.sidxUpdateEntry(op.id, op.data)
 			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
 
@@ -1070,12 +1118,14 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		return false, nil // stale rev / false predicate → clean no-op
 	}
 
-	// Condition held — apply the update, preserving the key and bumping the rev.
+	// Condition held — apply the update, preserving the key, deadline, and
+	// bumping the rev.
 	stamped := stampKey(data, key)
 	newRev := loc.Rev + 1
 	e := store.NewUpdate(id, stamped)
 	e.Ts = ts
 	e.Rev = newRev
+	e.ExpiresAt = loc.ExpiresAt
 
 	if err := c.sidxCheckUnique(id, stamped); err != nil {
 		c.mu.Unlock()
@@ -1086,7 +1136,7 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		c.mu.Unlock()
 		return false, fmt.Errorf("collection: cas: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: loc.ExpiresAt})
 	c.sidxUpdateEntry(id, stamped)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()

@@ -66,6 +66,7 @@ All flags and their defaults:
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
+| `--default-ttl` | `0` | Default expiry applied to inserted records (`0` = never expire), e.g. `24h` |
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
 | `--config` | *(none)* | Path to YAML config file |
 
@@ -89,6 +90,7 @@ compact_dirty_pct: 0.30
 sync_mode: none             # none | always | interval
 sync_interval: 1s           # used when sync_mode: interval
 tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
+default_ttl: 0              # expire inserted records after this long (0 = never), e.g. 24h
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
@@ -421,6 +423,54 @@ committing or rolling back, the server reaps the transaction once it has been
 idle longer than `--tx-timeout` (default `5m`); a later commit on a reaped
 transaction returns a not-found error. Set `--tx-timeout 0` to keep
 transactions indefinitely.
+
+---
+
+## TTL / expiring records
+
+Records can be given an expiry **deadline**, after which they vanish from reads
+and are reclaimed by compaction — a natural fit for caches, sessions, and IoT
+telemetry.
+
+Set a **server-wide default** with `--default-ttl` (or `default_ttl` in the
+config file). Every inserted record that doesn't carry its own deadline expires
+that long after it was written:
+
+```bash
+filedb serve --data ./data --default-ttl 24h   # inserts expire after a day
+```
+
+A default of `0` (the default) means records never expire.
+
+Expiry semantics:
+
+- An expired record is invisible to **every** read the moment its deadline
+  passes — `find-id`, filtered `find`, and key lookups all skip it — even before
+  the background reaper reclaims the space.
+- A reaper on the compaction cadence tombstones expired records, and compaction
+  drops them, so on-disk space is reclaimed.
+- Deadlines are **durable**: they survive server restarts.
+
+**Embedded engine.** Finer-grained, per-record deadlines are available through
+the embeddable Go engine (`import "github.com/srjn45/filedbv2/engine"`):
+
+```go
+// Explicit per-record deadline, overriding any collection default.
+id, _, _ := col.InsertWithExpiry(map[string]any{"session": "abc"}, time.Now().Add(30*time.Minute))
+
+// A plain Update keeps the record's existing deadline (sticky);
+// UpdateWithExpiry moves it.
+col.Update(id, map[string]any{"session": "abc", "hits": 1})            // deadline unchanged
+col.UpdateWithExpiry(id, map[string]any{"session": "abc"}, later)      // deadline extended
+
+// A collection-level default (server maps --default-ttl to this):
+db, _ := engine.Open("./data", engine.CollectionConfig{DefaultTTL: 24 * time.Hour})
+```
+
+> Per-record `expires_at` / `ttl_seconds` on the gRPC/REST Insert & Update RPCs
+> (and the language SDKs) are a planned follow-up; today per-record deadlines are
+> reachable via the embedded engine, and the wire server exposes the collection
+> default via `--default-ttl`.
 
 ---
 

@@ -210,6 +210,9 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, visit func(
 			if e.Op == store.OpDelete {
 				return nil
 			}
+			if c.isExpired(loc) {
+				return nil // TTL passed; hidden until the reaper reclaims it
+			}
 			if !f.Match(e.Data) {
 				return nil
 			}
