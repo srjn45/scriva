@@ -102,6 +102,23 @@ async function main(): Promise<void> {
   const s = await db.stats('test_js');
   console.log('Stats:', s);
 
+  // --- TTL (per-record and per-collection default) ---
+  console.log('\n=== TTL ===');
+  await db.createCollection('test_js_ttl', 3600);
+  await db.insert('test_js_ttl', { kind: 'inherits-collection-default' });
+  await db.insert('test_js_ttl', { kind: 'own-ttl' }, 60);
+  console.log('TTL collection stats:', await db.stats('test_js_ttl'));
+  await db.dropCollection('test_js_ttl');
+
+  // --- Maintenance ---
+  console.log('\n=== Compact ===');
+  console.log('Compacted:', await db.compact('test_js'));
+
+  // --- Backup ---
+  console.log('\n=== Snapshot ===');
+  const bytes = await db.snapshotToFile('filedb-backup.tar.gz');
+  console.log(`Wrote ${bytes} bytes to filedb-backup.tar.gz (restore with: tar xzf ...)`);
+
   // --- Cleanup ---
   console.log('\n=== Cleanup ===');
   await db.dropCollection('test_js');
