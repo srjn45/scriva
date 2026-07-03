@@ -112,6 +112,10 @@ FileDBClient db = new FileDBClient(String host, int port, String apiKey, File tl
 String name          = db.createCollection("col");
 boolean ok           = db.dropCollection("col");
 List<String> names   = db.listCollections();
+
+// Give the collection a default per-record TTL (seconds). Records inserted
+// without an explicit ttl then expire this many seconds after being written.
+String sessions      = db.createCollection("sessions", 3600L);
 ```
 
 ---
@@ -150,6 +154,26 @@ long updatedId = db.update("col", id, Map.of("name", "new value"));
 // Delete — returns true if record existed
 boolean deleted = db.delete("col", id);
 ```
+
+#### Per-record TTL
+
+`insert`, `insertMany`, and `update` each have an overload taking a `long ttlSeconds`:
+
+```java
+// Expire this record 60 seconds from now, regardless of the collection default.
+long id = db.insert("sessions", Map.of("token", "abc"), 60L);
+
+// Same TTL applied to every record in the batch.
+List<Long> ids = db.insertMany("sessions",
+        List.of(Map.of("token", "a"), Map.of("token", "b")), 60L);
+
+// On update, ttlSeconds > 0 resets the expiry; the no-ttl overload (or 0) is
+// sticky and leaves the existing deadline untouched.
+db.update("sessions", id, Map.of("token", "abc", "seen", true), 120L);
+```
+
+`ttlSeconds = 0` inherits the collection's default TTL on insert; a value greater
+than 0 overrides it. Negative values are rejected by the server.
 
 ---
 
@@ -198,6 +222,28 @@ Events are delivered on the gRPC executor thread. The stream runs until the serv
 ```java
 Map<String, Object> stats = db.stats("col");
 // Keys: collection, record_count, segment_count, dirty_entries, size_bytes
+```
+
+---
+
+### Maintenance
+
+```java
+// Force a synchronous compaction of a collection — merges dirty segments and
+// reclaims space from deleted/overwritten records. Returns true on success.
+boolean ok = db.compact("col");
+
+// Stream a consistent gzip-compressed tar snapshot of the whole database
+// straight to a file. Returns the number of bytes written; restore with
+// `tar xzf backup.tar.gz`.
+long bytes = db.snapshotToFile("backup.tar.gz");
+
+// Or consume the raw archive chunks yourself (Snapshot is server-streaming):
+Iterator<SnapshotChunk> chunks = db.snapshot();
+while (chunks.hasNext()) {
+    ByteString data = chunks.next().getData();
+    // ...
+}
 ```
 
 ---

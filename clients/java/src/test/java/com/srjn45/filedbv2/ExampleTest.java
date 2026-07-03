@@ -231,11 +231,44 @@ class ExampleTest {
     }
 
     // -----------------------------------------------------------------------
-    // Watch
+    // Maintenance
     // -----------------------------------------------------------------------
 
     @Test
     @Order(18)
+    void compact() {
+        assertTrue(db.compact(COL));
+    }
+
+    @Test
+    @Order(19)
+    void perRecordTtl() {
+        long ttlId = db.insert(COL, Map.of("name", "Ephemeral", "role", "temp"), 3600L);
+        assertTrue(ttlId > 0);
+        // ttlSeconds = 0 (default overload) is sticky — the record stays reachable
+        db.update(COL, ttlId, Map.of("name", "Ephemeral", "role", "temp", "touched", true));
+        Map<String, Object> record = db.findById(COL, ttlId);
+        assertEquals(Boolean.TRUE, record.get("touched"));
+    }
+
+    @Test
+    @Order(20)
+    void snapshotToFile() throws Exception {
+        java.io.File backup = java.io.File.createTempFile("filedb_java_snapshot_test", ".tar.gz");
+        try {
+            long bytes = db.snapshotToFile(backup.getAbsolutePath());
+            assertTrue(bytes > 0, "Expected a non-empty snapshot archive");
+        } finally {
+            backup.delete();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch
+    // -----------------------------------------------------------------------
+
+    @Test
+    @Order(21)
     void watchReceivesInsertEvents() throws InterruptedException {
         String watchCol = COL + "_watch";
         db.createCollection(watchCol);
@@ -269,7 +302,7 @@ class ExampleTest {
     // -----------------------------------------------------------------------
 
     @Test
-    @Order(19)
+    @Order(22)
     void dropCollection() {
         boolean ok = db.dropCollection(COL);
         assertTrue(ok);
