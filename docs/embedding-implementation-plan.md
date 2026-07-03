@@ -1,6 +1,6 @@
 # Embedding Roadmap — Implementation Plan
 
-> Execution plan for [`roadmap.md`](../roadmap.md) (the warden-embedding roadmap).
+> Execution plan for [`warden-roadmap.md`](warden-roadmap.md) (the warden-embedding roadmap).
 > Each task below is sized for **one agent, one isolated worktree, one PR**.
 > Tasks are self-contained: an agent should be able to implement its task from
 > this document + the roadmap + the codebase, without prior conversation
@@ -345,8 +345,8 @@ QRY-2 → Q3, OPS-4 → F2, OPS-5 → F3.
 Spawn each task in an **isolated worktree** off up-to-date `main`, one PR per
 task. A sufficient agent brief is:
 
-> Read `docs/embedding-implementation-plan.md` and `roadmap.md` in the repo
-> root, then implement **task \<Tn\>** exactly as scoped, honoring the locked
+> Read `docs/embedding-implementation-plan.md` and `docs/warden-roadmap.md`,
+> then implement **task \<Tn\>** exactly as scoped, honoring the locked
 > design decisions. Do not start if a dependency task's PR is unmerged. Follow
 > CLAUDE.md for build/test/lint/docs/commit conventions. Open a PR titled with
 > the task's conventional-commit subject.
