@@ -326,8 +326,20 @@ func (c *Collection) syncActiveLocked() error {
 	return c.active.Sync()
 }
 
-// Insert adds a new record and returns its assigned id.
+// Insert adds a new record and returns its assigned id. Data that sets the
+// reserved _key field is rejected with ErrReservedField — string keys are
+// settable only via InsertWithKey (see keys.go).
 func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
+	if _, ok := data[KeyField]; ok {
+		return 0, time.Time{}, reservedFieldErr()
+	}
+	return c.insert(data)
+}
+
+// insert is the reserved-field-agnostic insert path shared by Insert and
+// InsertWithKey. Callers are responsible for having validated (or intentionally
+// stamped) any reserved fields in data.
+func (c *Collection) insert(data map[string]any) (uint64, time.Time, error) {
 	id := c.idSeq.Add(1)
 	ts := time.Now().UTC()
 	e := store.NewInsert(id, data)
@@ -367,8 +379,20 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 	return id, ts, nil
 }
 
-// Update overwrites the data for an existing record.
+// Update overwrites the data for an existing record. Data that sets the
+// reserved _key field is rejected with ErrReservedField — a record's string key
+// is fixed at insert time and updated only via UpdateByKey (see keys.go).
 func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
+	if _, ok := data[KeyField]; ok {
+		return time.Time{}, reservedFieldErr()
+	}
+	return c.update(id, data)
+}
+
+// update is the reserved-field-agnostic update path shared by Update and
+// UpdateByKey. Callers are responsible for having validated (or intentionally
+// stamped) any reserved fields in data.
+func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
 	ts := time.Now().UTC()
 	e := store.NewUpdate(id, data)
 	e.Ts = ts

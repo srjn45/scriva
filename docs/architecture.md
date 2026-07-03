@@ -178,6 +178,31 @@ Uniqueness is enforced on new writes going forward only; historical duplicates
 already present in the data (resolved last-write-wins during a rebuild) are
 tolerated, not rejected retroactively.
 
+### Caller-supplied string keys
+
+The engine assigns every record a monotonic `uint64` id, but callers often have
+their own string identifier (a session id, a name, a context key). Rather than
+generalise the primary index to strings — which would touch every offset and
+tombstone path — string keys are layered on top of the unique-index machinery:
+
+- A reserved data field, `_key` (`engine.KeyField`), holds the caller's key.
+  Plain `Insert`/`Update` **reject** data that sets `_key` directly with the
+  typed `ErrReservedField`; it is settable only through the keyed API.
+- `InsertWithKey(key, data)` stamps `data["_key"] = key`, lazily ensures a
+  **unique** secondary index on `_key` exists (created on the first keyed write
+  to a collection), and inserts. A key already held by a live record is rejected
+  with `ErrDuplicateKey`.
+- `FindByKey`, `UpdateByKey`, and `DeleteByKey` resolve the key to its `uint64`
+  id via `IndexLookup("_key", key)` — an O(1) index hit — and then reuse the
+  existing id-based path. A key with no live record yields `ErrKeyNotFound`.
+  `UpdateByKey` re-stamps `_key`, so a record's key is fixed for its lifetime.
+
+Because `_key` is an ordinary field inside `data`, keyed records need no special
+handling anywhere else: they survive segment rotation, compaction, index
+rebuild, and reopen exactly like any other record, and their key is visible in
+`WatchEvent.Data` for free. The `uint64` id, primary index, `WatchEvent`, and
+`CommitTx` are all unchanged.
+
 ---
 
 ## Change Feed (Watch)
