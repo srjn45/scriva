@@ -94,7 +94,7 @@ func TestUpsertPresentReplaces(t *testing.T) {
 		}
 	}
 	col.rotateSegment()
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 

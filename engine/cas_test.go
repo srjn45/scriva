@@ -275,7 +275,7 @@ func TestRevSurvivesCompactionAndReopen(t *testing.T) {
 		// Force a compaction: the many stale versions collapse into one line that
 		// must still carry rev 5.
 		col.rotateSegment()
-		if err := col.compact(); err != nil {
+		if err := col.compact(false); err != nil {
 			t.Fatalf("compact: %v", err)
 		}
 		if rec, _ := col.GetByKey("a"); rec.Rev != 5 {

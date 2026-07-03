@@ -258,7 +258,7 @@ func TestRangeIndex_SurvivesCompaction(t *testing.T) {
 		col.Update(id, map[string]any{"v": float64(100 + id)})
 	}
 	col.rotateSegment()
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 

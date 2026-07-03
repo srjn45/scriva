@@ -36,6 +36,7 @@ const (
 	FileDB_RollbackTx_FullMethodName       = "/filedb.v1.FileDB/RollbackTx"
 	FileDB_Watch_FullMethodName            = "/filedb.v1.FileDB/Watch"
 	FileDB_CollectionStats_FullMethodName  = "/filedb.v1.FileDB/CollectionStats"
+	FileDB_Compact_FullMethodName          = "/filedb.v1.FileDB/Compact"
 )
 
 // FileDBClient is the client API for FileDB service.
@@ -60,6 +61,9 @@ type FileDBClient interface {
 	RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error)
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error)
 	CollectionStats(ctx context.Context, in *CollectionStatsRequest, opts ...grpc.CallOption) (*CollectionStatsResponse, error)
+	// Compact runs a forced, synchronous compaction pass on a collection and
+	// returns only after it completes.
+	Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*CompactResponse, error)
 }
 
 type fileDBClient struct {
@@ -258,6 +262,16 @@ func (c *fileDBClient) CollectionStats(ctx context.Context, in *CollectionStatsR
 	return out, nil
 }
 
+func (c *fileDBClient) Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*CompactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactResponse)
+	err := c.cc.Invoke(ctx, FileDB_Compact_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileDBServer is the server API for FileDB service.
 // All implementations must embed UnimplementedFileDBServer
 // for forward compatibility.
@@ -280,6 +294,9 @@ type FileDBServer interface {
 	RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error)
 	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error
 	CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error)
+	// Compact runs a forced, synchronous compaction pass on a collection and
+	// returns only after it completes.
+	Compact(context.Context, *CompactRequest) (*CompactResponse, error)
 	mustEmbedUnimplementedFileDBServer()
 }
 
@@ -340,6 +357,9 @@ func (UnimplementedFileDBServer) Watch(*WatchRequest, grpc.ServerStreamingServer
 }
 func (UnimplementedFileDBServer) CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CollectionStats not implemented")
+}
+func (UnimplementedFileDBServer) Compact(context.Context, *CompactRequest) (*CompactResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Compact not implemented")
 }
 func (UnimplementedFileDBServer) mustEmbedUnimplementedFileDBServer() {}
 func (UnimplementedFileDBServer) testEmbeddedByValue()                {}
@@ -654,6 +674,24 @@ func _FileDB_CollectionStats_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileDB_Compact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).Compact(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_Compact_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).Compact(ctx, req.(*CompactRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileDB_ServiceDesc is the grpc.ServiceDesc for FileDB service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -720,6 +758,10 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CollectionStats",
 			Handler:    _FileDB_CollectionStats_Handler,
+		},
+		{
+			MethodName: "Compact",
+			Handler:    _FileDB_Compact_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

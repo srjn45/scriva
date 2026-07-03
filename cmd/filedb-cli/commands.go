@@ -316,6 +316,30 @@ func statsCmd(flags *cliFlags) *cobra.Command {
 	}
 }
 
+func compactCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "compact <collection>",
+		Short: "Force a synchronous compaction pass on a collection",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := client.Compact(ctxWithAuth(flags), &pb.CompactRequest{Collection: args[0]})
+			if err != nil {
+				return err
+			}
+			if resp.Ok {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "compacted %s\n", args[0])
+			}
+			return nil
+		},
+	}
+}
+
 // ---- Export / Import ------------------------------------------------------
 
 func exportCmd(flags *cliFlags) *cobra.Command {

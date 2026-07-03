@@ -204,7 +204,7 @@ func TestKeyedSurvivesCompactionAndReopen(t *testing.T) {
 
 		// Rotate then compact so the sealed segments are rewritten.
 		col.rotateSegment()
-		if err := col.compact(); err != nil {
+		if err := col.compact(false); err != nil {
 			t.Fatalf("compact: %v", err)
 		}
 

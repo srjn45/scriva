@@ -420,6 +420,55 @@ func TestIntegration_CollectionStats(t *testing.T) {
 	}
 }
 
+// ---- Compact ----------------------------------------------------------------
+
+func TestIntegration_Compact(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "comp_col"})
+
+	// Insert and churn a few records so there is something to compact.
+	ids := make([]uint64, 0, 4)
+	for i := 0; i < 4; i++ {
+		d, _ := structpb.NewStruct(map[string]any{"x": float64(i)})
+		ir, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "comp_col", Data: d})
+		if err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		ids = append(ids, ir.Id)
+	}
+	for _, id := range ids {
+		u, _ := structpb.NewStruct(map[string]any{"x": float64(99)})
+		if _, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "comp_col", Id: id, Data: u}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+
+	// Compact returns only after the forced pass completes.
+	cr, err := c.Compact(ctx(), &pb.CompactRequest{Collection: "comp_col"})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !cr.Ok {
+		t.Error("Compact: expected Ok=true")
+	}
+
+	// Every record must still be readable at its latest value.
+	for _, id := range ids {
+		fr, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "comp_col", Id: id})
+		if err != nil {
+			t.Fatalf("FindById(%d) after compact: %v", id, err)
+		}
+		if fr.Record.Data.Fields["x"].GetNumberValue() != 99 {
+			t.Errorf("id %d after compact: x=%v, want 99", id, fr.Record.Data.Fields["x"])
+		}
+	}
+
+	// Unknown collection is a NotFound.
+	if _, err := c.Compact(ctx(), &pb.CompactRequest{Collection: "nope"}); err == nil {
+		t.Error("expected error compacting unknown collection")
+	}
+}
+
 // ---- Transactions -----------------------------------------------------------
 
 func TestIntegration_Tx_CommitVisible(t *testing.T) {

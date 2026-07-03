@@ -199,7 +199,7 @@ func TestTTL_ReclaimedByCompaction(t *testing.T) {
 	col.Insert(map[string]any{"n": float64(101)})
 	col.rotateSegment()
 
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 

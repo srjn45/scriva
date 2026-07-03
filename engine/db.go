@@ -128,6 +128,17 @@ func (db *DB) Collection(name string) (*Collection, error) {
 	return col, nil
 }
 
+// Compact runs a synchronous, forced compaction pass on the named collection,
+// returning only after it completes. It ignores the dirty-ratio gate so callers
+// can reclaim space on demand.
+func (db *DB) Compact(name string) error {
+	col, err := db.Collection(name)
+	if err != nil {
+		return err
+	}
+	return col.CompactNow()
+}
+
 // ListCollections returns the names of all collections.
 func (db *DB) ListCollections() []string {
 	db.mu.RLock()

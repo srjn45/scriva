@@ -247,7 +247,7 @@ func compactionRound(t *testing.T, seed int64, ops int) {
 	verifyCollection(t, col, m, deleted)
 	beforeSegs := segmentCount(col)
 
-	if err := col.compact(); err != nil {
+	if err := col.compact(false); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
