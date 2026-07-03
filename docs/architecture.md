@@ -498,6 +498,46 @@ cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that windo
 
 ---
 
+## Backup / snapshot
+
+`DB.SnapshotTo(io.Writer)` (the `Snapshot` RPC and `filedb-cli backup`) writes a
+**gzip-compressed tar** of the whole database — one entry per collection file,
+named `<collection>/<file>`. Because the on-disk format is just append-only
+NDJSON plus small sidecar files, a backup is a plain file copy; restore is a
+plain extract:
+
+```bash
+filedb-cli backup db.tar.gz
+tar xzf db.tar.gz -C ./data      # then start the server with --data ./data
+```
+
+**Consistency** is layered to match FileDB's guarantees without a global stop:
+
+- The DB registry is held read-locked for the whole archive, so no collection is
+  created, dropped, or reopened mid-snapshot.
+- Each collection's files are copied while its **own read lock** is held, so no
+  write, rotation, or compaction can mutate them during the copy — the archive
+  captures a per-collection point in time. (FileDB has no cross-collection
+  transactions, so per-collection consistency is the strongest meaningful
+  guarantee.)
+- Segments are append-only, so even the active segment is captured at a valid
+  entry boundary — the copy simply ends at the current file size.
+
+**What is and isn't archived:** segment files (`seg_*.ndjson`), `meta.json`, and
+the secondary indexes (`sidx_*.json`, refreshed from memory just before the copy)
+are included. The primary `index.json` is **deliberately excluded**: it stores
+absolute segment paths and its checksum only guards its own contents, so a copied
+index would reference the source directory and could be silently stale. The
+restored collection rebuilds a correct primary index from its segments the first
+time it is opened (the same [index recovery](#crash-safety) path used after a
+crash), which is also why a backup taken under concurrent writes always restores
+to a consistent state.
+
+The RPC streams the archive in 64 KiB chunks (`SnapshotChunk`); it is gRPC-only
+because binary streaming does not map cleanly onto the REST gateway.
+
+---
+
 ## Network Layer
 
 ```

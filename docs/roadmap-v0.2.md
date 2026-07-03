@@ -230,18 +230,33 @@ so `Find ... limit 10` still reads the whole collection.
 - **Acceptance:** ✅ expired records are invisible to reads and reclaimed by
   compaction.
 
-### F2 — backup / snapshot — **S/M**
+### F2 — backup / snapshot — **S/M** ✅
 - **Why:** high perceived value, cheap given append-only files.
-- **Approach:** `filedb backup <dest>` (CLI) + a `Snapshot` RPC that produces a
-  consistent tarball of the data dir (briefly quiesce writes per collection, or
-  snapshot sealed segments + a frozen active tail). Document restore (it's just
-  untar into `--data`).
-- **Proto/API:** new `Snapshot` RPC (or CLI-only against the data dir).
-- **Files:** `proto/filedb.proto` (if RPC), `server/grpc.go`, new
-  `cmd/filedb-cli` command, `db.go`, docs.
-- **Tests:** backup→restore round-trip yields identical query results.
-- **Acceptance:** a backup taken under concurrent writes restores to a
-  consistent state.
+- **Approach:** `filedb-cli backup <dest>` + a streaming `Snapshot` RPC that
+  produces a consistent gzip tarball of the data dir. Restore is just untar into
+  `--data`.
+- **Delivered:** `DB.SnapshotTo(io.Writer)` writes a gzip-compressed tar of every
+  collection's files. Consistency: the DB registry is held read-locked for the
+  whole archive (no create/drop/reopen mid-snapshot) and each collection's files
+  are copied under its own read lock (no write, rotation, or compaction during
+  the copy). The primary `index.json` is **excluded** — it stores absolute
+  segment paths and a self-only checksum, so the restored collection rebuilds it
+  from segments on open; secondary indexes (path-independent value→id maps) are
+  refreshed and included. Streaming `Snapshot` RPC (gRPC-only; binary streaming
+  does not map cleanly onto REST) sends 64 KiB gzip chunks. `filedb-cli backup
+  <dest>` writes the stream to a `.tar.gz` and prints the restore command; REPL
+  `backup` verb added.
+- **Proto/API:** new streaming `Snapshot` RPC.
+- **Files:** `engine/snapshot.go`, `engine/db.go` (via `SnapshotTo`),
+  `proto/filedb.proto`, `server/grpc.go`, `cmd/filedb-cli/commands.go`,
+  `cmd/filedb-cli/main.go`, `cmd/filedb-cli/repl.go`, docs.
+- **Tests:** `engine/snapshot_test.go` — round-trip (multi-segment, update +
+  delete + secondary index) restores to identical query results, empty-DB
+  archive; `server/grpc_integration_test.go` `TestIntegration_Snapshot` — stream
+  the RPC, extract, reopen, verify record count.
+- **Acceptance:** ✅ a backup taken under concurrent writes restores to a
+  consistent state (per-collection point-in-time via the read lock; segments are
+  append-only so the captured active tail always ends on a valid entry).
 
 ### F3 — on-demand compaction (RPC + CLI) — **S** ✅
 - **Why:** today compaction is only automatic (dirty-ratio/timer); operators
@@ -327,7 +342,7 @@ conventions.
 
 **v0.4.0 — Features**
 - [x] F1 — TTL / expiring records (engine + config; RPC/client surfacing deferred)
-- [ ] F2 — backup / snapshot
+- [x] F2 — backup / snapshot (streaming `Snapshot` RPC + `filedb-cli backup`)
 - [x] F3 — on-demand compaction (RPC + CLI)
 
 **v0.5.0 — Auth**

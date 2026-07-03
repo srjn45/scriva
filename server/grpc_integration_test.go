@@ -2,10 +2,15 @@
 package server_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -466,6 +471,87 @@ func TestIntegration_Compact(t *testing.T) {
 	// Unknown collection is a NotFound.
 	if _, err := c.Compact(ctx(), &pb.CompactRequest{Collection: "nope"}); err == nil {
 		t.Error("expected error compacting unknown collection")
+	}
+}
+
+// ---- Snapshot / backup ------------------------------------------------------
+
+func TestIntegration_Snapshot(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "snap"})
+
+	for i := 0; i < 5; i++ {
+		d, _ := structpb.NewStruct(map[string]any{"i": float64(i)})
+		if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "snap", Data: d}); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	// Stream the snapshot over gRPC into a buffer.
+	stream, err := c.Snapshot(ctx(), &pb.SnapshotRequest{})
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	var buf bytes.Buffer
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		buf.Write(chunk.Data)
+	}
+	if buf.Len() == 0 {
+		t.Fatal("snapshot produced no bytes")
+	}
+
+	// Extract into a fresh data dir ("untar into --data") and open it directly.
+	dst := t.TempDir()
+	gz, err := gzip.NewReader(&buf)
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar: %v", err)
+		}
+		target := filepath.Join(dst, hdr.Name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		f, err := os.Create(target)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := io.Copy(f, tr); err != nil { //nolint:gosec // trusted test archive
+			t.Fatalf("copy: %v", err)
+		}
+		f.Close()
+	}
+
+	db, err := engine.Open(dst, engine.CollectionConfig{})
+	if err != nil {
+		t.Fatalf("open restored: %v", err)
+	}
+	defer db.Close()
+
+	col, err := db.Collection("snap")
+	if err != nil {
+		t.Fatalf("restored collection: %v", err)
+	}
+	res, err := col.Scan(nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(res) != 5 {
+		t.Errorf("restored record count = %d, want 5", len(res))
 	}
 }
 

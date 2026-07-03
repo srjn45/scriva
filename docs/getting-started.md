@@ -450,6 +450,37 @@ curl -H "x-api-key: dev-key" -X POST \
 
 ---
 
+## Backup & restore
+
+`filedb-cli backup` streams a consistent, gzip-compressed snapshot of the entire
+database from a running server to a local file:
+
+```bash
+filedb-cli backup db-$(date +%F).tar.gz
+```
+
+The snapshot is taken without stopping the server: each collection is captured at
+a point in time (writes are briefly held only while that collection's files are
+copied), and because segments are append-only a backup taken under concurrent
+writes always restores to a consistent state.
+
+Restore is a plain extract into a data directory — no special import step:
+
+```bash
+tar xzf db-2026-07-03.tar.gz -C ./data
+filedb serve --data ./data --api-key dev-key
+```
+
+The archive lays files out as `<collection>/<file>`, so it also doubles as a
+human-inspectable copy of your data. The primary index is rebuilt from the
+segments the first time the restored server opens each collection.
+
+> The snapshot is exposed as the gRPC-only streaming `Snapshot` RPC. It is not
+> available on the REST gateway (binary streaming does not map cleanly onto HTTP
+> JSON) — use the CLI or a gRPC client.
+
+---
+
 ## TTL / expiring records
 
 Records can be given an expiry **deadline**, after which they vanish from reads

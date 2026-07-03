@@ -131,6 +131,11 @@ service FileDB {
       body: "*"
     };
   }
+
+  // Snapshot streams a consistent, gzip-compressed tar archive of the whole
+  // database. Restore by extracting it into a data directory. gRPC-only:
+  // binary streaming does not map cleanly onto the REST gateway.
+  rpc Snapshot(SnapshotRequest) returns (stream SnapshotChunk);
 }
 
 // ---------------------------------------------------------------------------
@@ -318,3 +323,6 @@ message CollectionStatsResponse {
 
 message CompactRequest  { string collection = 1; }
 message CompactResponse { bool   ok         = 1; }
+
+message SnapshotRequest {}
+message SnapshotChunk   { bytes data = 1; }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -354,6 +355,34 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 		return nil, status.Errorf(codes.Internal, "compact failed: %v", err)
 	}
 	return &pb.CompactResponse{Ok: true}, nil
+}
+
+// Snapshot streams a consistent gzip-compressed tar archive of the whole
+// database to the client. The tar body is buffered so each streamed message
+// carries a sizeable chunk rather than one message per tiny gzip/tar write.
+func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.FileDB_SnapshotServer) error {
+	bw := bufio.NewWriterSize(&snapshotChunkWriter{stream: stream}, 64*1024)
+	if err := s.db.SnapshotTo(bw); err != nil {
+		return status.Errorf(codes.Internal, "snapshot: %v", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return status.Errorf(codes.Internal, "snapshot flush: %v", err)
+	}
+	return nil
+}
+
+// snapshotChunkWriter adapts the server stream to io.Writer, sending each
+// buffered block as a SnapshotChunk. stream.Send copies the bytes during
+// marshaling, so reusing the buffer after Write returns is safe.
+type snapshotChunkWriter struct {
+	stream pb.FileDB_SnapshotServer
+}
+
+func (w *snapshotChunkWriter) Write(p []byte) (int, error) {
+	if err := w.stream.Send(&pb.SnapshotChunk{Data: p}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // ---- Transactions ---------------------------------------------------------

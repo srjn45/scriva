@@ -340,6 +340,55 @@ func compactCmd(flags *cliFlags) *cobra.Command {
 	}
 }
 
+func backupCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "backup <dest>",
+		Short: "Stream a consistent snapshot of the database to a .tar.gz file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			stream, err := client.Snapshot(ctxWithAuth(flags), &pb.SnapshotRequest{})
+			if err != nil {
+				return err
+			}
+
+			f, err := os.Create(args[0])
+			if err != nil {
+				return err
+			}
+			defer func() { _ = f.Close() }()
+
+			var total int64
+			for {
+				chunk, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					return err
+				}
+				n, err := f.Write(chunk.Data)
+				if err != nil {
+					return err
+				}
+				total += int64(n)
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"wrote %s (%d bytes)\nrestore with: tar xzf %s -C <data-dir>\n",
+				args[0], total, args[0])
+			return nil
+		},
+	}
+}
+
 // ---- Export / Import ------------------------------------------------------
 
 func exportCmd(flags *cliFlags) *cobra.Command {
