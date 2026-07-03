@@ -130,32 +130,57 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 	return nil
 }
 
-// forEachMatch invokes visit for every live record matching f. For a pure eq
-// filter on an indexed field it walks only the indexed candidate ids; otherwise
-// it streams all segments sequentially, using the primary index to skip stale
-// (overwritten or deleted) versions without materialising the whole collection.
+// forEachMatch invokes visit for every live record matching f. For an eq or
+// range (gt/gte/lt/lte) filter on an indexed field it walks only the indexed
+// candidate ids; otherwise it streams all segments sequentially, using the
+// primary index to skip stale (overwritten or deleted) versions without
+// materialising the whole collection.
 func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, visit func(ScanResult) error) error {
-	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
-		if ids, hit := c.IndexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
-			for _, id := range ids {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				rec, err := c.Get(id)
-				if err != nil {
-					continue // deleted since the index was consulted
-				}
-				if !f.Match(rec.Data) {
-					continue
-				}
-				if err := visit(ScanResult{ID: id, Rev: rec.Rev, Data: rec.Data, Ts: rec.Ts}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
+	if ids, hit := c.indexCandidates(f); hit {
+		return c.visitCandidates(ctx, f, ids, visit)
 	}
 	return c.streamLive(ctx, f, visit)
+}
+
+// indexCandidates returns a candidate id set from a secondary index when f is a
+// single field predicate an index can serve (eq, or a range), and whether the
+// index answered. Candidates are a superset that visitCandidates re-filters, so
+// results stay identical to a full scan.
+func (c *Collection) indexCandidates(f query.Filter) ([]uint64, bool) {
+	ff, ok := f.(*query.FieldFilter)
+	if !ok {
+		return nil, false
+	}
+	switch ff.Op {
+	case query.OpEq:
+		return c.IndexLookup(ff.Field, filterValueToIndexKey(ff.Value))
+	case query.OpGt, query.OpGte, query.OpLt, query.OpLte:
+		return c.indexRangeLookup(ff.Field, ff.Op, filterValueTyped(ff.Value))
+	default:
+		return nil, false
+	}
+}
+
+// visitCandidates re-validates indexed candidate ids against the live store and
+// the filter, emitting matches in ascending id (insertion) order.
+func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []uint64, visit func(ScanResult) error) error {
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rec, err := c.Get(id)
+		if err != nil {
+			continue // deleted since the index was consulted
+		}
+		if !f.Match(rec.Data) {
+			continue
+		}
+		if err := visit(ScanResult{ID: id, Rev: rec.Rev, Data: rec.Data, Ts: rec.Ts}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // streamLive reads every segment in insertion order and invokes visit for each

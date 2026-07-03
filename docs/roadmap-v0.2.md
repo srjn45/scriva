@@ -294,7 +294,7 @@ conventions.
 **v0.3.0 — Query at scale**
 - [x] Q1 — streaming, push-down Find
 - [x] Q2 — typed, directional `order_by`
-- [ ] Q3 — range-capable secondary indexes
+- [x] Q3 — range-capable secondary indexes
 - [x] Q4 — context cancellation into the engine
 
 **v0.4.0 — Features**

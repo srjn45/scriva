@@ -143,6 +143,57 @@ func BenchmarkFindLimitVsFull(b *testing.B) {
 	})
 }
 
+// BenchmarkRangeIndexedVsFull contrasts a narrow range query (gte, matching a
+// handful of rows) served by a secondary index against the same query with no
+// index (full scan). With the ordered index the cost tracks the number of
+// matches, not the collection size — the Q3 push-down guarantee. Run:
+//
+//	go test ./engine -bench BenchmarkRangeIndexedVsFull -benchmem
+func BenchmarkRangeIndexedVsFull(b *testing.B) {
+	const n = 50000
+	load := func(col *Collection) {
+		for i := 0; i < n; i++ {
+			if _, _, err := col.Insert(map[string]any{"age": float64(i)}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	// gte n-5 → only the top 5 rows match.
+	f := &query.FieldFilter{Field: "age", Op: query.OpGte, Value: fmt.Sprintf("%d", n-5)}
+
+	b.Run("indexed", func(b *testing.B) {
+		col, err := OpenCollection("bench", b.TempDir(), benchCfg(SyncModeNone))
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer col.Close()
+		if err := col.EnsureIndex("age"); err != nil {
+			b.Fatal(err)
+		}
+		load(col)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := col.Scan(f); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("full", func(b *testing.B) {
+		col, err := OpenCollection("bench", b.TempDir(), benchCfg(SyncModeNone))
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer col.Close()
+		load(col)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := col.Scan(f); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 // BenchmarkScanIndexed measures the same single-eq query accelerated by a
 // secondary index (the O(1) fast path).
 func BenchmarkScanIndexed(b *testing.B) {
