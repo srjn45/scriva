@@ -3,8 +3,11 @@
 package store
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"time"
 )
 
@@ -17,6 +20,15 @@ const (
 	OpDelete Op = "delete"
 )
 
+// ErrCorruptEntry is returned by Decode when an entry carries a crc that does
+// not match its contents — evidence of on-disk bit-rot. It wraps the id so
+// callers can report which record failed.
+var ErrCorruptEntry = errors.New("store: entry checksum mismatch")
+
+// crc32cTable is the Castagnoli (CRC32C) polynomial table, hardware-accelerated
+// on most platforms. Used for per-entry integrity checks.
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
 // Entry is one line in a segment file. It captures the operation, the record
 // id, a timestamp, and — for insert/update — the full record data.
 type Entry struct {
@@ -24,11 +36,42 @@ type Entry struct {
 	Op   Op             `json:"op"`
 	Ts   time.Time      `json:"ts"`
 	Data map[string]any `json:"data,omitempty"` // nil for OpDelete
+	// CRC is an optional CRC32C (Castagnoli) checksum over the entry's id, op,
+	// and canonical data. It is written by Encode and verified by Decode when
+	// present. A nil CRC marks a legacy line written before checksums existed;
+	// such lines are decoded without verification for backward compatibility.
+	CRC *uint32 `json:"crc,omitempty"`
 }
 
-// Encode serialises e as a JSON object followed by a newline.
-// The returned slice is ready to be appended directly to a segment file.
+// checksum computes the CRC32C over the entry's id, op, and canonical data.
+// The timestamp and the crc field itself are excluded so the value is stable
+// across encode/decode round-trips. Data is canonicalised via json.Marshal,
+// which sorts map keys deterministically.
+func checksum(e Entry) (uint32, error) {
+	h := crc32.New(crc32cTable)
+	var idbuf [8]byte
+	binary.LittleEndian.PutUint64(idbuf[:], e.ID)
+	_, _ = h.Write(idbuf[:])
+	_, _ = h.Write([]byte(e.Op))
+	if e.Data != nil {
+		b, err := json.Marshal(e.Data)
+		if err != nil {
+			return 0, fmt.Errorf("store: checksum entry id=%d: %w", e.ID, err)
+		}
+		_, _ = h.Write(b)
+	}
+	return h.Sum32(), nil
+}
+
+// Encode serialises e as a JSON object followed by a newline, stamping it with
+// a CRC32C checksum. The returned slice is ready to be appended directly to a
+// segment file.
 func Encode(e Entry) ([]byte, error) {
+	sum, err := checksum(e)
+	if err != nil {
+		return nil, err
+	}
+	e.CRC = &sum
 	b, err := json.Marshal(e)
 	if err != nil {
 		return nil, fmt.Errorf("store: encode entry id=%d: %w", e.ID, err)
@@ -36,11 +79,23 @@ func Encode(e Entry) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// Decode parses a single JSON line (the trailing newline is ignored).
+// Decode parses a single JSON line (the trailing newline is ignored). If the
+// entry carries a crc, its contents are verified against it; a mismatch returns
+// ErrCorruptEntry. Legacy lines without a crc are returned unverified.
 func Decode(line []byte) (Entry, error) {
 	var e Entry
 	if err := json.Unmarshal(line, &e); err != nil {
 		return Entry{}, fmt.Errorf("store: decode entry: %w", err)
+	}
+	if e.CRC != nil {
+		want := *e.CRC
+		got, err := checksum(e)
+		if err != nil {
+			return Entry{}, err
+		}
+		if got != want {
+			return Entry{}, fmt.Errorf("%w: id=%d (want %08x, got %08x)", ErrCorruptEntry, e.ID, want, got)
+		}
 	}
 	return e, nil
 }
