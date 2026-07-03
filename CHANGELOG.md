@@ -33,10 +33,11 @@ embedding-specific contract.
 
 **Operability & observability (v0.6.0).** The server is no longer a black box:
 it emits structured request logs (PR-A), exposes health/readiness probes for
-load balancers and orchestrators (PR-A), and can shed load under pressure with
-opt-in concurrency, in-flight, and per-key rate limits (PR-B). No breaking
-changes — logging defaults to human-readable text at `info`, the probes are
-additive, and every limit is off by default.
+load balancers and orchestrators (PR-A), can shed load under pressure with
+opt-in concurrency, in-flight, and per-key rate limits (PR-B), and surfaces
+per-query cost through a slow-query log and a rows-scanned metric (PR-D). No
+breaking changes — logging defaults to human-readable text at `info`, the probes
+are additive, and every limit and the slow-query log are off by default.
 
 ### Added
 
@@ -69,6 +70,20 @@ additive, and every limit is off by default.
   before logging (so a shed request is still logged); the embeddable engine
   keeps its zero transport dependencies (rate limiting lives entirely in the
   server layer via `golang.org/x/time/rate`).
+- **Slow-query log & scan stats (O5).** `Collection.ScanStream` now returns a
+  `ScanStats` value alongside its error — `RowsScanned` (live records examined),
+  `RowsReturned` (records emitted), and `IndexUsed` (whether a secondary index
+  produced the candidate set). It is plain data, so the embeddable engine gains
+  no dependency; the planner already knew index-vs-scan, and this simply surfaces
+  it. The server turns it into two operator signals: a new `--slow-query-ms`
+  flag (also `slow_query_ms` in the config file, `0` = disabled) logs any `Find`
+  reaching that duration at **WARN** with the filter shape (fields/ops, never
+  values), `rows_scanned` vs `rows_returned`, `index_used`, and `duration`; and
+  a `filedb_scan_rows_scanned` Prometheus histogram records rows examined per
+  query, labelled by collection. Together they let an operator find unindexed hot
+  queries from logs and metrics. The scan cost reaches metrics via the same
+  server-layer hook pattern as compaction — the engine never imports metrics
+  (enforced by `make deps-check`).
 
 ## [0.3.0] — 2026-07-03
 

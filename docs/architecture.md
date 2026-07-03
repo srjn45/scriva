@@ -121,6 +121,48 @@ pages are deterministic and a bounded top-K agrees with a full sort. Without
 between segments and records, so a client that cancels a long `Find` (or
 disconnects) stops server-side work promptly instead of scanning to completion.
 
+### Slow-query log & scan stats
+
+`ScanStream` returns a plain `engine.ScanStats` value alongside its error,
+describing the cost of the scan it just ran:
+
+| Field | Meaning |
+|---|---|
+| `RowsScanned` | live records examined against the filter |
+| `RowsReturned` | records emitted to the caller |
+| `IndexUsed` | whether a secondary index produced the candidate set |
+
+The engine already decides index-vs-scan in `forEachMatch` — an eq or range
+predicate on an indexed field walks the index's candidate ids (`IndexUsed =
+true`, `RowsScanned` counts only those candidates), and everything else streams
+the segments (`IndexUsed = false`, `RowsScanned` counts every live record the
+filter is tested against). This change simply *surfaces* that decision as data;
+`ScanStats` carries no `slog`, `grpc`, or `prometheus` types, so the embeddable
+engine gains **no** dependency (`make deps-check` enforces it — the same
+discipline as `OnCompaction` for metrics and the request logger).
+
+The **server layer** turns the stats into two operator signals in
+`GRPCServer.Find` (`server/grpc.go`), both injected at construction as optional
+hooks so the default and embedded paths add nothing:
+
+1. **Slow-query log.** When `--slow-query-ms > 0` and a `Find` reaches that
+   wall-clock duration, one record is logged at `WARN` on the shared `slog`
+   logger: the `collection`, the `filter` **shape** (fields and operators only,
+   never the compared values — rendered by `filterShape`), `rows_scanned`,
+   `rows_returned`, `index_used`, and `duration`. Logging the shape rather than
+   the values makes the line safe to aggregate and keeps record data out of the
+   logs.
+2. **Rows-scanned metric.** A `filedb_scan_rows_scanned` Prometheus histogram
+   (labelled by `collection`) records `RowsScanned` for every `Find`, via a
+   `WithScanObserver` hook that calls `metrics.ObserveScan`. As with compaction,
+   the engine never references the metrics package — the server owns the
+   instrument and feeds it through the hook.
+
+Together an operator can spot an unindexed hot query two ways: a `WARN` line
+showing `index_used=false` with `rows_scanned ≫ rows_returned`, or a rising
+`filedb_scan_rows_scanned` histogram for a collection. The fix — an index on the
+filtered field — flips `index_used` to `true` and collapses `rows_scanned`.
+
 ---
 
 ## In-Memory Primary Index
@@ -647,5 +689,6 @@ FileDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/me
 | `filedb_compaction_runs_total` | Counter | `collection` |
 | `filedb_compaction_duration_seconds` | Histogram | `collection` |
 | `filedb_grpc_request_duration_seconds` | Histogram | `method`, `code` |
+| `filedb_scan_rows_scanned` | Histogram | `collection` |
 
-Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor.
+Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `filedb_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).

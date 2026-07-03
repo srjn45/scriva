@@ -15,6 +15,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1165,5 +1167,195 @@ func TestIntegration_Limits_DisabledByDefault(t *testing.T) {
 		if _, err := c.ListCollections(ctx(), &pb.ListCollectionsRequest{}); err != nil {
 			t.Fatalf("call %d failed with limits disabled: %v", i, err)
 		}
+	}
+}
+
+// ---- Slow-query log (O5) ----------------------------------------------------
+
+// lockedBuffer is a bytes.Buffer safe for the concurrent writes the slog handler
+// performs from the server's RPC goroutine while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// newSlowQueryTestServer is newTestServer with the slow-query log wired to a
+// captured JSON logger at the given threshold. It returns the client and the
+// buffer the WARN slow-query lines land in.
+func newSlowQueryTestServer(t *testing.T, threshold time.Duration) (pb.FileDBClient, *lockedBuffer) {
+	t.Helper()
+
+	dir := t.TempDir()
+	db, err := engine.Open(dir, engine.CollectionConfig{
+		SegmentMaxSize:  4 * 1024 * 1024,
+		CompactInterval: 24 * time.Hour,
+		CompactDirtyPct: 0.30,
+	})
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	logBuf := &lockedBuffer{}
+	logger, err := server.NewLogger(logBuf, "info", "json")
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+
+	gs := server.NewGRPCServer(db, 5*time.Minute, server.WithSlowQueryLog(logger, threshold))
+	t.Cleanup(gs.Close)
+	grpcSrv := grpc.NewServer()
+	pb.RegisterFileDBServer(grpcSrv, gs)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go grpcSrv.Serve(lis)
+	t.Cleanup(grpcSrv.Stop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return pb.NewFileDBClient(conn), logBuf
+}
+
+// waitForLogLine polls the buffer for up to two seconds and returns the first
+// log line once one appears. The slow-query line is written by the server's RPC
+// goroutine, so a brief poll avoids racing its flush.
+func waitForLogLine(t *testing.T, b *lockedBuffer) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := strings.TrimSpace(b.String()); s != "" {
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				return s[:i]
+			}
+			return s
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no slow-query log line within timeout")
+	return ""
+}
+
+func seedRoles(t *testing.T, c pb.FileDBClient, collection string) {
+	t.Helper()
+	for i := 0; i < 10; i++ {
+		role := "user"
+		if i%5 == 0 { // ids ...→ 2 of 10 records are admins
+			role = "admin"
+		}
+		d, _ := structpb.NewStruct(map[string]any{"role": role})
+		if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: collection, Data: d}); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+}
+
+// TestIntegration_SlowQuery_FullScanLogsOnce drives a full-scan Find that
+// exceeds the threshold and asserts exactly one WARN slow-query line reporting
+// index_used=false with rows_scanned > rows_returned.
+func TestIntegration_SlowQuery_FullScanLogsOnce(t *testing.T) {
+	// A 1ns threshold makes every query "slow" — deterministic, no timing flake.
+	c, logBuf := newSlowQueryTestServer(t, time.Nanosecond)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "users"})
+	seedRoles(t, c, "users")
+
+	// No index on "role" → full scan; 2 of 10 records match.
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection: "users",
+		Filter: &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
+			Field: "role", Op: pb.FilterOp_EQ, Value: `"admin"`,
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if recs := collectFind(t, stream); len(recs) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(recs))
+	}
+
+	line := waitForLogLine(t, logBuf)
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("parse log line %q: %v", line, err)
+	}
+	if rec["msg"] != "slow query" {
+		t.Errorf("msg = %v, want \"slow query\"", rec["msg"])
+	}
+	if rec["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", rec["level"])
+	}
+	if rec["collection"] != "users" {
+		t.Errorf("collection = %v, want users", rec["collection"])
+	}
+	if rec["index_used"] != false {
+		t.Errorf("index_used = %v, want false", rec["index_used"])
+	}
+	if rec["filter"] != "role EQ" {
+		t.Errorf("filter = %v, want \"role EQ\"", rec["filter"])
+	}
+	scanned, _ := rec["rows_scanned"].(float64)
+	returned, _ := rec["rows_returned"].(float64)
+	if returned != 2 {
+		t.Errorf("rows_returned = %v, want 2", returned)
+	}
+	if scanned != 10 {
+		t.Errorf("rows_scanned = %v, want 10", scanned)
+	}
+	if scanned <= returned {
+		t.Errorf("rows_scanned (%v) must exceed rows_returned (%v)", scanned, returned)
+	}
+
+	// Exactly one slow-query line was emitted.
+	if n := strings.Count(logBuf.String(), "slow query"); n != 1 {
+		t.Errorf("expected exactly one slow-query line, got %d\n%s", n, logBuf.String())
+	}
+}
+
+// TestIntegration_SlowQuery_IndexedUnderThresholdNoLog asserts an indexed
+// equality lookup that stays under the threshold produces no slow-query log.
+func TestIntegration_SlowQuery_IndexedUnderThresholdNoLog(t *testing.T) {
+	// A 1h threshold: no realistic query is "slow", so nothing is logged.
+	c, logBuf := newSlowQueryTestServer(t, time.Hour)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "users"})
+	if _, err := c.EnsureIndex(ctx(), &pb.EnsureIndexRequest{Collection: "users", Field: "role"}); err != nil {
+		t.Fatalf("EnsureIndex: %v", err)
+	}
+	seedRoles(t, c, "users")
+
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection: "users",
+		Filter: &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
+			Field: "role", Op: pb.FilterOp_EQ, Value: `"admin"`,
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if recs := collectFind(t, stream); len(recs) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(recs))
+	}
+
+	// Allow any erroneous async log a moment to surface, then assert none did.
+	time.Sleep(20 * time.Millisecond)
+	if s := logBuf.String(); s != "" {
+		t.Errorf("expected no slow-query log under threshold, got:\n%s", s)
 	}
 }

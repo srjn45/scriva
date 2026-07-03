@@ -61,6 +61,9 @@ type Config struct {
 	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
 	LogFormat string `yaml:"log_format"` // json|text (default: text)
 
+	// Observability
+	SlowQueryMs int `yaml:"slow_query_ms"` // Find slower than this many ms is logged at WARN (0 = disabled)
+
 	// Backpressure & limits (all opt-in; zero value = unlimited/disabled)
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"` // per-connection HTTP/2 stream cap (0 = gRPC library default)
 	MaxInflight          int     `yaml:"max_inflight"`           // server-wide concurrent in-flight RPC ceiling (0 = unlimited)
@@ -85,6 +88,7 @@ func DefaultConfig() Config {
 		DefaultTTL:      0,
 		LogLevel:        "info",
 		LogFormat:       "text",
+		SlowQueryMs:     0,
 
 		MaxConcurrentStreams: 0,
 		MaxInflight:          0,
@@ -127,6 +131,7 @@ type fileConfig struct {
 	DefaultTTL      string         `yaml:"default_ttl"`
 	LogLevel        string         `yaml:"log_level"`
 	LogFormat       string         `yaml:"log_format"`
+	SlowQueryMs     int            `yaml:"slow_query_ms"`
 
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
 	MaxInflight          int     `yaml:"max_inflight"`
@@ -164,6 +169,7 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:      defaults.DefaultTTL.String(),
 		LogLevel:        defaults.LogLevel,
 		LogFormat:       defaults.LogFormat,
+		SlowQueryMs:     defaults.SlowQueryMs,
 
 		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
 		MaxInflight:          defaults.MaxInflight,
@@ -216,6 +222,7 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:      defaultTTL,
 		LogLevel:        fc.LogLevel,
 		LogFormat:       fc.LogFormat,
+		SlowQueryMs:     fc.SlowQueryMs,
 
 		MaxConcurrentStreams: fc.MaxConcurrentStreams,
 		MaxInflight:          fc.MaxInflight,

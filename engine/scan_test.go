@@ -16,7 +16,7 @@ import (
 func collectStream(t *testing.T, col *Collection, opts ScanOptions) []uint64 {
 	t.Helper()
 	var ids []uint64
-	err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
+	_, err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
 		ids = append(ids, r.ID)
 		return nil
 	})
@@ -75,7 +75,7 @@ func TestScanStream_LimitBoundsExamination(t *testing.T) {
 	examined := 0
 	f := countingFilter{n: &examined, inner: query.MatchAll}
 	var emitted int
-	err := col.ScanStream(context.Background(), ScanOptions{Filter: f, Limit: 5}, func(r ScanResult) error {
+	_, err := col.ScanStream(context.Background(), ScanOptions{Filter: f, Limit: 5}, func(r ScanResult) error {
 		emitted++
 		return nil
 	})
@@ -138,7 +138,7 @@ func TestScanStream_OrderByStrings(t *testing.T) {
 	collect := func(opts ScanOptions) []string {
 		t.Helper()
 		var out []string
-		if err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
+		if _, err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
 			out = append(out, r.Data["name"].(string))
 			return nil
 		}); err != nil {
@@ -230,7 +230,7 @@ func TestScanStream_ContextCancelBefore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel up front
 
-	err := col.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error { return nil })
+	_, err := col.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error { return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -244,7 +244,7 @@ func TestScanStream_ContextCancelMidStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	seen := 0
-	err := col.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error {
+	_, err := col.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error {
 		seen++
 		if seen == 5 {
 			cancel()
@@ -292,7 +292,7 @@ func TestScanStream_SurvivesUpdatesAndDeletes(t *testing.T) {
 func collectScores(t *testing.T, col *Collection, opts ScanOptions) []float64 {
 	t.Helper()
 	var out []float64
-	err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
+	_, err := col.ScanStream(context.Background(), opts, func(r ScanResult) error {
 		out = append(out, r.Data["score"].(float64))
 		return nil
 	})

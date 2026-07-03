@@ -43,7 +43,7 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	// never builds a per-record map of the whole collection. We only keep a
 	// running counter, so nothing is materialised.
 	var n uint64
-	err := c.forEachMatch(context.Background(), f, func(ScanResult) error {
+	err := c.forEachMatch(context.Background(), f, &ScanStats{}, func(ScanResult) error {
 		n++
 		return nil
 	})
