@@ -2,6 +2,7 @@
 bin/
 *.exe
 *.out
+embeddemo/embeddemo
 
 # Go build cache
 /vendor/
