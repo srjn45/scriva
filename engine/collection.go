@@ -344,6 +344,7 @@ func (c *Collection) insert(data map[string]any) (uint64, time.Time, error) {
 	ts := time.Now().UTC()
 	e := store.NewInsert(id, data)
 	e.Ts = ts
+	e.Rev = 1 // a fresh record starts at revision 1
 
 	c.mu.Lock()
 	// Enforce unique indexes before writing so a rejected insert appends nothing
@@ -357,7 +358,7 @@ func (c *Collection) insert(data map[string]any) (uint64, time.Time, error) {
 		c.mu.Unlock()
 		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1})
 	c.sidxIndexEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -398,7 +399,8 @@ func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
 	e.Ts = ts
 
 	c.mu.Lock()
-	if _, ok := c.index.Get(id); !ok {
+	cur, ok := c.index.Get(id)
+	if !ok {
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: id %d not found", id)
 	}
@@ -408,12 +410,14 @@ func (c *Collection) update(id uint64, data map[string]any) (time.Time, error) {
 		c.mu.Unlock()
 		return time.Time{}, err
 	}
+	newRev := cur.Rev + 1
+	e.Rev = newRev
 	offset, err := c.active.Append(e)
 	if err != nil {
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
 	c.sidxUpdateEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -457,26 +461,59 @@ func (c *Collection) Delete(id uint64) error {
 	return nil
 }
 
-// FindByID returns the data for the given id.
-func (c *Collection) FindByID(id uint64) (map[string]any, time.Time, error) {
+// Record is a fully-resolved view of a single live record: its numeric id, its
+// caller-supplied string key (empty for records inserted without one), its
+// current revision, timestamp, and data. It is returned by Get/GetByKey so the
+// revision is available to callers without growing the FindByID return tuple.
+type Record struct {
+	ID   uint64
+	Key  string
+	Rev  uint64
+	Ts   time.Time
+	Data map[string]any
+}
+
+// Get returns the fully-resolved record for id, including its current revision.
+func (c *Collection) Get(id uint64) (Record, error) {
 	c.mu.RLock()
 	loc, ok := c.index.Get(id)
 	c.mu.RUnlock()
 
 	if !ok {
-		return nil, time.Time{}, fmt.Errorf("collection: findById: id %d not found", id)
+		return Record{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 
 	seg := c.segmentByPath(loc.SegmentPath)
 	if seg == nil {
-		return nil, time.Time{}, fmt.Errorf("collection: findById: segment not found for id %d", id)
+		return Record{}, fmt.Errorf("collection: get: segment not found for id %d", id)
 	}
 
 	e, err := seg.ReadAt(loc.Offset)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("collection: findById: %w", err)
+		return Record{}, fmt.Errorf("collection: get: %w", err)
 	}
-	return e.Data, e.Ts, nil
+	key, _ := e.Data[KeyField].(string)
+	return Record{ID: id, Key: key, Rev: loc.Rev, Ts: e.Ts, Data: e.Data}, nil
+}
+
+// GetByKey returns the fully-resolved record carrying the caller-supplied string
+// key, including its current revision. A missing key yields ErrKeyNotFound.
+func (c *Collection) GetByKey(key string) (Record, error) {
+	id, err := c.resolveKey(key)
+	if err != nil {
+		return Record{}, err
+	}
+	return c.Get(id)
+}
+
+// FindByID returns the data and timestamp for the given id. It is a thin wrapper
+// over Get for callers that do not need the revision.
+func (c *Collection) FindByID(id uint64) (map[string]any, time.Time, error) {
+	rec, err := c.Get(id)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return rec.Data, rec.Ts, nil
 }
 
 // Stats returns diagnostic information about the collection.
@@ -599,6 +636,14 @@ func (c *Collection) rotateSegment() error {
 func (c *Collection) segmentByPath(path string) *Segment {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.segmentByPathLocked(path)
+}
+
+// segmentByPathLocked is segmentByPath without acquiring c.mu; the caller must
+// already hold c.mu (read or write). It exists so the CAS path can read the
+// current record while holding the write lock — taking c.mu.RLock there would
+// deadlock a goroutine that already holds the write lock.
+func (c *Collection) segmentByPathLocked(path string) *Segment {
 	for _, s := range c.sealed {
 		if s.Path() == path {
 			return s
@@ -659,12 +704,13 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		case txOpInsert:
 			e := store.NewInsert(op.id, op.data)
 			e.Ts = op.ts
+			e.Rev = 1 // a fresh record starts at revision 1
 			offset, err := c.active.Append(e)
 			if err != nil {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1})
 			c.sidxIndexEntry(op.id, op.data)
 			if op.id > maxInsertID {
 				maxInsertID = op.id
@@ -674,12 +720,20 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		case txOpUpdate:
 			e := store.NewUpdate(op.id, op.data)
 			e.Ts = op.ts
+			// Bump the revision off the record's current index entry. A prior op
+			// in this same batch may already have updated it (index.Set below runs
+			// per op), so reading it here keeps revs monotonic within the batch.
+			newRev := uint64(1)
+			if cur, ok := c.index.Get(op.id); ok {
+				newRev = cur.Rev + 1
+			}
+			e.Rev = newRev
 			offset, err := c.active.Append(e)
 			if err != nil {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
 			c.sidxUpdateEntry(op.id, op.data)
 			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
 
@@ -927,4 +981,125 @@ func (c *Collection) IndexLookup(field, value string) ([]uint64, bool) {
 		return nil, false
 	}
 	return sidx.Lookup(value), true
+}
+
+// ---- Compare-and-swap (conditional update) ----------------------------------
+
+// UpdateIfRev conditionally updates the record carrying key: the write is
+// applied only if the record's current revision equals expectedRev. It returns
+// (true, nil) when the swap applied, and (false, nil) — a clean no-op, never an
+// error — when the revision is stale or no live record carries key. Supplying
+// the reserved _key field inside data is rejected with ErrReservedField; the key
+// is preserved across the update.
+//
+// The read of the current revision and the write happen under a single
+// c.mu.Lock critical section, so two goroutines racing the same expectedRev
+// cannot both apply: whichever wins the lock first bumps the revision, and the
+// loser then sees a mismatch and no-ops.
+func (c *Collection) UpdateIfRev(key string, expectedRev uint64, data map[string]any) (bool, error) {
+	if _, ok := data[KeyField]; ok {
+		return false, reservedFieldErr()
+	}
+	return c.compareAndSwap(key, data, func(_ map[string]any, curRev uint64) bool {
+		return curRev == expectedRev
+	})
+}
+
+// UpdateIfMatch conditionally updates the record carrying key: the write is
+// applied only if pred returns true for the record's current data. It returns
+// (true, nil) when the swap applied, and (false, nil) — a clean no-op, never an
+// error — when pred returns false or no live record carries key. pred is invoked
+// under the collection write lock with the current committed data; it must not
+// call back into the collection or retain the map. Supplying the reserved _key
+// field inside data is rejected with ErrReservedField; the key is preserved
+// across the update.
+//
+// As with UpdateIfRev, the predicate check and the write share one c.mu.Lock
+// critical section, so concurrent swaps on one key serialise and at most one
+// whose predicate held against the same prior state applies.
+func (c *Collection) UpdateIfMatch(key string, pred func(cur map[string]any) bool, data map[string]any) (bool, error) {
+	if _, ok := data[KeyField]; ok {
+		return false, reservedFieldErr()
+	}
+	return c.compareAndSwap(key, data, func(cur map[string]any, _ uint64) bool {
+		return pred(cur)
+	})
+}
+
+// compareAndSwap resolves key to its record, evaluates ok against the current
+// data and revision, and — only if ok returns true — appends an update that
+// preserves the key and bumps the revision. The entire read-check-write is done
+// under c.mu.Lock so it is atomic with respect to every other writer. A missing
+// key or a false predicate is reported as (false, nil).
+func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur map[string]any, curRev uint64) bool) (bool, error) {
+	ts := time.Now().UTC()
+
+	c.mu.Lock()
+
+	// Resolve the key under the same lock that will perform the write. IndexLookup
+	// takes sidxMu (read) after c.mu (write), matching the lock order used by the
+	// insert/update paths, so there is no deadlock.
+	ids, hit := c.IndexLookup(KeyField, key)
+	if !hit || len(ids) == 0 {
+		c.mu.Unlock()
+		return false, nil // no live record carries key → no-op
+	}
+	id := ids[0]
+
+	loc, exists := c.index.Get(id)
+	if !exists {
+		c.mu.Unlock()
+		return false, nil
+	}
+
+	// Read the current record so the condition sees committed data.
+	seg := c.segmentByPathLocked(loc.SegmentPath)
+	if seg == nil {
+		c.mu.Unlock()
+		return false, fmt.Errorf("collection: cas: segment not found for id %d", id)
+	}
+	curEntry, err := seg.ReadAt(loc.Offset)
+	if err != nil {
+		c.mu.Unlock()
+		return false, fmt.Errorf("collection: cas: %w", err)
+	}
+
+	if !ok(curEntry.Data, loc.Rev) {
+		c.mu.Unlock()
+		return false, nil // stale rev / false predicate → clean no-op
+	}
+
+	// Condition held — apply the update, preserving the key and bumping the rev.
+	stamped := stampKey(data, key)
+	newRev := loc.Rev + 1
+	e := store.NewUpdate(id, stamped)
+	e.Ts = ts
+	e.Rev = newRev
+
+	if err := c.sidxCheckUnique(id, stamped); err != nil {
+		c.mu.Unlock()
+		return false, err
+	}
+	offset, err := c.active.Append(e)
+	if err != nil {
+		c.mu.Unlock()
+		return false, fmt.Errorf("collection: cas: %w", err)
+	}
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev})
+	c.sidxUpdateEntry(id, stamped)
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return false, fmt.Errorf("collection: cas: %w", err)
+	}
+	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
+	c.mu.Unlock()
+
+	if needRotate {
+		if err := c.rotateSegment(); err != nil {
+			return true, fmt.Errorf("collection: rotate after cas: %w", err)
+		}
+	}
+
+	c.emit(WatchEvent{Op: store.OpUpdate, ID: id, Data: stamped, Ts: ts})
+	return true, nil
 }

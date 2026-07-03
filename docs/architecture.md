@@ -203,6 +203,43 @@ rebuild, and reopen exactly like any other record, and their key is visible in
 `WatchEvent.Data` for free. The `uint64` id, primary index, `WatchEvent`, and
 `CommitTx` are all unchanged.
 
+### Revisions and compare-and-swap
+
+Each record carries an explicit monotonic revision, `rev`: `1` on insert, `+1`
+on every update. It is stored on both the segment entry (`store.Entry.Rev`,
+`json:"rev,omitempty"`) and the in-memory `IndexEntry`, so the current revision
+is readable without a segment read. `rev` is a real field, deliberately **not**
+derived from the timestamp (`Ts` is not collision-proof).
+
+Backward compatibility is by construction: `rev` is omitted when zero, so a
+segment line or `index.json` written before revisions existed decodes as rev 0
+and still verifies its checksum (the CRC folds in `rev` only when non-zero).
+Durability of the value across the engine's existing paths:
+
+- **Update** reads the current `IndexEntry.Rev` under the write lock and writes
+  `rev+1`; **insert** writes `rev 1`.
+- **Rebuild** recomputes revisions by replay order — counting the surviving
+  writes per id — but never below a revision already recorded in an entry, so a
+  compacted record keeps its true rev instead of resetting to 1.
+- **Compaction** preserves the latest entry's `rev` (the collapsed line carries
+  it), and the post-compaction rebuild honours it via the rule above.
+
+Two conditional-update primitives build on the revision, both executed under a
+single `c.mu.Lock` critical section so the read-check-write is atomic against
+every other writer — the direct, lock-free-to-the-caller CAS the embedded
+consumer needs:
+
+- `UpdateIfRev(key, expectedRev, data)` applies only if the record's current
+  revision equals `expectedRev` (optimistic concurrency).
+- `UpdateIfMatch(key, pred, data)` applies only if `pred(currentData)` holds
+  (value-based CAS).
+
+Both return `(applied bool, err error)`. A stale revision, a false predicate, or
+a missing key is a clean `(false, nil)` no-op — never an error. On success the
+revision bumps and a normal update `WatchEvent` is emitted; the string key is
+preserved. Reads expose the revision through a `Record{ID, Key, Rev, Ts, Data}`
+struct returned by `Get`/`GetByKey`, and through `ScanResult.Rev`.
+
 ---
 
 ## Change Feed (Watch)

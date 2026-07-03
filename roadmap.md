@@ -334,7 +334,7 @@ callers — the port is gated only on Phase 1–2 here.
 **KEY — Keys, uniqueness & CAS**
 - [x] KEY-1 — caller-supplied string primary keys 🔴
 - [x] KEY-2 — unique index / uniqueness constraint
-- [ ] KEY-3 — compare-and-swap / conditional write 🔴
+- [x] KEY-3 — compare-and-swap / conditional write 🔴
 - [ ] KEY-4 — upsert
 
 **QRY — Query fit**
