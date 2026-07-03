@@ -95,6 +95,30 @@ public class BasicExample {
         Map<String, Object> stats = db.stats(col);
         stats.forEach((k, v) -> System.out.printf("  %s: %s%n", k, v));
 
+        // ---- Compaction ----
+        System.out.println("\n=== Compact ===");
+        boolean compacted = db.compact(col);
+        System.out.println("Compacted: " + compacted);
+
+        // ---- Per-record TTL ----
+        System.out.println("\n=== Per-record TTL ===");
+        long ttlId = db.insert(col, Map.of("name", "Ephemeral", "role", "temp"), 3600L);
+        System.out.println("Inserted #" + ttlId + " with a 3600s TTL");
+        // ttlSeconds = 0 (default overload) is sticky — keeps the existing deadline
+        db.update(col, ttlId, Map.of("name", "Ephemeral", "role", "temp", "touched", true));
+        System.out.println("Updated the TTL record (deadline preserved)");
+
+        // ---- Snapshot (whole-database backup) ----
+        System.out.println("\n=== Snapshot ===");
+        try {
+            java.io.File backup = java.io.File.createTempFile("filedb_java_snapshot", ".tar.gz");
+            long bytes = db.snapshotToFile(backup.getAbsolutePath());
+            System.out.printf("Wrote %d bytes to %s%n", bytes, backup.getAbsolutePath());
+            backup.delete();
+        } catch (java.io.IOException e) {
+            System.err.println("Snapshot failed: " + e.getMessage());
+        }
+
         // ---- Drop collection ----
         System.out.println("\n=== Drop collection ===");
         boolean dropped = db.dropCollection(col);

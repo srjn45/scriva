@@ -9,8 +9,14 @@ import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
 
+import com.google.protobuf.ByteString;
+
 import javax.net.ssl.SSLException;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -99,8 +105,22 @@ public class FileDBClient implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     public String createCollection(String name) {
+        return createCollection(name, 0L);
+    }
+
+    /**
+     * Create a collection with a default per-record TTL, in seconds.
+     *
+     * <p>Records inserted without an explicit {@code ttlSeconds} then expire this
+     * many seconds after being written. Pass {@code 0} to inherit the server-wide
+     * default (equivalent to {@link #createCollection(String)}).
+     */
+    public String createCollection(String name, long defaultTtlSeconds) {
         CreateCollectionResponse resp = blockingStub.createCollection(
-                CreateCollectionRequest.newBuilder().setName(name).build());
+                CreateCollectionRequest.newBuilder()
+                        .setName(name)
+                        .setDefaultTtlSeconds(defaultTtlSeconds)
+                        .build());
         return resp.getName();
     }
 
@@ -121,16 +141,33 @@ public class FileDBClient implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     public long insert(String collection, Map<String, Object> data) {
+        return insert(collection, data, 0L);
+    }
+
+    /**
+     * Insert one record with an explicit per-record TTL, in seconds.
+     *
+     * <p>{@code ttlSeconds > 0} expires the record that long after insertion,
+     * overriding any collection default; {@code 0} applies the collection default.
+     */
+    public long insert(String collection, Map<String, Object> data, long ttlSeconds) {
         InsertResponse resp = blockingStub.insert(InsertRequest.newBuilder()
                 .setCollection(collection)
                 .setData(mapToStruct(data))
+                .setTtlSeconds(ttlSeconds)
                 .build());
         return resp.getId();
     }
 
     public List<Long> insertMany(String collection, List<Map<String, Object>> records) {
+        return insertMany(collection, records, 0L);
+    }
+
+    /** Insert many records, applying the same per-record TTL (seconds) to each. */
+    public List<Long> insertMany(String collection, List<Map<String, Object>> records, long ttlSeconds) {
         InsertManyRequest.Builder req = InsertManyRequest.newBuilder()
-                .setCollection(collection);
+                .setCollection(collection)
+                .setTtlSeconds(ttlSeconds);
         for (Map<String, Object> r : records) {
             req.addRecords(mapToStruct(r));
         }
@@ -182,10 +219,22 @@ public class FileDBClient implements AutoCloseable {
     }
 
     public long update(String collection, long id, Map<String, Object> data) {
+        return update(collection, id, data, 0L);
+    }
+
+    /**
+     * Update a record, resetting its TTL to {@code ttlSeconds} from now.
+     *
+     * <p>{@code ttlSeconds > 0} overrides the collection default and resets the
+     * expiry deadline; {@code 0} (the default) is sticky — it leaves any existing
+     * deadline untouched.
+     */
+    public long update(String collection, long id, Map<String, Object> data, long ttlSeconds) {
         UpdateResponse resp = blockingStub.update(UpdateRequest.newBuilder()
                 .setCollection(collection)
                 .setId(id)
                 .setData(mapToStruct(data))
+                .setTtlSeconds(ttlSeconds)
                 .build());
         return resp.getId();
     }
@@ -285,6 +334,54 @@ public class FileDBClient implements AutoCloseable {
         m.put("dirty_entries", resp.getDirtyEntries());
         m.put("size_bytes",    resp.getSizeBytes());
         return m;
+    }
+
+    // -----------------------------------------------------------------------
+    // Maintenance
+    // -----------------------------------------------------------------------
+
+    /**
+     * Force a synchronous compaction of a collection — merges dirty segments and
+     * reclaims space from deleted/overwritten records. Returns only after the
+     * compaction completes.
+     *
+     * @return true on success
+     */
+    public boolean compact(String collection) {
+        CompactResponse resp = blockingStub.compact(CompactRequest.newBuilder()
+                .setCollection(collection)
+                .build());
+        return resp.getOk();
+    }
+
+    /**
+     * Stream a consistent, gzip-compressed tar snapshot of the whole database.
+     *
+     * <p>Each element is a chunk of the archive; concatenate them in order to
+     * reconstruct it. Restore with {@code tar xzf backup.tar.gz}. gRPC-only —
+     * this does not map onto the REST gateway.
+     */
+    public Iterator<SnapshotChunk> snapshot() {
+        return blockingStub.snapshot(SnapshotRequest.newBuilder().build());
+    }
+
+    /**
+     * Stream a whole-database snapshot straight to a file.
+     *
+     * @param path destination file (written as a gzip-compressed tar archive)
+     * @return the number of bytes written
+     */
+    public long snapshotToFile(String path) throws IOException {
+        Iterator<SnapshotChunk> chunks = snapshot();
+        long total = 0;
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(path))) {
+            while (chunks.hasNext()) {
+                ByteString data = chunks.next().getData();
+                data.writeTo(out);
+                total += data.size();
+            }
+        }
+        return total;
     }
 
     // -----------------------------------------------------------------------
