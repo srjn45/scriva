@@ -995,3 +995,175 @@ func TestReadinessHandler_UnwritableDataDir(t *testing.T) {
 		t.Fatalf("unwritable dir: status = %d, want 503 (body %q)", rr.Code, rr.Body.String())
 	}
 }
+
+// ---- O3: request backpressure & rate limiting -------------------------------
+
+// newLimitedServer spins up an in-process gRPC server backed by a real engine,
+// chaining the auth and limiter interceptors exactly as cmd/filedb wires them
+// (auth resolves the principal, then the limiter reads it) — the limiter is
+// chained only when it is enabled, mirroring production. An optional extraUnary
+// interceptor is chained after the limiter so a test can hold an RPC in-flight
+// and deterministically saturate the semaphore.
+func newLimitedServer(t *testing.T, limiter *server.Limiter, keys []auth.Key, extraUnary grpc.UnaryServerInterceptor) pb.FileDBClient {
+	t.Helper()
+
+	dir := t.TempDir()
+	db, err := engine.Open(dir, engine.CollectionConfig{
+		SegmentMaxSize:  4 * 1024 * 1024,
+		CompactInterval: 24 * time.Hour,
+		CompactDirtyPct: 0.30,
+	})
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	gs := server.NewGRPCServer(db, 5*time.Minute)
+	t.Cleanup(gs.Close)
+
+	authn, err := auth.New(keys)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	au, as := authn.Interceptors()
+	unary := []grpc.UnaryServerInterceptor{au}
+	stream := []grpc.StreamServerInterceptor{as}
+	if limiter.Enabled() {
+		lu, ls := limiter.Interceptors()
+		unary = append(unary, lu)
+		stream = append(stream, ls)
+	}
+	if extraUnary != nil {
+		unary = append(unary, extraUnary)
+	}
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(unary...),
+		grpc.ChainStreamInterceptor(stream...),
+	)
+	pb.RegisterFileDBServer(grpcSrv, gs)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go grpcSrv.Serve(lis)
+	t.Cleanup(grpcSrv.Stop)
+
+	conn, err := grpc.NewClient(
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return pb.NewFileDBClient(conn)
+}
+
+// TestIntegration_InflightSemaphore_ShedsExcess saturates the in-flight
+// semaphore with concurrent calls and asserts that a further call is shed with
+// ResourceExhausted, while the calls occupying the ceiling still complete
+// successfully once released.
+func TestIntegration_InflightSemaphore_ShedsExcess(t *testing.T) {
+	const ceiling = 2
+	entered := make(chan struct{}, ceiling)
+	release := make(chan struct{})
+
+	// A blocking interceptor chained after the limiter holds each admitted call
+	// in-flight (occupying its semaphore slot) until release is closed.
+	blocker := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return handler(ctx, req)
+	}
+
+	limiter := server.NewLimiter(ceiling, 0) // in-flight cap only, no rate limiting
+	c := newLimitedServer(t, limiter, nil, blocker)
+
+	// Occupy every slot with concurrent calls.
+	errs := make(chan error, ceiling)
+	for i := 0; i < ceiling; i++ {
+		go func() {
+			_, err := c.ListCollections(ctx(), &pb.ListCollectionsRequest{})
+			errs <- err
+		}()
+	}
+	for i := 0; i < ceiling; i++ {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for calls to saturate the semaphore")
+		}
+	}
+
+	// With the ceiling saturated, a further call is shed with ResourceExhausted
+	// and never reaches the (blocking) handler.
+	if _, err := c.ListCollections(ctx(), &pb.ListCollectionsRequest{}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("over-ceiling call: code = %v, want ResourceExhausted (err %v)", status.Code(err), err)
+	}
+
+	// Releasing the slots lets the admitted calls finish cleanly.
+	close(release)
+	for i := 0; i < ceiling; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("in-flight call failed: %v", err)
+		}
+	}
+}
+
+// TestIntegration_RateLimit_PerPrincipalIsolation asserts that the per-principal
+// token bucket throttles one API-key principal without affecting another.
+func TestIntegration_RateLimit_PerPrincipalIsolation(t *testing.T) {
+	keys := []auth.Key{
+		{Key: "alice-key", Name: "alice", Scope: auth.ScopeReadWrite},
+		{Key: "bob-key", Name: "bob", Scope: auth.ScopeReadWrite},
+	}
+	// 5 rps → burst 5. Firing well past the burst back-to-back guarantees some
+	// calls are throttled regardless of scheduling.
+	limiter := server.NewLimiter(0, 5.0)
+	c := newLimitedServer(t, limiter, keys, nil)
+
+	aliceOK, aliceThrottled := 0, 0
+	for i := 0; i < 25; i++ {
+		_, err := c.ListCollections(keyCtx("alice-key"), &pb.ListCollectionsRequest{})
+		switch {
+		case err == nil:
+			aliceOK++
+		case status.Code(err) == codes.ResourceExhausted:
+			aliceThrottled++
+		default:
+			t.Fatalf("alice call %d: unexpected error: %v", i, err)
+		}
+	}
+	if aliceOK == 0 {
+		t.Fatal("alice: expected the initial burst of calls to succeed")
+	}
+	if aliceThrottled == 0 {
+		t.Fatal("alice: expected calls past the burst to be throttled with ResourceExhausted")
+	}
+
+	// Bob has an independent bucket: a handful of calls (under the burst) must
+	// all succeed even though alice is being throttled.
+	for i := 0; i < 3; i++ {
+		if _, err := c.ListCollections(keyCtx("bob-key"), &pb.ListCollectionsRequest{}); err != nil {
+			t.Fatalf("bob call %d was affected by alice's throttling: %v", i, err)
+		}
+	}
+}
+
+// TestIntegration_Limits_DisabledByDefault confirms that with every limit at its
+// zero value the limiter is a no-op: it is not even chained, and a burst of
+// rapid calls all succeed with no throttling.
+func TestIntegration_Limits_DisabledByDefault(t *testing.T) {
+	limiter := server.NewLimiter(0, 0)
+	if limiter.Enabled() {
+		t.Fatal("NewLimiter(0, 0) should be disabled")
+	}
+	c := newLimitedServer(t, limiter, nil, nil)
+
+	for i := 0; i < 50; i++ {
+		if _, err := c.ListCollections(ctx(), &pb.ListCollectionsRequest{}); err != nil {
+			t.Fatalf("call %d failed with limits disabled: %v", i, err)
+		}
+	}
+}

@@ -72,6 +72,7 @@ Key properties:
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
 - **Structured logging** — leveled `log/slog` output (`--log-level`, `--log-format json|text`); one record per RPC with method, principal, duration, and status code
 - **Health & readiness** — standard `grpc.health.v1.Health` service (SERVING → NOT_SERVING on graceful shutdown) plus HTTP `/healthz` (liveness) and `/readyz` (DB open + data dir writable) probes
+- **Backpressure & limits** — opt-in `--max-inflight` in-flight ceiling and per-key `--rate-limit` token bucket shed load with `RESOURCE_EXHAUSTED` instead of unbounded resource growth; `--max-concurrent-streams` caps per-connection HTTP/2 streams (all off by default)
 - **Single binary** — no JVM, no Python, no config files required to get started
 - **Web admin UI** — browser-based collection and record manager at `clients/web/` (React + Vite, talks to the REST gateway)
 

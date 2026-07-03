@@ -599,10 +599,10 @@ All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors 
 Both gRPC servers install the same interceptor chain, in this order:
 
 ```
-auth → logging → metrics → handler
+auth → limiter → logging → metrics → handler
 ```
 
-Auth runs first: on success it resolves the principal and attaches it to the request context (via a stream wrapper for streaming RPCs). Logging runs next so it can read that principal; it times the handler and, once the call returns, emits one structured record. Metrics is innermost and records the Prometheus request histogram. Because logging and metrics sit *inside* auth, a call rejected by auth is not double-counted as a served request.
+Auth runs first: on success it resolves the principal and attaches it to the request context (via a stream wrapper for streaming RPCs). The limiter runs next so it can read that principal — it applies the per-key rate limit and the in-flight semaphore, shedding over-budget calls before they reach the handler. Logging runs after the limiter so a shed call is still logged (with its `RESOURCE_EXHAUSTED` code). Metrics is innermost and records the Prometheus request histogram. Because logging and metrics sit *inside* auth, a call rejected by auth is not double-counted as a served request. **The limiter is chained only when at least one limit is configured**, so the default (unlimited) path keeps the exact `auth → logging → metrics` chain and adds no overhead.
 
 ### Request logging
 
@@ -611,6 +611,16 @@ The server owns a single `*slog.Logger` (`log/slog`, no third-party dependency),
 ### Health & readiness
 
 The standard `grpc.health.v1.Health` service (`server/health.go`) is registered on both the TCP and Unix gRPC servers via a shared `HealthService`. It starts `NOT_SERVING`, is marked `SERVING` once the listeners are accepting connections, and is flipped back to `NOT_SERVING` at the start of graceful shutdown — so a load balancer stops routing new work while `GracefulStop` drains the in-flight RPCs. Two HTTP probes are registered directly on the grpc-gateway mux: `GET /healthz` (liveness — `200` whenever the process can answer) and `GET /readyz` (readiness — `200` when the DB is open and the data directory accepts a probe write, else `503` with the reason). Readiness is deliberately data-plane aware: a full or read-only data volume makes the node *unready* without making it *dead*, so it is pulled from rotation rather than restarted.
+
+### Backpressure & rate limiting
+
+The `Limiter` (`server/limits.go`) provides two independent, opt-in defences against resource exhaustion, both surfaced through the unary and stream interceptors described above. Like metrics and logging, this is a **server-layer** concern — the limiter reaches for `golang.org/x/time/rate`, which the embeddable `engine`/`store`/`query` packages must never import (`make deps-check` enforces it).
+
+- **In-flight semaphore (`--max-inflight`).** A counting semaphore of fixed capacity is acquired at the start of every RPC and released when it returns. Acquisition is *non-blocking*: when the ceiling is saturated the interceptor returns `RESOURCE_EXHAUSTED` immediately rather than queueing, so the server sheds load instead of accumulating goroutines, file descriptors, and memory behind a saturated CPU. A streaming RPC holds its slot for the whole stream lifetime, which correctly counts a long-lived `Watch` or `Snapshot` against the ceiling.
+
+- **Per-principal token bucket (`--rate-limit`).** Each API-key principal (the resolved `name` the auth interceptor put on the context) gets its **own** `rate.Limiter`, created lazily on first request and stored in a mutex-guarded map. The rate is the configured requests/sec and the burst is one second's worth of budget (rounded up). Because the buckets are keyed by principal, throttling one key can never consume another key's budget. An unauthenticated deployment funnels every call into a single shared `"anonymous"` bucket.
+
+Both controls default to their zero value (unlimited / disabled). `NewLimiter` reports `Enabled()` only when at least one is active, and `cmd/filedb` chains the limiter interceptors solely in that case — so the common, un-limited deployment pays nothing. `grpc.MaxConcurrentStreams` (`--max-concurrent-streams`) is set directly as a `grpc.ServerOption` on both servers, capping the HTTP/2 streams a single connection may multiplex; it is orthogonal to the server-wide in-flight ceiling.
 
 ---
 

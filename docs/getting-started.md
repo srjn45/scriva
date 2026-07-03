@@ -70,6 +70,9 @@ All flags and their defaults:
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, or `error` |
 | `--log-format` | `text` | Log output format: `json` or `text` |
+| `--max-concurrent-streams` | `0` | Max concurrent HTTP/2 streams per gRPC connection (`0` = gRPC library default) |
+| `--max-inflight` | `0` | Server-wide concurrent in-flight RPC ceiling; excess calls get `RESOURCE_EXHAUSTED` (`0` = unlimited) |
+| `--rate-limit` | `0` | Per-API-key rate limit in requests/sec; over-budget calls get `RESOURCE_EXHAUSTED` (`0` = disabled) |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -96,6 +99,9 @@ default_ttl: 0              # expire inserted records after this long (0 = never
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
 log_level: info             # debug | info | warn | error
 log_format: text            # json | text
+max_concurrent_streams: 0   # per-connection HTTP/2 stream cap (0 = gRPC default)
+max_inflight: 0             # server-wide in-flight RPC ceiling (0 = unlimited)
+rate_limit: 0               # per-API-key requests/sec (0 = disabled)
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -178,6 +184,45 @@ writes, but a write acknowledged under `none` can still vanish if power is lost
 before the OS flushes. Use `interval` or `always` when that matters. See
 [architecture.md](architecture.md#durability) for details. Benchmark the
 trade-off on your own hardware with `make bench`.
+
+---
+
+## Backpressure & limits
+
+By default FileDB accepts unbounded concurrent work — fine for a trusted
+embedded or single-tenant deployment, risky behind a public load balancer where
+a greedy or buggy client can exhaust goroutines and file descriptors. Three
+**opt-in, off-by-default** controls let the server shed load with a typed
+`RESOURCE_EXHAUSTED` error instead of growing without bound. Setting any of them
+to `0` (the default) leaves that control disabled, so existing deployments are
+unaffected.
+
+| Flag | Protects against | When to use it |
+|---|---|---|
+| `--max-concurrent-streams` | One connection multiplexing unbounded HTTP/2 streams | Cap per-connection fan-out; leave at `0` to accept the gRPC library default |
+| `--max-inflight` | Too many RPCs executing at once (goroutine/FD/memory growth) | Set to a ceiling your hardware can comfortably serve; calls above it are rejected immediately rather than queued |
+| `--rate-limit` | A single API key monopolising the server | Give each principal a steady requests/sec budget; bursts up to one second's worth are absorbed before throttling |
+
+```bash
+# Accept at most 512 concurrent in-flight RPCs and 100 req/s per API key.
+filedb serve --data ./data --max-inflight 512 --rate-limit 100
+```
+
+- **`--max-inflight`** installs a server-wide semaphore. Once the ceiling is
+  saturated, further calls fail fast with `RESOURCE_EXHAUSTED` rather than
+  queueing — the server sheds load instead of accumulating it. A streaming RPC
+  (`Find`, `Watch`, `Snapshot`) holds a slot for its whole lifetime.
+- **`--rate-limit`** is a token bucket **per API-key principal** (the `name`
+  from your scoped keys). Each principal gets an independent bucket, so one
+  client being throttled never affects another. The burst size is one second's
+  worth of budget. Unauthenticated deployments share a single bucket.
+- **`--max-concurrent-streams`** maps straight to gRPC's per-connection HTTP/2
+  stream cap.
+
+Over-budget calls return gRPC `RESOURCE_EXHAUSTED` (HTTP `429` via the REST
+gateway); clients should back off and retry. See
+[architecture.md](architecture.md#backpressure--rate-limiting) for how the
+interceptors are ordered.
 
 ---
 
