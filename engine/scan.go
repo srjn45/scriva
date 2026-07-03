@@ -29,6 +29,18 @@ type ScanOptions struct {
 	Descending bool         // reverse the ordering (only meaningful with OrderBy)
 }
 
+// ScanStats reports the cost of a completed scan: how many live records were
+// examined, how many were emitted to the caller, and whether a secondary index
+// produced the candidate set instead of a full segment sweep. It is plain data
+// with no external dependencies, so the engine stays embeddable; the server
+// layer turns it into a slow-query log line and a metric (never the reverse —
+// the engine imports no logger or metrics package).
+type ScanStats struct {
+	RowsScanned  int  // live records examined against the filter
+	RowsReturned int  // records emitted to yield
+	IndexUsed    bool // a secondary index produced the candidate set
+}
+
 // errStopScan is an internal sentinel used to terminate a scan early once a
 // limit has been satisfied. It never escapes ScanStream.
 var errStopScan = errors.New("engine: scan limit reached")
@@ -50,23 +62,41 @@ var errStopScan = errors.New("engine: scan limit reached")
 //
 // ctx cancellation aborts the scan between reads and is returned as
 // context.Canceled / context.DeadlineExceeded.
-func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield func(ScanResult) error) error {
+//
+// The returned ScanStats describe the cost of the scan (rows examined vs
+// emitted, and whether an index served it) and are valid even when a non-nil
+// error is returned — they reflect the work done up to the point of failure.
+func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield func(ScanResult) error) (ScanStats, error) {
 	f := opts.Filter
 	if f == nil {
 		f = query.MatchAll
 	}
 
-	if opts.OrderBy == "" {
-		return c.scanUnordered(ctx, f, opts, yield)
+	// counting wraps the caller's yield so every successfully emitted record is
+	// tallied once, regardless of ordered/unordered path.
+	stats := &ScanStats{}
+	counting := func(r ScanResult) error {
+		if err := yield(r); err != nil {
+			return err
+		}
+		stats.RowsReturned++
+		return nil
 	}
-	return c.scanOrdered(ctx, f, opts, yield)
+
+	var err error
+	if opts.OrderBy == "" {
+		err = c.scanUnordered(ctx, f, opts, stats, counting)
+	} else {
+		err = c.scanOrdered(ctx, f, opts, stats, counting)
+	}
+	return *stats, err
 }
 
 // scanUnordered streams matches in natural (insertion) order, applying offset
 // and limit as it goes and stopping as early as possible.
-func (c *Collection) scanUnordered(ctx context.Context, f query.Filter, opts ScanOptions, yield func(ScanResult) error) error {
+func (c *Collection) scanUnordered(ctx context.Context, f query.Filter, opts ScanOptions, stats *ScanStats, yield func(ScanResult) error) error {
 	skipped, emitted := 0, 0
-	err := c.forEachMatch(ctx, f, func(r ScanResult) error {
+	err := c.forEachMatch(ctx, f, stats, func(r ScanResult) error {
 		if skipped < opts.Offset {
 			skipped++
 			return nil
@@ -88,7 +118,7 @@ func (c *Collection) scanUnordered(ctx context.Context, f query.Filter, opts Sca
 
 // scanOrdered buffers matches, sorts them by the requested field, then emits the
 // requested page. With a positive limit only a bounded top-K buffer is kept.
-func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanOptions, yield func(ScanResult) error) error {
+func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanOptions, stats *ScanStats, yield func(ScanResult) error) error {
 	less := orderLess(opts.OrderBy, opts.Descending)
 
 	var page []ScanResult
@@ -96,7 +126,7 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 		// Keep only the smallest K = Offset+Limit results under the ordering.
 		k := opts.Offset + opts.Limit
 		th := &topK{less: less, cap: k}
-		if err := c.forEachMatch(ctx, f, func(r ScanResult) error {
+		if err := c.forEachMatch(ctx, f, stats, func(r ScanResult) error {
 			th.push(r)
 			return nil
 		}); err != nil {
@@ -104,7 +134,7 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 		}
 		page = th.sorted()
 	} else {
-		if err := c.forEachMatch(ctx, f, func(r ScanResult) error {
+		if err := c.forEachMatch(ctx, f, stats, func(r ScanResult) error {
 			page = append(page, r)
 			return nil
 		}); err != nil {
@@ -135,11 +165,12 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 // candidate ids; otherwise it streams all segments sequentially, using the
 // primary index to skip stale (overwritten or deleted) versions without
 // materialising the whole collection.
-func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, visit func(ScanResult) error) error {
+func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *ScanStats, visit func(ScanResult) error) error {
 	if ids, hit := c.indexCandidates(f); hit {
-		return c.visitCandidates(ctx, f, ids, visit)
+		stats.IndexUsed = true
+		return c.visitCandidates(ctx, f, ids, stats, visit)
 	}
-	return c.streamLive(ctx, f, visit)
+	return c.streamLive(ctx, f, stats, visit)
 }
 
 // indexCandidates returns a candidate id set from a secondary index when f is a
@@ -163,7 +194,7 @@ func (c *Collection) indexCandidates(f query.Filter) ([]uint64, bool) {
 
 // visitCandidates re-validates indexed candidate ids against the live store and
 // the filter, emitting matches in ascending id (insertion) order.
-func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []uint64, visit func(ScanResult) error) error {
+func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []uint64, stats *ScanStats, visit func(ScanResult) error) error {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -173,6 +204,7 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		if err != nil {
 			continue // deleted since the index was consulted
 		}
+		stats.RowsScanned++ // a live candidate examined against the filter
 		if !f.Match(rec.Data) {
 			continue
 		}
@@ -187,7 +219,7 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 // live, matching record. An entry is live only when the primary index still
 // points at exactly its segment and offset; stale versions and tombstones are
 // skipped. No per-id map of the whole collection is built.
-func (c *Collection) streamLive(ctx context.Context, f query.Filter, visit func(ScanResult) error) error {
+func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *ScanStats, visit func(ScanResult) error) error {
 	c.mu.RLock()
 	segs := make([]*Segment, 0, len(c.sealed)+1)
 	segs = append(segs, c.sealed...)
@@ -213,6 +245,7 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, visit func(
 			if c.isExpired(loc) {
 				return nil // TTL passed; hidden until the reaper reclaims it
 			}
+			stats.RowsScanned++ // a live record examined against the filter
 			if !f.Match(e.Data) {
 				return nil
 			}
@@ -230,7 +263,7 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, visit func(
 // prefer ScanStream directly to bound memory for large collections.
 func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
 	var out []ScanResult
-	err := c.ScanStream(context.Background(), ScanOptions{Filter: f}, func(r ScanResult) error {
+	_, err := c.ScanStream(context.Background(), ScanOptions{Filter: f}, func(r ScanResult) error {
 		out = append(out, r)
 		return nil
 	})

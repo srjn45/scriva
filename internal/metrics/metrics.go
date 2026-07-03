@@ -22,6 +22,7 @@ type Metrics struct {
 	CompactionTotal    *prometheus.CounterVec
 	CompactionDuration *prometheus.HistogramVec
 	GRPCDuration       *prometheus.HistogramVec
+	ScanRowsScanned    *prometheus.HistogramVec
 }
 
 // New creates a Metrics and registers all instruments with reg.
@@ -46,7 +47,17 @@ func New(reg prometheus.Registerer) *Metrics {
 		Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
 	}, []string{"method", "code"})
 
-	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration)
+	// Rows examined per Find/Scan query, bucketed on an exponential scale so a
+	// pathological full scan (many rows scanned) is visible against cheap indexed
+	// lookups. An operator pairs this with the slow-query log to find unindexed
+	// hot queries.
+	m.ScanRowsScanned = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "filedb_scan_rows_scanned",
+		Help:    "Number of live records examined per Find/Scan query.",
+		Buckets: prometheus.ExponentialBuckets(1, 4, 10), // 1, 4, 16, ... ~262144
+	}, []string{"collection"})
+
+	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned)
 	return m
 }
 
@@ -59,6 +70,12 @@ func (m *Metrics) ObserveCompaction(collection string, dur time.Duration) {
 // ObserveGRPC records one completed gRPC unary request.
 func (m *Metrics) ObserveGRPC(method, code string, dur time.Duration) {
 	m.GRPCDuration.WithLabelValues(method, code).Observe(dur.Seconds())
+}
+
+// ObserveScan records the number of rows examined by one completed Find/Scan
+// query against the named collection.
+func (m *Metrics) ObserveScan(collection string, rowsScanned int) {
+	m.ScanRowsScanned.WithLabelValues(collection).Observe(float64(rowsScanned))
 }
 
 // DBCollector is a prometheus.Collector that emits per-collection record and

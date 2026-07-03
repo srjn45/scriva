@@ -121,7 +121,7 @@ func BenchmarkFindLimitVsFull(b *testing.B) {
 
 	drain := func(opts ScanOptions) {
 		count := 0
-		if err := col.ScanStream(context.Background(), opts, func(ScanResult) error {
+		if _, err := col.ScanStream(context.Background(), opts, func(ScanResult) error {
 			count++
 			return nil
 		}); err != nil {

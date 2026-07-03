@@ -352,7 +352,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] O2 — health & readiness (gRPC health + REST probes)
 - [x] O3 — request backpressure & limits
 - [ ] O4 — OpenTelemetry tracing (opt-in)
-- [ ] O5 — slow-query log & richer stats
+- [x] O5 — slow-query log & richer stats
 
 **v0.7.0 — Network/engine API parity + query breadth**
 - [ ] N1 — keyed CRUD, Upsert, CAS & Rev over the wire

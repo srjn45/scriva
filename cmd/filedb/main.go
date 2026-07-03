@@ -118,6 +118,8 @@ func serveCmd() *cobra.Command {
 						merged.LogLevel = cfg.LogLevel
 					case "log-format":
 						merged.LogFormat = cfg.LogFormat
+					case "slow-query-ms":
+						merged.SlowQueryMs = cfg.SlowQueryMs
 					case "max-concurrent-streams":
 						merged.MaxConcurrentStreams = cfg.MaxConcurrentStreams
 					case "max-inflight":
@@ -152,6 +154,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
 	f.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
 	f.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format: json|text")
+	f.IntVar(&cfg.SlowQueryMs, "slow-query-ms", cfg.SlowQueryMs, "Log any Find slower than this many milliseconds at WARN, with scan stats (0 = disabled)")
 	f.Uint32Var(&cfg.MaxConcurrentStreams, "max-concurrent-streams", cfg.MaxConcurrentStreams, "Max concurrent HTTP/2 streams per gRPC connection (0 = gRPC library default)")
 	f.IntVar(&cfg.MaxInflight, "max-inflight", cfg.MaxInflight, "Server-wide concurrent in-flight RPC ceiling; excess calls get RESOURCE_EXHAUSTED (0 = unlimited)")
 	f.Float64Var(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "Per-API-key rate limit in requests/sec; over-budget calls get RESOURCE_EXHAUSTED (0 = disabled)")
@@ -286,13 +289,24 @@ func serve(cfg server.Config, configFile string) error {
 		logger.Info("max concurrent streams set", "streams", cfg.MaxConcurrentStreams)
 	}
 
+	// Slow-query observability (O5): a scan-cost metric hook and, when a
+	// threshold is set, a WARN slow-query log. Both are passed to every API
+	// instance so TCP and unix-socket queries are observed identically.
+	slowQueryOpts := []server.GRPCOption{
+		server.WithScanObserver(m.ObserveScan),
+		server.WithSlowQueryLog(logger, time.Duration(cfg.SlowQueryMs)*time.Millisecond),
+	}
+	if cfg.SlowQueryMs > 0 {
+		logger.Info("slow-query log enabled", "threshold_ms", cfg.SlowQueryMs)
+	}
+
 	// TCP gRPC server — uses configurable TLS credentials.
 	grpcSrv := grpc.NewServer(append([]grpc.ServerOption{
 		unaryChain,
 		streamChain,
 		grpc.Creds(serverCreds),
 	}, streamCapOpts...)...)
-	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout)
+	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout, slowQueryOpts...)
 	pb.RegisterFileDBServer(grpcSrv, tcpAPI)
 	healthSvc.Register(grpcSrv)
 
@@ -309,7 +323,7 @@ func serve(cfg server.Config, configFile string) error {
 		streamChain,
 		grpc.Creds(insecure.NewCredentials()),
 	}, streamCapOpts...)...)
-	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout)
+	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout, slowQueryOpts...)
 	pb.RegisterFileDBServer(unixGrpcSrv, unixAPI)
 	healthSvc.Register(unixGrpcSrv)
 

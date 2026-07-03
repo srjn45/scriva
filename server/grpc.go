@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -24,13 +26,43 @@ type GRPCServer struct {
 	pb.UnimplementedFileDBServer
 	db    *engine.DB
 	txMgr *engine.TxManager
+
+	// Slow-query observability (O5). All optional: the zero value disables both
+	// the metric and the log so the embedded/default path is unchanged.
+	logger    *slog.Logger                             // nil = no slow-query log
+	slowQuery time.Duration                            // 0 = slow-query log disabled
+	onScan    func(collection string, rowsScanned int) // nil = no scan metric
+}
+
+// GRPCOption configures optional GRPCServer behaviour.
+type GRPCOption func(*GRPCServer)
+
+// WithSlowQueryLog enables the slow-query log: any Find whose wall-clock
+// duration reaches threshold is logged at WARN via logger. A zero threshold
+// leaves the log disabled.
+func WithSlowQueryLog(logger *slog.Logger, threshold time.Duration) GRPCOption {
+	return func(s *GRPCServer) {
+		s.logger = logger
+		s.slowQuery = threshold
+	}
+}
+
+// WithScanObserver registers a hook invoked once per completed Find with the
+// number of rows the scan examined, so the server layer can feed the metrics
+// histogram without the engine importing a metrics package.
+func WithScanObserver(fn func(collection string, rowsScanned int)) GRPCOption {
+	return func(s *GRPCServer) { s.onScan = fn }
 }
 
 // NewGRPCServer creates a GRPCServer backed by the given DB. txTimeout bounds
 // how long an idle open transaction is retained before it is reaped (0 disables
 // expiry); see engine.NewTxManager.
-func NewGRPCServer(db *engine.DB, txTimeout time.Duration) *GRPCServer {
-	return &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout)}
+func NewGRPCServer(db *engine.DB, txTimeout time.Duration, opts ...GRPCOption) *GRPCServer {
+	s := &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Close releases server-owned background resources (the transaction sweeper).
@@ -158,6 +190,7 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 }
 
 func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) error {
+	start := time.Now()
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "%v", err)
@@ -178,7 +211,7 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 		OrderBy:    req.OrderBy,
 		Descending: req.Descending,
 	}
-	err = col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
+	stats, err := col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
 		rec, err := toProtoRecord(r.ID, r.Data, r.Ts)
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
@@ -194,7 +227,55 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 		}
 		return status.Errorf(codes.Internal, "find: %v", err)
 	}
+	s.recordScan(req.Collection, req.Filter, stats, time.Since(start))
 	return nil
+}
+
+// recordScan feeds a completed scan's cost to the metrics histogram and, when a
+// slow-query threshold is configured and the query reached it, emits one WARN
+// log line describing the filter shape and the scan's rows-scanned/returned,
+// index-used, and duration. Both sinks are optional (see NewGRPCServer opts).
+func (s *GRPCServer) recordScan(collection string, filter *pb.Filter, stats engine.ScanStats, dur time.Duration) {
+	if s.onScan != nil {
+		s.onScan(collection, stats.RowsScanned)
+	}
+	if s.logger != nil && s.slowQuery > 0 && dur >= s.slowQuery {
+		s.logger.Warn("slow query",
+			slog.String("collection", collection),
+			slog.String("filter", filterShape(filter)),
+			slog.Int("rows_scanned", stats.RowsScanned),
+			slog.Int("rows_returned", stats.RowsReturned),
+			slog.Bool("index_used", stats.IndexUsed),
+			slog.Duration("duration", dur),
+		)
+	}
+}
+
+// filterShape renders a filter's structure — fields and operators, but not the
+// compared values — so the slow-query log can identify a query pattern without
+// leaking record data. A nil filter (match-all) renders as "*".
+func filterShape(f *pb.Filter) string {
+	if f == nil {
+		return "*"
+	}
+	switch k := f.Kind.(type) {
+	case *pb.Filter_Field:
+		return k.Field.Field + " " + k.Field.Op.String()
+	case *pb.Filter_And:
+		return "and(" + joinShapes(k.And.Filters) + ")"
+	case *pb.Filter_Or:
+		return "or(" + joinShapes(k.Or.Filters) + ")"
+	}
+	return "*"
+}
+
+// joinShapes renders a slice of child filters as a comma-separated shape list.
+func joinShapes(filters []*pb.Filter) string {
+	parts := make([]string, len(filters))
+	for i, sub := range filters {
+		parts[i] = filterShape(sub)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.UpdateResponse, error) {

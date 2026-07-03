@@ -69,8 +69,9 @@ Key properties:
 - **Scoped API keys** — multiple named keys with `read` or `read-write` scope; a read-only key is refused on writes, and keys hot-reload on `SIGHUP` for rotation without a restart
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
-- **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
+- **Prometheus metrics** — per-collection gauges, compaction histograms, gRPC request duration, and per-query rows-scanned at `--metrics-addr`
 - **Structured logging** — leveled `log/slog` output (`--log-level`, `--log-format json|text`); one record per RPC with method, principal, duration, and status code
+- **Slow-query log** — opt-in `--slow-query-ms` logs any `Find` over the threshold at `WARN` with filter shape, rows scanned vs returned, and whether an index was used, so unindexed hot queries surface from logs and metrics (off by default)
 - **Health & readiness** — standard `grpc.health.v1.Health` service (SERVING → NOT_SERVING on graceful shutdown) plus HTTP `/healthz` (liveness) and `/readyz` (DB open + data dir writable) probes
 - **Backpressure & limits** — opt-in `--max-inflight` in-flight ceiling and per-key `--rate-limit` token bucket shed load with `RESOURCE_EXHAUSTED` instead of unbounded resource growth; `--max-concurrent-streams` caps per-connection HTTP/2 streams (all off by default)
 - **Single binary** — no JVM, no Python, no config files required to get started

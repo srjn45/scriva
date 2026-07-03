@@ -73,6 +73,7 @@ All flags and their defaults:
 | `--max-concurrent-streams` | `0` | Max concurrent HTTP/2 streams per gRPC connection (`0` = gRPC library default) |
 | `--max-inflight` | `0` | Server-wide concurrent in-flight RPC ceiling; excess calls get `RESOURCE_EXHAUSTED` (`0` = unlimited) |
 | `--rate-limit` | `0` | Per-API-key rate limit in requests/sec; over-budget calls get `RESOURCE_EXHAUSTED` (`0` = disabled) |
+| `--slow-query-ms` | `0` | Log any `Find` slower than this many milliseconds at `WARN`, with scan stats (`0` = disabled) |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -102,6 +103,7 @@ log_format: text            # json | text
 max_concurrent_streams: 0   # per-connection HTTP/2 stream cap (0 = gRPC default)
 max_inflight: 0             # server-wide in-flight RPC ceiling (0 = unlimited)
 rate_limit: 0               # per-API-key requests/sec (0 = disabled)
+slow_query_ms: 0            # log Find slower than this many ms at WARN (0 = disabled)
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -223,6 +225,47 @@ Over-budget calls return gRPC `RESOURCE_EXHAUSTED` (HTTP `429` via the REST
 gateway); clients should back off and retry. See
 [architecture.md](architecture.md#backpressure--rate-limiting) for how the
 interceptors are ordered.
+
+---
+
+## Slow-query log
+
+A query that scans the whole collection because no index can serve its filter is
+the classic operability trap — it works fine on a small dataset and degrades
+silently as data grows. Turn on the slow-query log to catch these:
+
+```bash
+# Log any Find that takes 50ms or longer, at WARN, with scan stats.
+filedb serve --data ./data --slow-query-ms 50 --log-format json
+```
+
+`--slow-query-ms` (default `0` = disabled) sets a duration threshold. Any `Find`
+whose server-side wall-clock time reaches it is logged once at `WARN`. In JSON
+format a line looks like:
+
+```json
+{"time":"2026-07-03T10:15:04Z","level":"WARN","msg":"slow query",
+ "collection":"users","filter":"role EQ","rows_scanned":250000,
+ "rows_returned":12,"index_used":false,"duration":"82ms"}
+```
+
+Read it as follows:
+
+- **`filter`** — the *shape* of the filter (fields and operators only, never the
+  compared values), e.g. `role EQ` or `and(status EQ, age GTE)`. Safe to log and
+  aggregate: it identifies the query pattern without leaking record data.
+- **`rows_scanned` vs `rows_returned`** — records examined versus emitted. A
+  large ratio (250000 scanned to return 12) is the signature of a full scan doing
+  far more work than the result justifies.
+- **`index_used`** — whether a secondary index produced the candidate set. When
+  this is `false` on a hot query, adding an index on the filtered field
+  (`ensureindex`) is usually the fix — re-run and it flips to `true` with a much
+  smaller `rows_scanned`.
+
+The same cost is exported as the `filedb_scan_rows_scanned` Prometheus histogram
+(labelled by `collection`), so you can alert on scan cost without scraping logs.
+See [architecture.md](architecture.md#slow-query-log--scan-stats) for how the
+stats flow from the engine to the log and the metric.
 
 ---
 
