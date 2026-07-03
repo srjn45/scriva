@@ -330,7 +330,7 @@ commit style, one PR per task. Commits must use the
 | T5 | KEY-3 CAS / rev 🔴 | T4 | ☑ done | [#28](https://github.com/srjn45/FileDBv2/pull/28) |
 | T6 | KEY-4 upsert | T4 (after T5) | ☑ done | [#29](https://github.com/srjn45/FileDBv2/pull/29) |
 | T7 | QRY-3 count/exists | T4 (after T6) | ☑ done | [#30](https://github.com/srjn45/FileDBv2/pull/30) |
-| T8 | EMB-2 + OPS-1 façade | T5 | ☐ todo | |
+| T8 | EMB-2 + OPS-1 façade | T5 | ☑ done | [#31](https://github.com/srjn45/FileDBv2/pull/31) |
 | T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/FileDBv2/pull/22) |
 | T10 | OPS-3 bulk load | T4 | ☐ todo | |
 | T11 | EMB-4 semver + docs | T2–T10 | ☐ todo | |
