@@ -119,7 +119,7 @@ func serveCmd() *cobra.Command {
 				})
 				cfg = merged
 			}
-			return serve(cfg)
+			return serve(cfg, configFile)
 		},
 	}
 
@@ -145,7 +145,7 @@ func serveCmd() *cobra.Command {
 	return cmd
 }
 
-func serve(cfg server.Config) error {
+func serve(cfg server.Config, configFile string) error {
 	// Validate durability mode up front so a typo fails loudly.
 	switch engine.SyncMode(cfg.SyncMode) {
 	case engine.SyncModeNone, engine.SyncModeAlways, engine.SyncModeInterval:
@@ -219,8 +219,19 @@ func serve(cfg server.Config) error {
 		restDialCreds = insecure.NewCredentials()
 	}
 
+	// Build the API key set (scoped keys from config + legacy --api-key).
+	keys, err := buildKeys(cfg)
+	if err != nil {
+		return err
+	}
+	authn, err := auth.New(keys)
+	if err != nil {
+		return err
+	}
+	log.Printf("filedb: auth enabled with %d API key(s)", len(keys))
+
 	// TCP gRPC server — uses configurable TLS credentials.
-	unary, stream := auth.Interceptors(cfg.APIKey)
+	unary, stream := authn.Interceptors()
 	grpcMetrics := grpc.UnaryInterceptor(chainUnary(unary, metricsUnaryInterceptor(m)))
 	grpcSrv := grpc.NewServer(
 		grpcMetrics,
@@ -274,6 +285,33 @@ func serve(cfg server.Config) error {
 	// Start gRPC (TCP).
 	go func() { _ = grpcSrv.Serve(tcpLn) }()
 
+	// Hot-reload API keys on SIGHUP (rotation without a restart). Only useful
+	// when keys come from a config file; the startup --api-key is preserved.
+	if configFile != "" {
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		go func() {
+			for range hup {
+				newCfg, err := server.LoadConfigFile(configFile)
+				if err != nil {
+					log.Printf("filedb: key reload failed (parse %s): %v", configFile, err)
+					continue
+				}
+				newCfg.APIKey = cfg.APIKey // preserve the startup/CLI legacy key
+				newKeys, err := buildKeys(newCfg)
+				if err != nil {
+					log.Printf("filedb: key reload failed: %v", err)
+					continue
+				}
+				if err := authn.Reload(newKeys); err != nil {
+					log.Printf("filedb: key reload rejected: %v", err)
+					continue
+				}
+				log.Printf("filedb: reloaded %d API key(s) from %s", len(newKeys), configFile)
+			}
+		}()
+	}
+
 	// Graceful shutdown.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -295,6 +333,28 @@ func serve(cfg server.Config) error {
 
 	log.Println("filedb: stopped")
 	return nil
+}
+
+// buildKeys converts the server config's scoped key list plus the legacy
+// single --api-key into the auth package's key type. When set, the legacy key
+// is added as an additional read-write key named "default". An empty result
+// disables authentication.
+func buildKeys(cfg server.Config) ([]auth.Key, error) {
+	keys := make([]auth.Key, 0, len(cfg.Keys)+1)
+	for _, k := range cfg.Keys {
+		if k.Key == "" {
+			return nil, fmt.Errorf("config key %q: empty key value", k.Name)
+		}
+		scope, err := auth.ParseScope(k.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("config key %q: %w", k.Name, err)
+		}
+		keys = append(keys, auth.Key{Key: k.Key, Name: k.Name, Scope: scope})
+	}
+	if cfg.APIKey != "" {
+		keys = append(keys, auth.Key{Key: cfg.APIKey, Name: "default", Scope: auth.ScopeReadWrite})
+	}
+	return keys, nil
 }
 
 // chainUnary returns a single UnaryServerInterceptor that runs first, then second.
