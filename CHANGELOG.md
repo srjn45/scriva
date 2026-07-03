@@ -31,10 +31,12 @@ embedding-specific contract.
 
 ## [Unreleased]
 
-**Operability & observability (v0.6.0 PR-A).** The server is no longer a black
-box: it emits structured request logs and exposes health/readiness probes for
-load balancers and orchestrators. No breaking changes — logging defaults to
-human-readable text at `info`, and the probes are additive.
+**Operability & observability (v0.6.0).** The server is no longer a black box:
+it emits structured request logs (PR-A), exposes health/readiness probes for
+load balancers and orchestrators (PR-A), and can shed load under pressure with
+opt-in concurrency, in-flight, and per-key rate limits (PR-B). No breaking
+changes — logging defaults to human-readable text at `info`, the probes are
+additive, and every limit is off by default.
 
 ### Added
 
@@ -53,6 +55,20 @@ human-readable text at `info`, and the probes are additive.
   so in-flight RPCs drain cleanly. The REST gateway gains `GET /healthz`
   (liveness) and `GET /readyz` (readiness — `200` when the DB is open and the
   data directory is writable, `503` otherwise).
+- **Request backpressure & rate limiting (O3).** Three opt-in, off-by-default
+  controls let the server shed load with a typed `RESOURCE_EXHAUSTED` instead of
+  growing goroutines/FDs without bound. `--max-concurrent-streams` caps the
+  HTTP/2 streams per gRPC connection (`0` = library default). `--max-inflight`
+  installs a server-wide in-flight semaphore: once the ceiling is saturated,
+  further calls are rejected immediately rather than queued (`0` = unlimited).
+  `--rate-limit` throttles each API-key principal to a requests/sec budget via
+  an independent token bucket, so one principal being throttled never affects
+  another (`0` = disabled). All three are also settable via
+  `max_concurrent_streams` / `max_inflight` / `rate_limit` in the config file.
+  The limiter interceptors chain after auth (to read the resolved principal) and
+  before logging (so a shed request is still logged); the embeddable engine
+  keeps its zero transport dependencies (rate limiting lives entirely in the
+  server layer via `golang.org/x/time/rate`).
 
 ## [0.3.0] — 2026-07-03
 

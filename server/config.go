@@ -60,6 +60,11 @@ type Config struct {
 	// Logging
 	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
 	LogFormat string `yaml:"log_format"` // json|text (default: text)
+
+	// Backpressure & limits (all opt-in; zero value = unlimited/disabled)
+	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"` // per-connection HTTP/2 stream cap (0 = gRPC library default)
+	MaxInflight          int     `yaml:"max_inflight"`           // server-wide concurrent in-flight RPC ceiling (0 = unlimited)
+	RateLimit            float64 `yaml:"rate_limit"`             // per-principal requests/sec (0 = disabled)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -80,6 +85,10 @@ func DefaultConfig() Config {
 		DefaultTTL:      0,
 		LogLevel:        "info",
 		LogFormat:       "text",
+
+		MaxConcurrentStreams: 0,
+		MaxInflight:          0,
+		RateLimit:            0,
 	}
 }
 
@@ -118,6 +127,10 @@ type fileConfig struct {
 	DefaultTTL      string         `yaml:"default_ttl"`
 	LogLevel        string         `yaml:"log_level"`
 	LogFormat       string         `yaml:"log_format"`
+
+	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
+	MaxInflight          int     `yaml:"max_inflight"`
+	RateLimit            float64 `yaml:"rate_limit"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -151,6 +164,10 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:      defaults.DefaultTTL.String(),
 		LogLevel:        defaults.LogLevel,
 		LogFormat:       defaults.LogFormat,
+
+		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
+		MaxInflight:          defaults.MaxInflight,
+		RateLimit:            defaults.RateLimit,
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -199,5 +216,9 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:      defaultTTL,
 		LogLevel:        fc.LogLevel,
 		LogFormat:       fc.LogFormat,
+
+		MaxConcurrentStreams: fc.MaxConcurrentStreams,
+		MaxInflight:          fc.MaxInflight,
+		RateLimit:            fc.RateLimit,
 	}, nil
 }

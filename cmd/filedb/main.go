@@ -118,6 +118,12 @@ func serveCmd() *cobra.Command {
 						merged.LogLevel = cfg.LogLevel
 					case "log-format":
 						merged.LogFormat = cfg.LogFormat
+					case "max-concurrent-streams":
+						merged.MaxConcurrentStreams = cfg.MaxConcurrentStreams
+					case "max-inflight":
+						merged.MaxInflight = cfg.MaxInflight
+					case "rate-limit":
+						merged.RateLimit = cfg.RateLimit
 					}
 				})
 				cfg = merged
@@ -146,6 +152,9 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
 	f.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
 	f.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format: json|text")
+	f.Uint32Var(&cfg.MaxConcurrentStreams, "max-concurrent-streams", cfg.MaxConcurrentStreams, "Max concurrent HTTP/2 streams per gRPC connection (0 = gRPC library default)")
+	f.IntVar(&cfg.MaxInflight, "max-inflight", cfg.MaxInflight, "Server-wide concurrent in-flight RPC ceiling; excess calls get RESOURCE_EXHAUSTED (0 = unlimited)")
+	f.Float64Var(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "Per-API-key rate limit in requests/sec; over-budget calls get RESOURCE_EXHAUSTED (0 = disabled)")
 
 	return cmd
 }
@@ -242,23 +251,47 @@ func serve(cfg server.Config, configFile string) error {
 	}
 	logger.Info("auth enabled", "keys", len(keys))
 
-	// Shared interceptors: auth first (resolves the principal onto the context),
-	// then structured request logging (reads that principal), then metrics.
+	// Shared interceptors, in order: auth first (resolves the principal onto the
+	// context), then the limiter (reads that principal to rate-limit and sheds
+	// load), then structured request logging (records the outcome — including a
+	// shed request's ResourceExhausted), then metrics. The limiter is chained
+	// only when a limit is configured, so the default (unlimited) path is
+	// unchanged.
 	authUnary, authStream := authn.Interceptors()
 	logUnary, logStream := server.LoggingInterceptors(logger)
-	unaryChain := grpc.ChainUnaryInterceptor(authUnary, logUnary, metricsUnaryInterceptor(m))
-	streamChain := grpc.ChainStreamInterceptor(authStream, logStream)
+	limiter := server.NewLimiter(cfg.MaxInflight, cfg.RateLimit)
+
+	unaryInts := []grpc.UnaryServerInterceptor{authUnary}
+	streamInts := []grpc.StreamServerInterceptor{authStream}
+	if limiter.Enabled() {
+		limUnary, limStream := limiter.Interceptors()
+		unaryInts = append(unaryInts, limUnary)
+		streamInts = append(streamInts, limStream)
+		logger.Info("backpressure enabled", "max_inflight", cfg.MaxInflight, "rate_limit_rps", cfg.RateLimit)
+	}
+	unaryInts = append(unaryInts, logUnary, metricsUnaryInterceptor(m))
+	streamInts = append(streamInts, logStream)
+	unaryChain := grpc.ChainUnaryInterceptor(unaryInts...)
+	streamChain := grpc.ChainStreamInterceptor(streamInts...)
 
 	// gRPC health service (grpc.health.v1.Health). Shared across both servers;
 	// marked SERVING once the listeners are up and NOT_SERVING on shutdown.
 	healthSvc := server.NewHealthService()
 
+	// Optional per-connection concurrent-stream cap (0 = gRPC library default),
+	// applied to both the TCP and unix-socket servers.
+	var streamCapOpts []grpc.ServerOption
+	if cfg.MaxConcurrentStreams > 0 {
+		streamCapOpts = append(streamCapOpts, grpc.MaxConcurrentStreams(cfg.MaxConcurrentStreams))
+		logger.Info("max concurrent streams set", "streams", cfg.MaxConcurrentStreams)
+	}
+
 	// TCP gRPC server — uses configurable TLS credentials.
-	grpcSrv := grpc.NewServer(
+	grpcSrv := grpc.NewServer(append([]grpc.ServerOption{
 		unaryChain,
 		streamChain,
 		grpc.Creds(serverCreds),
-	)
+	}, streamCapOpts...)...)
 	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout)
 	pb.RegisterFileDBServer(grpcSrv, tcpAPI)
 	healthSvc.Register(grpcSrv)
@@ -271,11 +304,11 @@ func serve(cfg server.Config, configFile string) error {
 	logger.Info("gRPC listening", "addr", cfg.GRPCAddr)
 
 	// Unix socket gRPC server — always insecure (local-only transport).
-	unixGrpcSrv := grpc.NewServer(
+	unixGrpcSrv := grpc.NewServer(append([]grpc.ServerOption{
 		unaryChain,
 		streamChain,
 		grpc.Creds(insecure.NewCredentials()),
-	)
+	}, streamCapOpts...)...)
 	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout)
 	pb.RegisterFileDBServer(unixGrpcSrv, unixAPI)
 	healthSvc.Register(unixGrpcSrv)
