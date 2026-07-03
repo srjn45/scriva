@@ -92,6 +92,10 @@ FileDB(host, port, api_key, tls_ca_cert="/path/to/ca.crt")  # path or PEM bytes/
 name: str        = db.create_collection("col")
 ok: bool         = db.drop_collection("col")
 names: list[str] = db.list_collections()
+
+# Optional per-collection default TTL — records without their own TTL expire
+# after this many seconds. Persisted; overrides the server-wide default.
+db.create_collection("sessions", default_ttl_seconds=3600)
 ```
 
 ### CRUD
@@ -102,6 +106,10 @@ rid: int = db.insert("col", {"field": "value"})
 
 # Insert many — returns IDs in insertion order
 ids: list[int] = db.insert_many("col", [{"name": "Alice"}, {"name": "Bob"}])
+
+# ttl_seconds > 0 expires the record(s) that long after insertion, overriding
+# the collection default (works on insert, insert_many, and update):
+rid = db.insert("col", {"field": "value"}, ttl_seconds=60)
 
 # Find by ID — returns a record dict
 record: dict = db.find_by_id("col", rid)
@@ -118,6 +126,10 @@ records: list[dict] = db.find(
 
 # Update — returns the updated ID
 rid = db.update("col", rid, {"field": "new value"})
+
+# ttl_seconds > 0 resets the expiry to that long from now; 0 (the default)
+# leaves any existing deadline untouched (a plain update is sticky).
+rid = db.update("col", rid, {"field": "new value"}, ttl_seconds=120)
 
 # Delete — returns True if the record existed
 deleted: bool = db.delete("col", rid)
@@ -178,6 +190,27 @@ Break out of the loop to stop watching.
 s = db.stats("col")
 # {"collection": "col", "record_count": 3, "segment_count": 1,
 #  "dirty_entries": 0, "size_bytes": 512}
+```
+
+### Maintenance
+
+```python
+# Force a synchronous compaction pass — merges/deduplicates sealed segments and
+# reclaims space from deleted or expired records. Returns True on success.
+ok: bool = db.compact("col")
+```
+
+### Backup
+
+```python
+# Stream a consistent gzip snapshot of the whole database straight to a file.
+# Returns the number of bytes written; restore with `tar xzf backup.tar.gz`.
+n: int = db.snapshot_to_file("backup.tar.gz")
+
+# Or consume the raw gzip byte chunks yourself (Snapshot is server-streaming):
+with open("backup.tar.gz", "wb") as fh:
+    for chunk in db.snapshot():
+        fh.write(chunk)
 ```
 
 ### Lifecycle
