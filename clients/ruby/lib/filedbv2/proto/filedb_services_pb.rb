@@ -42,6 +42,10 @@ module Filedb
 
         # Stats
         rpc :CollectionStats, ::Filedb::V1::CollectionStatsRequest, ::Filedb::V1::CollectionStatsResponse
+
+        # Admin
+        rpc :Compact,  ::Filedb::V1::CompactRequest,  ::Filedb::V1::CompactResponse
+        rpc :Snapshot, ::Filedb::V1::SnapshotRequest, stream(::Filedb::V1::SnapshotChunk)
       end
 
       Stub = Service.rpc_stub_class
