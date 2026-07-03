@@ -161,6 +161,23 @@ map[string]map[string][]uint64
 
 `Scan` uses the secondary index when the filter is a single `eq` on an indexed field. All other filter shapes (composite filters, non-eq ops, non-indexed fields) fall back to a full segment scan.
 
+### Unique indexes
+
+`EnsureUniqueIndex(field)` creates a secondary index that additionally enforces
+a uniqueness constraint: any insert or update that would map the indexed value
+to a *different* live record is rejected with the typed `ErrDuplicateKey`
+(wrapped with field/value context). The check is performed under the same write
+lock as the index mutation, so it is atomic — a rejected write appends nothing
+to the segment and mutates no index. `CommitTx` pre-validates every staged op
+(against committed data and against other ops in the same batch) before applying
+any of them.
+
+The `unique` flag is persisted in `sidx_<field>.json` and restored on reload —
+including when the file is stale and the buckets are rebuilt from segments.
+Uniqueness is enforced on new writes going forward only; historical duplicates
+already present in the data (resolved last-write-wins during a rebuild) are
+tolerated, not rejected retroactively.
+
 ---
 
 ## Change Feed (Watch)
