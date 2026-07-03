@@ -29,6 +29,39 @@ default (see `engine.DefaultWatchBufferSize`, `engine.SyncModeNone`, …).
 
 ---
 
+## String keys (caller-supplied primary keys)
+
+`Insert` returns an engine-assigned `uint64` id. When your records already have
+a natural string identity — a session id, an agent name, a context key — use the
+keyed API to insert and address records by that string directly:
+
+```go
+_, _, err := col.InsertWithKey("sess-abc123", map[string]any{"status": "open"})
+
+data, _, err := col.FindByKey("sess-abc123")           // O(1) lookup
+_, err = col.UpdateByKey("sess-abc123", map[string]any{"status": "closed"})
+err = col.DeleteByKey("sess-abc123")
+```
+
+- The key is stored in a reserved `_key` field (`engine.KeyField`) inside the
+  record's data, enforced unique by a secondary index that `InsertWithKey`
+  creates automatically on the first keyed write.
+- Inserting a key that a live record already holds returns `engine.ErrDuplicateKey`.
+- `FindByKey` / `UpdateByKey` / `DeleteByKey` on a key with no live record return
+  `engine.ErrKeyNotFound`. Match both with `errors.Is`.
+- `_key` is reserved: passing it to plain `Insert`/`Update` (or smuggling it into
+  the `data` map of a keyed call) is rejected with `engine.ErrReservedField`. A
+  record's key is fixed for its lifetime — `UpdateByKey` preserves it.
+- Because `_key` is a normal data field, the key survives compaction, index
+  rebuild, and reopen, and appears in `WatchEvent.Data["_key"]` on every event
+  for that record.
+
+The keyed methods interoperate with the numeric ones: a record inserted with
+`InsertWithKey` is still readable by its `uint64` id via `FindByID`, and the
+returned data includes the `_key` field.
+
+---
+
 ## Watching changes (in-process subscriptions)
 
 `Collection.Subscribe` gives you a live feed of every write to a collection.
