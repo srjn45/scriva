@@ -33,6 +33,27 @@ embedding-specific contract.
 
 ### Added
 
+- **S2 — audit log.** A durable, append-only record of **who did what**: every
+  state-mutating and admin RPC and every rejected authentication attempt. It is
+  **off by default** and separate from the request log so it can have its own
+  retention and be shipped to a tamper-evident store.
+  - New server flag (config: `audit_log`): `--audit-log <path>` writes an
+    append-only **NDJSON** stream — one self-contained JSON record per line —
+    carrying the **principal** (API-key name, mTLS cert subject, `anonymous` when
+    auth is off, or `unauthenticated` for a rejected call), the RPC **method**,
+    the **target** (`collection`/`key`/`id` where applicable), the **outcome**
+    (`ok` or the gRPC status code), and `auth_failure: true` on a rejected call.
+  - **What is recorded:** all writes (incl. keyed, compare-and-swap, `InsertMany`,
+    `Upsert`), schema changes (`CreateCollection`/`DropCollection`,
+    `EnsureIndex`/`DropIndex`), transaction control, the admin `Compact` and
+    `Promote`, and any RPC — read or write — rejected by the auth layer.
+    Successful reads are **not** audited. Exactly one record is emitted per RPC.
+  - Implemented as a single gRPC interceptor chained **outside** auth (so
+    rejected-auth calls are still recorded), reusing the O1 structured-logging
+    plumbing with a dedicated JSON audit logger. No proto/API change.
+  - See [`docs/getting-started.md`](docs/getting-started.md#audit-log) for the
+    format and [`docs/operations.md`](docs/operations.md#audit-log) for the
+    retention/rotation runbook.
 - **S1 — mutual TLS (client-certificate auth).** The server can now verify
   **client** certificates against a configured CA and authenticate a request by
   its certificate, giving callers a cryptographic identity independent of the
