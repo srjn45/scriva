@@ -200,7 +200,8 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
-	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, r.Data, r.Ts)
+	// Field projection (N2): id/key/rev are passed separately and always kept.
+	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, engine.ProjectData(r.Data, req.Fields), r.Ts)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -228,6 +229,7 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 		Offset:     int(req.Offset),
 		OrderBy:    req.OrderBy,
 		Descending: req.Descending,
+		Fields:     req.Fields,
 	}
 	stats, err := col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
 		rec, err := toProtoRecord(r.ID, keyOf(r.Data), r.Rev, r.Data, r.Ts)
@@ -397,7 +399,8 @@ func (s *GRPCServer) FindByKey(_ context.Context, req *pb.FindByKeyRequest) (*pb
 	if err != nil {
 		return nil, keyedErr(err)
 	}
-	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, rec.Data, rec.Ts)
+	// Field projection (N2): id/key/rev are passed separately and always kept.
+	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, engine.ProjectData(rec.Data, req.Fields), rec.Ts)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}

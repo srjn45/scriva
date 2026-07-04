@@ -339,6 +339,109 @@ func TestIntegration_Find_UnorderedLimit(t *testing.T) {
 	}
 }
 
+// TestIntegration_Find_Projection drives field projection (N2) end-to-end over
+// gRPC: a projected Find returns only the requested fields, an empty projection
+// returns the full record, and an unknown requested field is silently absent.
+func TestIntegration_Find_Projection(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "fruit"})
+	d, _ := structpb.NewStruct(map[string]any{"name": "apple", "color": "red", "price": float64(3)})
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "fruit", Data: d}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// Projected to name + an unknown field: only name survives, id/rev are set,
+	// and the unknown field is silently omitted (not an error).
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "fruit", Fields: []string{"name", "nope"}})
+	if err != nil {
+		t.Fatalf("Find projected: %v", err)
+	}
+	recs := collectFind(t, stream)
+	if len(recs) != 1 {
+		t.Fatalf("projected find: got %d records, want 1", len(recs))
+	}
+	got := recs[0].Data.Fields
+	if len(got) != 1 {
+		t.Errorf("projected data has %d fields, want only name: %v", len(got), got)
+	}
+	if got["name"].GetStringValue() != "apple" {
+		t.Errorf("projected name = %v, want apple", got["name"])
+	}
+	if _, ok := got["color"]; ok {
+		t.Errorf("projected data should not carry color: %v", got)
+	}
+	if _, ok := got["nope"]; ok {
+		t.Errorf("unknown requested field should be silently absent: %v", got)
+	}
+	if recs[0].Id == 0 {
+		t.Errorf("projected record must still carry its id, got 0")
+	}
+	if recs[0].Rev == 0 {
+		t.Errorf("projected record must still carry its rev, got 0")
+	}
+
+	// Empty projection returns the full record (backward compatible).
+	stream2, err := c.Find(ctx(), &pb.FindRequest{Collection: "fruit"})
+	if err != nil {
+		t.Fatalf("Find full: %v", err)
+	}
+	full := collectFind(t, stream2)
+	if len(full) != 1 || len(full[0].Data.Fields) != 3 {
+		t.Errorf("empty projection should return full 3-field record, got %v", full)
+	}
+}
+
+// TestIntegration_FindById_Projection checks projection on the point-lookup read
+// path and that a record's caller-supplied string key survives projection.
+func TestIntegration_FindById_Projection(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "people"})
+	d, _ := structpb.NewStruct(map[string]any{"name": "ada", "role": "eng"})
+	ins, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "people", Data: d, Key: "u1"})
+	if err != nil {
+		t.Fatalf("Insert keyed: %v", err)
+	}
+
+	resp, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "people", Id: ins.Id, Fields: []string{"name"}})
+	if err != nil {
+		t.Fatalf("FindById projected: %v", err)
+	}
+	if got := resp.Record.Data.Fields["name"].GetStringValue(); got != "ada" {
+		t.Errorf("projected name = %v, want ada", got)
+	}
+	if _, ok := resp.Record.Data.Fields["role"]; ok {
+		t.Errorf("projected FindById should not carry role: %v", resp.Record.Data.Fields)
+	}
+	// key is always included regardless of projection.
+	if resp.Record.Key != "u1" {
+		t.Errorf("projected record dropped its key: got %q, want u1", resp.Record.Key)
+	}
+}
+
+// TestIntegration_FindByKey_Projection checks projection on the keyed lookup.
+func TestIntegration_FindByKey_Projection(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "kv"})
+	d, _ := structpb.NewStruct(map[string]any{"name": "grace", "role": "eng"})
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "kv", Data: d, Key: "k1"}); err != nil {
+		t.Fatalf("Insert keyed: %v", err)
+	}
+
+	resp, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "kv", Key: "k1", Fields: []string{"name"}})
+	if err != nil {
+		t.Fatalf("FindByKey projected: %v", err)
+	}
+	if got := resp.Record.Data.Fields["name"].GetStringValue(); got != "grace" {
+		t.Errorf("projected name = %v, want grace", got)
+	}
+	if _, ok := resp.Record.Data.Fields["role"]; ok {
+		t.Errorf("projected FindByKey should not carry role: %v", resp.Record.Data.Fields)
+	}
+	if resp.Record.Key != "k1" {
+		t.Errorf("projected record dropped its key: got %q, want k1", resp.Record.Key)
+	}
+}
+
 // TestIntegration_Find_RangeIndexed drives a range predicate end-to-end against
 // a collection with a secondary index on the queried field, and asserts the
 // results match the numeric predicate (2 < 10, not the lexical order).

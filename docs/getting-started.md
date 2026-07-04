@@ -601,6 +601,35 @@ loads the whole collection into memory:
 Cancelling the request (client disconnect or context cancellation) stops the
 scan promptly instead of running to completion.
 
+### Field projection
+
+`find`, `get`, and `find-by-key` accept a `--fields` flag (a comma-separated
+list; the wire field is a repeated `fields`) that narrows each returned record's
+data to just those top-level fields. Wide documents then transmit only what the
+caller asked for:
+
+```bash
+# Return only name and email, not the whole user document
+filedb-cli find users '{"field":"role","op":"eq","value":"admin"}' --fields name,email
+
+# Projection also works on point lookups
+filedb-cli get users 42 --fields name,email
+filedb-cli find-by-key users alice --fields name,email
+```
+
+Rules:
+
+- **`id`, `key`, and `rev` are always included**, regardless of the projection —
+  they identify the record and drive optimistic-concurrency updates, so a
+  projection never strips them.
+- **An empty `--fields` (the default) returns the full record**, so existing
+  reads are unchanged.
+- **An unknown or absent field is silently omitted** — projecting to a field a
+  record doesn't have is not an error; that field is simply not present.
+
+Projection is applied in the engine after filtering and ordering, so an
+`order_by` field need not be listed in `--fields`.
+
 ---
 
 ## Secondary indexes

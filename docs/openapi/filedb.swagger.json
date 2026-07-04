@@ -269,6 +269,17 @@
             "in": "path",
             "required": true,
             "type": "string"
+          },
+          {
+            "name": "fields",
+            "description": "Optional field projection: when non-empty, only these top-level fields are\nreturned in the record's data. id, key and rev are always included. Empty\n(the default) returns the full record. An unknown field is silently omitted.",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
           }
         ],
         "tags": [
@@ -553,6 +564,17 @@
             "required": true,
             "type": "string",
             "format": "uint64"
+          },
+          {
+            "name": "fields",
+            "description": "Optional field projection: when non-empty, only these top-level fields are\nreturned in the record's data. id, key and rev are always included. Empty\n(the default) returns the full record. An unknown field is silently omitted.",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
           }
         ],
         "tags": [
@@ -788,6 +810,13 @@
         },
         "descending": {
           "type": "boolean"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional field projection: when non-empty, only these top-level fields are\nreturned in each record's data. id, key and rev are always included. Empty\n(the default) returns full records. An unknown field is silently omitted."
         }
       }
     },

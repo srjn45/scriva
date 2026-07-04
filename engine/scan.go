@@ -27,6 +27,12 @@ type ScanOptions struct {
 	Offset     int          // number of leading matches to skip
 	OrderBy    string       // "" = natural (insertion) order
 	Descending bool         // reverse the ordering (only meaningful with OrderBy)
+	// Fields narrows each emitted record's Data to the named top-level keys
+	// (field projection). Empty (the default) emits the full record. The
+	// reserved key field is always retained so a record's string key survives,
+	// and id/rev live outside Data so they are unaffected. Projection is applied
+	// after filtering and ordering, so an order-by field need not be projected.
+	Fields []string
 }
 
 // ScanStats reports the cost of a completed scan: how many live records were
@@ -80,9 +86,12 @@ func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield fun
 	}
 
 	// counting wraps the caller's yield so every successfully emitted record is
-	// tallied once, regardless of ordered/unordered path.
+	// tallied once, regardless of ordered/unordered path. Field projection is
+	// applied here — after filtering and ordering — so it narrows only what
+	// reaches the caller (and thus the wire) without affecting order-by.
 	stats := &ScanStats{}
 	counting := func(r ScanResult) error {
+		r.Data = ProjectData(r.Data, opts.Fields)
 		if err := yield(r); err != nil {
 			return err
 		}
@@ -278,6 +287,30 @@ func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// ProjectData returns a view of data limited to the named top-level fields
+// (field projection). An empty fields slice returns data unchanged — the full
+// record, which keeps the default read path backward compatible. When fields is
+// non-empty a fresh map is built (data is never mutated) containing only the
+// requested keys that exist; a requested key absent from data is silently
+// skipped rather than erroring. The reserved key field is always retained so a
+// record's caller-supplied string key survives projection — id and rev are
+// carried outside the data map and so are unaffected.
+func ProjectData(data map[string]any, fields []string) map[string]any {
+	if len(fields) == 0 {
+		return data
+	}
+	out := make(map[string]any, len(fields)+1)
+	for _, f := range fields {
+		if v, ok := data[f]; ok {
+			out[f] = v
+		}
+	}
+	if v, ok := data[KeyField]; ok {
+		out[KeyField] = v
+	}
+	return out
 }
 
 // orderLess returns a total ordering over ScanResults by the given field. The

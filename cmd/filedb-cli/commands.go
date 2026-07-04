@@ -149,6 +149,7 @@ func findCmd(flags *cliFlags) *cobra.Command {
 		offset     uint32
 		orderBy    string
 		descending bool
+		fields     []string
 	)
 	cmd := &cobra.Command{
 		Use:   "find <collection> [filter-json]",
@@ -167,6 +168,7 @@ func findCmd(flags *cliFlags) *cobra.Command {
 				Offset:     offset,
 				OrderBy:    orderBy,
 				Descending: descending,
+				Fields:     fields,
 			}
 
 			if len(args) == 2 {
@@ -197,11 +199,13 @@ func findCmd(flags *cliFlags) *cobra.Command {
 	cmd.Flags().Uint32Var(&offset, "offset", 0, "Skip N records")
 	cmd.Flags().StringVar(&orderBy, "order-by", "", "Field name to sort by")
 	cmd.Flags().BoolVar(&descending, "descending", false, "Sort in descending order")
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "Comma-separated fields to return (id/key/rev always included; empty = full record)")
 	return cmd
 }
 
 func findByIDCmd(flags *cliFlags) *cobra.Command {
-	return &cobra.Command{
+	var fields []string
+	cmd := &cobra.Command{
 		Use:   "get <collection> <id>",
 		Short: "Get a record by id",
 		Args:  cobra.ExactArgs(2),
@@ -216,7 +220,7 @@ func findByIDCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("invalid id %q: %w", args[1], err)
 			}
-			resp, err := client.FindById(ctxWithAuth(flags), &pb.FindByIdRequest{Collection: args[0], Id: id})
+			resp, err := client.FindById(ctxWithAuth(flags), &pb.FindByIdRequest{Collection: args[0], Id: id, Fields: fields})
 			if err != nil {
 				return err
 			}
@@ -224,6 +228,8 @@ func findByIDCmd(flags *cliFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "Comma-separated fields to return (id/key/rev always included; empty = full record)")
+	return cmd
 }
 
 func updateCmd(flags *cliFlags) *cobra.Command {
@@ -343,7 +349,8 @@ func upsertCmd(flags *cliFlags) *cobra.Command {
 }
 
 func findByKeyCmd(flags *cliFlags) *cobra.Command {
-	return &cobra.Command{
+	var fields []string
+	cmd := &cobra.Command{
 		Use:   "find-by-key <collection> <key>",
 		Short: "Get a record by its string key",
 		Args:  cobra.ExactArgs(2),
@@ -355,7 +362,7 @@ func findByKeyCmd(flags *cliFlags) *cobra.Command {
 			defer cleanup()
 
 			resp, err := client.FindByKey(ctxWithAuth(flags), &pb.FindByKeyRequest{
-				Collection: args[0], Key: args[1],
+				Collection: args[0], Key: args[1], Fields: fields,
 			})
 			if err != nil {
 				return err
@@ -364,6 +371,8 @@ func findByKeyCmd(flags *cliFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "Comma-separated fields to return (id/key/rev always included; empty = full record)")
+	return cmd
 }
 
 func updateByKeyCmd(flags *cliFlags) *cobra.Command {
