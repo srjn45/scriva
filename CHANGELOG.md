@@ -33,6 +33,25 @@ embedding-specific contract.
 
 ### Added
 
+- **S1 — mutual TLS (client-certificate auth).** The server can now verify
+  **client** certificates against a configured CA and authenticate a request by
+  its certificate, giving callers a cryptographic identity independent of the
+  `x-api-key` header. It is **off by default** and composes with API keys.
+  - Two new server flags (config: `tls_client_ca`, `tls_client_auth`):
+    `--tls-client-ca <bundle.pem>` sets the CA that signs trusted client certs,
+    and `--tls-client-auth off|require|verify-if-given` chooses the policy —
+    `require` mandates a valid client cert on every connection, `verify-if-given`
+    accepts a cert when presented but does not require one. Both require server
+    TLS (`--tls-cert`/`--tls-key`) to also be set.
+  - **Composition:** a valid `x-api-key` always wins and its scope is enforced;
+    a request with **no** API key but a **verified** client cert is authenticated
+    as the certificate's principal (subject **CN**, else the first **SAN**) with
+    **read-write** scope. Per-certificate scoping / ACLs are deferred to S3.
+  - **Backward compatible:** server-only TLS and plain API-key auth are
+    unchanged. Under `--tls-client-auth require`, the local REST gateway dials
+    gRPC over the Unix socket so REST keeps working.
+  - See [`docs/getting-started.md`](docs/getting-started.md#mutual-tls-client-certificate-auth)
+    for a full CA/cert setup walkthrough.
 - **R1 — leader→follower replication (log shipping).** A follower node tails a
   new server-streaming `Replicate` RPC that ships every committed segment entry
   (post-fsync) tagged with a monotonic **global LSN**, and applies it through the

@@ -32,6 +32,13 @@ type Config struct {
 	TLSCert string `yaml:"tls_cert"` // path to PEM certificate file
 	TLSKey  string `yaml:"tls_key"`  // path to PEM private key file
 
+	// Mutual TLS (S1, optional — off by default). When enabled, the server
+	// verifies client certificates against TLSClientCA and maps the cert
+	// subject/SAN to a principal, composing with (or as an alternative to) API
+	// keys. Both require server TLS (TLSCert/TLSKey) to be set.
+	TLSClientCA   string `yaml:"tls_client_ca"`   // path to PEM CA bundle that signs trusted client certs
+	TLSClientAuth string `yaml:"tls_client_auth"` // off (default) | require | verify-if-given
+
 	// Auth
 	APIKey string `yaml:"api_key"` // legacy single read-write key; empty = no auth
 	// Keys is an optional list of scoped API keys. Combined with APIKey (which,
@@ -103,6 +110,7 @@ func DefaultConfig() Config {
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: 5 * time.Minute,
 		CompactDirtyPct: 0.30,
+		TLSClientAuth:   "off",
 		SyncMode:        string(engine.SyncModeNone),
 		SyncInterval:    engine.DefaultSyncInterval,
 		TxTimeout:       5 * time.Minute,
@@ -155,6 +163,8 @@ type fileConfig struct {
 	MetricsAddr     string         `yaml:"metrics_addr"`
 	TLSCert         string         `yaml:"tls_cert"`
 	TLSKey          string         `yaml:"tls_key"`
+	TLSClientCA     string         `yaml:"tls_client_ca"`
+	TLSClientAuth   string         `yaml:"tls_client_auth"`
 	APIKey          string         `yaml:"api_key"`
 	Keys            []APIKeyConfig `yaml:"keys"`
 	SegmentMaxSize  int64          `yaml:"segment_max_size"`
@@ -201,6 +211,8 @@ func LoadConfigFile(path string) (Config, error) {
 		MetricsAddr:     defaults.MetricsAddr,
 		TLSCert:         defaults.TLSCert,
 		TLSKey:          defaults.TLSKey,
+		TLSClientCA:     defaults.TLSClientCA,
+		TLSClientAuth:   defaults.TLSClientAuth,
 		APIKey:          defaults.APIKey,
 		Keys:            defaults.Keys,
 		SegmentMaxSize:  defaults.SegmentMaxSize,
@@ -263,6 +275,8 @@ func LoadConfigFile(path string) (Config, error) {
 		MetricsAddr:     fc.MetricsAddr,
 		TLSCert:         fc.TLSCert,
 		TLSKey:          fc.TLSKey,
+		TLSClientCA:     fc.TLSClientCA,
+		TLSClientAuth:   fc.TLSClientAuth,
 		APIKey:          fc.APIKey,
 		Keys:            fc.Keys,
 		SegmentMaxSize:  fc.SegmentMaxSize,

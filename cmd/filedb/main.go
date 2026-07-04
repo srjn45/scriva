@@ -115,6 +115,10 @@ func serveCmd() *cobra.Command {
 						merged.TLSCert = cfg.TLSCert
 					case "tls-key":
 						merged.TLSKey = cfg.TLSKey
+					case "tls-client-ca":
+						merged.TLSClientCA = cfg.TLSClientCA
+					case "tls-client-auth":
+						merged.TLSClientAuth = cfg.TLSClientAuth
 					case "log-level":
 						merged.LogLevel = cfg.LogLevel
 					case "log-format":
@@ -165,6 +169,8 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "Prometheus metrics listen address (empty = disabled)")
 	f.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "Path to TLS certificate PEM file (enables TLS when set with --tls-key)")
 	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
+	f.StringVar(&cfg.TLSClientCA, "tls-client-ca", cfg.TLSClientCA, "Path to PEM CA bundle that signs trusted client certs (enables mTLS; requires --tls-cert/--tls-key)")
+	f.StringVar(&cfg.TLSClientAuth, "tls-client-auth", cfg.TLSClientAuth, "Client-certificate policy: off (default) | require | verify-if-given")
 	f.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
 	f.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format: json|text")
 	f.IntVar(&cfg.SlowQueryMs, "slow-query-ms", cfg.SlowQueryMs, "Log any Find slower than this many milliseconds at WARN, with scan stats (0 = disabled)")
@@ -315,19 +321,28 @@ func serve(cfg server.Config, configFile string) error {
 		}()
 	}
 
-	// Build TLS credentials (optional).
+	// Build TLS credentials (optional). ServerTLSConfig also wires the mutual-TLS
+	// client-CA/verification mode (S1) and reports whether client-cert auth is on.
 	var serverCreds credentials.TransportCredentials
 	var restDialCreds credentials.TransportCredentials
-	if cfg.TLSCert != "" && cfg.TLSKey != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
-		if err != nil {
-			return fmt.Errorf("load TLS key pair: %w", err)
-		}
-		serverCreds = credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{cert}})
+	var mtlsEnabled bool     // a verified client cert authenticates a request
+	var mtlsRequireCert bool // the transport rejects any connection without a client cert
+	tlsCfg, certAuth, err := server.ServerTLSConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if tlsCfg != nil {
+		serverCreds = credentials.NewTLS(tlsCfg)
 		// The REST gateway dials gRPC on loopback; skip verification for this
 		// internal hop since the cert may be self-signed.
 		restDialCreds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
-		logger.Info("TLS enabled", "cert", cfg.TLSCert)
+		mtlsEnabled = certAuth
+		mtlsRequireCert = tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert
+		if certAuth {
+			logger.Info("TLS enabled", "cert", cfg.TLSCert, "client_auth", cfg.TLSClientAuth, "client_ca", cfg.TLSClientCA)
+		} else {
+			logger.Info("TLS enabled", "cert", cfg.TLSCert)
+		}
 	} else {
 		serverCreds = insecure.NewCredentials()
 		restDialCreds = insecure.NewCredentials()
@@ -338,11 +353,11 @@ func serve(cfg server.Config, configFile string) error {
 	if err != nil {
 		return err
 	}
-	authn, err := auth.New(keys)
+	authn, err := auth.New(keys, auth.WithCertAuth(mtlsEnabled))
 	if err != nil {
 		return err
 	}
-	logger.Info("auth enabled", "keys", len(keys))
+	logger.Info("auth enabled", "keys", len(keys), "mtls", mtlsEnabled)
 
 	// Shared interceptors, in order: tracing outermost (so its per-RPC span wraps
 	// the whole handler and its span-bearing context flows down to the engine scan
@@ -454,7 +469,20 @@ func serve(cfg server.Config, configFile string) error {
 	ctx, cancelGW := context.WithCancel(context.Background())
 	defer cancelGW()
 
-	restHandler, err := server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds, ready)
+	// Under mTLS require mode the TCP gRPC server rejects any connection without
+	// a client certificate, including this internal loopback hop. Route the REST
+	// gateway over the local unix socket (always insecure, local-only) instead so
+	// REST keeps working; the client's x-api-key header is still forwarded.
+	var restHandler http.Handler
+	if mtlsRequireCert && unixLn != nil {
+		restHandler, err = server.NewRESTGatewayUnix(ctx, cfg.UnixSocket, ready)
+		logger.Info("REST gateway dialing gRPC over unix socket (mTLS require mode)", "socket", cfg.UnixSocket)
+	} else {
+		if mtlsRequireCert {
+			logger.Warn("mTLS require mode with no unix socket: REST gateway cannot present a client cert and will be unavailable")
+		}
+		restHandler, err = server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds, ready)
+	}
 	if err != nil {
 		return fmt.Errorf("rest gateway: %w", err)
 	}

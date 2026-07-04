@@ -366,7 +366,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] R3 — manual failover & role management
 
 **v0.9.0 — Security & tenancy depth**
-- [ ] S1 — mutual TLS (client-cert auth)
+- [x] S1 — mutual TLS (client-cert auth)
 - [ ] S2 — audit log
 - [ ] S3 — per-collection ACLs on scoped keys
 - [ ] S4 — per-tenant quotas & limits

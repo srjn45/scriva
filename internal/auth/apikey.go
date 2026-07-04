@@ -120,20 +120,38 @@ func buildKeySet(keys []Key) (*keySet, error) {
 
 // Authenticator validates API keys and enforces per-RPC scope. It is safe for
 // concurrent use, and its key set can be swapped at runtime via Reload to
-// support key rotation without a restart.
+// support key rotation without a restart. When mutual-TLS is enabled (see
+// WithCertAuth) it also accepts a verified client certificate as an alternative
+// credential.
 type Authenticator struct {
-	keys atomic.Pointer[keySet]
+	keys     atomic.Pointer[keySet]
+	certAuth bool // when true, a verified client cert authenticates the request
 }
 
-// New builds an Authenticator from the given keys. Passing no keys yields an
-// authenticator that allows all requests (auth disabled).
-func New(keys []Key) (*Authenticator, error) {
+// Option configures an Authenticator at construction time.
+type Option func(*Authenticator)
+
+// WithCertAuth enables mutual-TLS authentication: a request that carries no
+// valid API key but presents a client certificate verified against the server's
+// configured client-CA pool is authenticated as the certificate's principal.
+// It is off by default, so plain API-key auth is unchanged.
+func WithCertAuth(enabled bool) Option {
+	return func(a *Authenticator) { a.certAuth = enabled }
+}
+
+// New builds an Authenticator from the given keys. Passing no keys — and no
+// cert-auth option — yields an authenticator that allows all requests (auth
+// disabled).
+func New(keys []Key, opts ...Option) (*Authenticator, error) {
 	ks, err := buildKeySet(keys)
 	if err != nil {
 		return nil, err
 	}
 	a := &Authenticator{}
 	a.keys.Store(ks)
+	for _, opt := range opts {
+		opt(a)
+	}
 	return a, nil
 }
 
@@ -170,32 +188,53 @@ func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.Stream
 	return unary, stream
 }
 
-// authorize validates the request's API key and checks that the resolved
-// principal's scope permits fullMethod. On success it returns a context
-// carrying the resolved Principal (unchanged when auth is disabled).
+// authorize resolves the request's principal and checks that its scope permits
+// fullMethod. A principal is resolved from a valid API key when key auth is
+// configured, or — when mutual-TLS is enabled — from a verified client
+// certificate as an alternative. On success it returns a context carrying the
+// resolved Principal (unchanged when auth is disabled entirely).
+//
+// Composition: an explicit, valid API key always wins. A presented-but-invalid
+// key is rejected outright rather than silently falling back to a certificate.
+// Only when no API key is presented does a verified client certificate satisfy
+// authentication, so server-only TLS + API keys behaves exactly as before.
 func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (context.Context, error) {
 	ks := a.keys.Load()
-	if !ks.enabled() {
+	keyAuth := ks.enabled()
+	if !keyAuth && !a.certAuth {
 		return ctx, nil // auth disabled
 	}
 
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ctx, status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	vals := md.Get(metadataKey)
-	if len(vals) == 0 {
-		return ctx, status.Errorf(codes.Unauthenticated, "missing %s", metadataKey)
+	var resolved principal
+	var ok bool
+
+	// Prefer an explicit API key. A presented key must be valid; a missing key
+	// is not an error here so a client may instead authenticate by certificate.
+	if keyAuth {
+		if md, hasMD := metadata.FromIncomingContext(ctx); hasMD {
+			if vals := md.Get(metadataKey); len(vals) > 0 {
+				resolved, ok = ks.lookup([]byte(vals[0]))
+				if !ok {
+					return ctx, status.Error(codes.Unauthenticated, "invalid api key")
+				}
+			}
+		}
 	}
 
-	p, ok := ks.lookup([]byte(vals[0]))
-	if !ok {
-		return ctx, status.Error(codes.Unauthenticated, "invalid api key")
+	// Fall back to a verified client certificate (mutual-TLS).
+	if !ok && a.certAuth {
+		if cp, certOK := principalFromPeerCert(ctx); certOK {
+			resolved, ok = principal{name: cp.Name, scope: cp.Scope}, true
+		}
 	}
 
-	if methodRequiresWrite(fullMethod) && p.scope != ScopeReadWrite {
+	if !ok {
+		return ctx, status.Error(codes.Unauthenticated, "missing api key or client certificate")
+	}
+
+	if methodRequiresWrite(fullMethod) && resolved.scope != ScopeReadWrite {
 		return ctx, status.Errorf(codes.PermissionDenied,
-			"api key %q has read-only scope; %s requires read-write", p.name, fullMethod)
+			"principal %q has read-only scope; %s requires read-write", resolved.name, fullMethod)
 	}
-	return withPrincipal(ctx, Principal{Name: p.name, Scope: p.scope}), nil
+	return withPrincipal(ctx, Principal{Name: resolved.name, Scope: resolved.scope}), nil
 }
