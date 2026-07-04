@@ -173,6 +173,44 @@ restarting:
 kill -HUP $(pgrep -f 'filedb serve')
 ```
 
+### Per-collection ACLs
+
+By default a key's `scope` applies across **every** collection. To confine a key
+to a specific set of collections, add an optional `collections:` allow-list to
+its entry. The key may then act only on the listed collections (subject to its
+`scope`); any RPC targeting another collection is rejected with
+`PermissionDenied`. Omitting `collections:` (or leaving it empty) keeps the
+historical behaviour — the key reaches all collections.
+
+```yaml
+keys:
+  # Confined to the "orders" and "invoices" collections.
+  - key: billing-secret
+    name: billing
+    scope: read-write
+    collections: [orders, invoices]
+  # No allow-list → may read every collection.
+  - key: reader-secret
+    name: analytics
+    scope: read
+```
+
+```bash
+# billing may write its own collections…
+filedb-cli insert orders '{"total":42}' --api-key billing-secret
+# …but is denied on any other collection:
+filedb-cli insert users '{"name":"bob"}' --api-key billing-secret
+# Error: rpc error: code = PermissionDenied ...
+```
+
+The allow-list is enforced per RPC using the collection named in the request, so
+it covers unary calls and collection-scoped streams (`watch`, `find`,
+`aggregate`) alike. RPCs that don't name a collection — such as `list`
+(`ListCollections`) — are not collection-scoped and remain callable by a
+restricted key. Like scopes, ACL changes are picked up on `SIGHUP` reload.
+Certificate-authenticated principals (see below) carry no allow-list and reach
+all collections.
+
 ### Mutual TLS (client-certificate auth)
 
 On top of server TLS, FileDB can verify **client** certificates against a CA and

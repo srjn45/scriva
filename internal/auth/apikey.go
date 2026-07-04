@@ -1,5 +1,6 @@
 // Package auth provides gRPC interceptors for API key authentication with
-// per-key scoping (read vs read-write) and hot-reloadable key sets for rotation.
+// per-key scoping (read vs read-write), an optional per-key collection
+// allow-list (S3), and hot-reloadable key sets for rotation.
 package auth
 
 import (
@@ -21,12 +22,58 @@ type Key struct {
 	Key   string // the secret presented in the x-api-key header
 	Name  string // human-readable principal name (for logging/audit)
 	Scope Scope  // read or read-write
+	// Collections is an optional per-key collection allow-list (S3). When set,
+	// the principal may only act on the named collections; RPCs targeting any
+	// other collection are rejected with PermissionDenied. An empty/nil list
+	// means "all collections" — the backward-compatible default.
+	Collections []string
 }
 
 // principal is the resolved identity behind a validated key.
 type principal struct {
 	name  string
 	scope Scope
+	// collections is the resolved collection allow-list as a set for O(1)
+	// lookup. A nil map means unrestricted (all collections); a non-nil map
+	// confines the principal to exactly its members.
+	collections map[string]struct{}
+}
+
+// allowsCollection reports whether p may act on the named collection. A nil
+// allow-list means unrestricted.
+func (p principal) allowsCollection(name string) bool {
+	if p.collections == nil {
+		return true
+	}
+	_, ok := p.collections[name]
+	return ok
+}
+
+// collectionScoped is implemented by request messages that name a target
+// collection — the generated GetCollection accessor. The auth interceptor uses
+// it to enforce a key's collection allow-list per RPC.
+type collectionScoped interface {
+	GetCollection() string
+}
+
+// checkCollectionAccess enforces p's collection allow-list against a request
+// message. It is a no-op when the principal is unrestricted or when the request
+// is not collection-scoped (e.g. ListCollections), so those RPCs stay callable
+// by a restricted key. Otherwise it rejects a request whose target collection is
+// outside the allow-list with codes.PermissionDenied.
+func (p principal) checkCollectionAccess(req any) error {
+	if p.collections == nil {
+		return nil
+	}
+	cs, ok := req.(collectionScoped)
+	if !ok {
+		return nil
+	}
+	if !p.allowsCollection(cs.GetCollection()) {
+		return status.Errorf(codes.PermissionDenied,
+			"principal %q is not permitted to access collection %q", p.name, cs.GetCollection())
+	}
+	return nil
 }
 
 // Principal is the authenticated identity resolved from a valid API key. It is
@@ -91,13 +138,35 @@ func depositPrincipal(ctx context.Context, p Principal) {
 }
 
 // wrappedServerStream overrides Context so a stream interceptor can thread a
-// derived context (carrying the resolved principal) down to the handler.
+// derived context (carrying the resolved principal) down to the handler. It also
+// enforces the principal's collection allow-list on the first client message.
 type wrappedServerStream struct {
 	grpc.ServerStream
-	ctx context.Context
+	ctx       context.Context
+	principal principal
+	checked   bool
 }
 
 func (w *wrappedServerStream) Context() context.Context { return w.ctx }
+
+// RecvMsg enforces the principal's collection allow-list (S3) against the first
+// client message on the stream. FileDB's streaming RPCs are all server-streaming
+// — the client sends a single request first, and for collection-scoped streams
+// (Watch, Find, Aggregate) that request carries the target collection. The check
+// runs once, when the collection first becomes knowable; a request that is not
+// collection-scoped, or a principal with no allow-list, passes through unchanged.
+func (w *wrappedServerStream) RecvMsg(m any) error {
+	if err := w.ServerStream.RecvMsg(m); err != nil {
+		return err
+	}
+	if !w.checked {
+		w.checked = true
+		if err := w.principal.checkCollectionAccess(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type keyEntry struct {
 	key       []byte
@@ -146,9 +215,18 @@ func buildKeySet(keys []Key) (*keySet, error) {
 		if name == "" {
 			name = "unnamed"
 		}
+		// An empty/nil allow-list stays nil (unrestricted); otherwise resolve it
+		// into a set for O(1) per-RPC lookup.
+		var collections map[string]struct{}
+		if len(k.Collections) > 0 {
+			collections = make(map[string]struct{}, len(k.Collections))
+			for _, c := range k.Collections {
+				collections[c] = struct{}{}
+			}
+		}
 		entries = append(entries, keyEntry{
 			key:       []byte(k.Key),
-			principal: principal{name: name, scope: k.Scope},
+			principal: principal{name: name, scope: k.Scope, collections: collections},
 		})
 	}
 	return &keySet{entries: entries}, nil
@@ -208,18 +286,25 @@ func (a *Authenticator) Reload(keys []Key) error {
 // authentication and scoping using this Authenticator's current key set.
 func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
 	unary := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		ctx, err := a.authorize(ctx, info.FullMethod)
+		ctx, p, err := a.authorize(ctx, info.FullMethod)
 		if err != nil {
+			return nil, err
+		}
+		// Per-collection ACL enforcement (S3): the unary request carries its
+		// target collection, so the check runs here, before the handler.
+		if err := p.checkCollectionAccess(req); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
 	}
 	stream := func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		ctx, err := a.authorize(ss.Context(), info.FullMethod)
+		ctx, p, err := a.authorize(ss.Context(), info.FullMethod)
 		if err != nil {
 			return err
 		}
-		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx})
+		// The collection is not knowable until the client's first message, so the
+		// ACL check is deferred to the wrapped stream's RecvMsg (S3).
+		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx, principal: p})
 	}
 	return unary, stream
 }
@@ -234,11 +319,11 @@ func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.Stream
 // key is rejected outright rather than silently falling back to a certificate.
 // Only when no API key is presented does a verified client certificate satisfy
 // authentication, so server-only TLS + API keys behaves exactly as before.
-func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (context.Context, error) {
+func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (context.Context, principal, error) {
 	ks := a.keys.Load()
 	keyAuth := ks.enabled()
 	if !keyAuth && !a.certAuth {
-		return ctx, nil // auth disabled
+		return ctx, principal{}, nil // auth disabled (unrestricted principal)
 	}
 
 	var resolved principal
@@ -251,7 +336,7 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 			if vals := md.Get(metadataKey); len(vals) > 0 {
 				resolved, ok = ks.lookup([]byte(vals[0]))
 				if !ok {
-					return ctx, status.Error(codes.Unauthenticated, "invalid api key")
+					return ctx, principal{}, status.Error(codes.Unauthenticated, "invalid api key")
 				}
 			}
 		}
@@ -265,7 +350,7 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 	}
 
 	if !ok {
-		return ctx, status.Error(codes.Unauthenticated, "missing api key or client certificate")
+		return ctx, principal{}, status.Error(codes.Unauthenticated, "missing api key or client certificate")
 	}
 
 	// The caller is authenticated; record the identity for the audit sink now so a
@@ -276,8 +361,8 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 	depositPrincipal(ctx, p)
 
 	if methodRequiresWrite(fullMethod) && resolved.scope != ScopeReadWrite {
-		return ctx, status.Errorf(codes.PermissionDenied,
+		return ctx, principal{}, status.Errorf(codes.PermissionDenied,
 			"principal %q has read-only scope; %s requires read-write", resolved.name, fullMethod)
 	}
-	return withPrincipal(ctx, p), nil
+	return withPrincipal(ctx, p), resolved, nil
 }

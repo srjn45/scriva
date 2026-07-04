@@ -642,7 +642,7 @@ func buildKeys(cfg server.Config) ([]auth.Key, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config key %q: %w", k.Name, err)
 		}
-		keys = append(keys, auth.Key{Key: k.Key, Name: k.Name, Scope: scope})
+		keys = append(keys, auth.Key{Key: k.Key, Name: k.Name, Scope: scope, Collections: k.Collections})
 	}
 	if cfg.APIKey != "" {
 		keys = append(keys, auth.Key{Key: cfg.APIKey, Name: "default", Scope: auth.ScopeReadWrite})
