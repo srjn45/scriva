@@ -678,6 +678,79 @@ because binary streaming does not map cleanly onto the REST gateway.
 
 ---
 
+## Replication (leader → follower)
+
+FileDB's append-only segment log *is already a write-ahead log*, which makes
+leader→follower log shipping the natural HA primitive (R1). A follower stays
+consistent with a leader by tailing its committed writes and applying them
+through the normal write path, so its primary index, secondary indexes, keys,
+revisions, and TTLs all end up identical to the leader's.
+
+### Global LSN and the commit feed
+
+When leader-side replication is enabled (`CollectionConfig.ReplicationRingSize >
+0`, which the server sets by default), the DB owns a small **replication broker**.
+Every committed entry — after it has been appended and fsynced under the
+collection write lock — is published to the broker, which assigns it the next
+**LSN** (a monotonic, DB-global sequence number) and records it. Publishing
+happens *inside* the collection's write critical section, so entries from one
+collection keep their commit order and all collections share one consistent total
+order. The broker keeps the most recent entries in a bounded in-memory ring
+(default 8192) so a briefly-disconnected follower can resume from memory rather
+than re-fetching a whole snapshot.
+
+The engine exposes this as plain Go types — `ReplicationEntry`,
+`DB.SubscribeReplication`, `DB.ApplyReplication`, `DB.ReplicationStatus` — and
+never imports gRPC/protobuf; the server maps them onto the `Replicate` and
+`ReplicationStatus` RPCs. This keeps the embeddable engine dependency-free
+(`make deps-check`), and leaves the embedded/default write path untouched when
+replication is off (ring size 0 → no broker, no LSN cost).
+
+### Bootstrap, then tail
+
+A fresh follower catches up in two phases:
+
+1. **Snapshot bootstrap.** The follower reads the leader's current LSN watermark
+   `L` (via `ReplicationStatus`) *before* pulling a `Snapshot`, then extracts the
+   snapshot into its data directory. Because the watermark is read first, the
+   snapshot is guaranteed to contain every entry with `lsn ≤ L`.
+2. **Stream tail.** The follower opens `Replicate(from_lsn = L)`; the leader ships
+   the buffered backlog (`lsn > L`) and then live commits as they happen. The
+   follower applies each entry and advances its **applied-LSN**, persisted to
+   `replication.json` at the data-dir root so a restart resumes from exactly
+   where it left off.
+
+### Idempotent apply → no gaps, no duplicates
+
+Apply is idempotent at the **record-revision** level: an insert/update whose id
+already sits at an equal-or-newer revision is skipped, and a delete of an
+already-absent id is skipped. This is the correctness backbone:
+
+- A few entries can legitimately appear in *both* the snapshot and the tail (they
+  raced in after the watermark was read) — re-applying them is a no-op.
+- A resumed follower that re-requests from a slightly stale applied-LSN re-applies
+  the overlap harmlessly.
+
+So a follower converges to the leader's exact state under continuous writes, and
+recovers from a disconnect with **neither a gap nor a duplicate**. Applied entries
+also fan out to the follower's own Watch subscribers.
+
+Replication is **asynchronous** (bounded lag). The leader tracks, per connected
+follower, the highest LSN it has shipped; `ReplicationStatus` reports the leader
+LSN and each follower's shipped LSN and lag. A follower that falls further behind
+than the ring can hold — or whose consumer stalls and overflows its buffer — is
+told to re-bootstrap with `FAILED_PRECONDITION`. The shipped-LSN tracking is the
+seam a future follower-acknowledged LSN (R2) plugs into.
+
+> **Scope.** R1 is replication and observability only. Serving reads from a
+> follower and rejecting writes to it (R2), and promoting a follower to leader
+> after a leader loss (R3), are separate follow-ons. A leader restart keeps LSNs
+> monotonic (the last-assigned LSN is persisted) but its in-memory ring starts
+> empty, so a follower that was mid-catch-up may need to re-bootstrap — automatic
+> leader election remains explicitly out of scope.
+
+---
+
 ## Network Layer
 
 ```

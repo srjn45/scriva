@@ -854,6 +854,68 @@ segments the first time the restored server opens each collection.
 
 ---
 
+## Replication (leader → follower)
+
+A **follower** node stays consistent with a **leader** by tailing its committed
+writes and applying them locally, giving you a live hot standby of your data.
+Replication is asynchronous (the follower trails the leader by a bounded lag).
+
+Start a normal server as the **leader** — no extra flags; every server is
+replication-capable by default:
+
+```bash
+filedb serve --data ./leader-data --api-key dev-key
+```
+
+Point a **follower** at it with `--replicate-from`. Give the follower its own data
+directory and its own listen addresses (so both can run on one machine for a
+demo):
+
+```bash
+filedb serve \
+  --replicate-from 127.0.0.1:5433 \
+  --data ./follower-data \
+  --grpc-addr :6433 --rest-addr :9080 --socket /tmp/filedb-follower.sock \
+  --metrics-addr '' \
+  --api-key dev-key
+```
+
+On first start against an empty data directory the follower **bootstraps from a
+snapshot** of the leader and then tails the live stream. If you stop and restart
+the follower, it **resumes from the last entry it applied** (persisted in
+`replication.json`) — no re-copy, no gaps, no duplicates. Writes to the leader
+show up on the follower within the replication lag.
+
+Check replication health from the leader:
+
+```bash
+# leader LSN + one entry per connected follower (shipped LSN, lag, connect time)
+curl -s -H 'x-api-key: dev-key' http://localhost:8080/v1/replication/status
+# {"leaderLsn":"1234","followers":[{"followerId":"host-b","ackedLsn":"1234","lag":"0",...}]}
+```
+
+Flags (all optional):
+
+| Flag | Config key | Meaning |
+|---|---|---|
+| `--replicate-from <addr>` | `replicate_from` | Run as a follower tailing the leader's gRPC address. Empty = leader. |
+| `--replicate-id <id>` | `follower_id` | Label reported to the leader in `ReplicationStatus` (default: hostname). |
+| `--replication-ring-size <n>` | `replication_ring_size` | Leader's in-memory buffer of recent entries for follower resume (default 8192; 0 disables replication). |
+
+Notes and current scope (R1):
+
+- The follower authenticates to the leader with its `--api-key`; replication is a
+  read-level operation, so a read-scoped key suffices.
+- The replication link uses the plain gRPC transport; run it inside a trusted
+  network (mutual TLS for the link is a later milestone).
+- **R1 ships leader→follower replication only.** Serving reads from a follower and
+  rejecting writes to it, and promoting a follower after a leader loss, are the
+  next milestones (R2, R3). Until then, treat a follower as a warm standby: query
+  the leader, and re-bootstrap a follower (wipe its data dir and restart) if it
+  ever reports it has fallen too far behind.
+
+---
+
 ## TTL / expiring records
 
 Records can be given an expiry **deadline**, after which they vanish from reads

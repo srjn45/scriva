@@ -57,6 +57,19 @@ type Config struct {
 	// Watch
 	WatchBufferSize int `yaml:"watch_buffer_size"` // per-subscriber event buffer (default: 64)
 
+	// Replication (R1)
+	// ReplicateFrom, when set, runs this node as a follower that tails the leader
+	// at this gRPC address and applies its committed entries. Empty (the default)
+	// runs as a leader.
+	ReplicateFrom string `yaml:"replicate_from"`
+	// FollowerID is an optional label a follower reports to the leader, surfaced in
+	// ReplicationStatus. Defaults to the hostname when empty.
+	FollowerID string `yaml:"follower_id"`
+	// ReplicationRingSize is how many recent committed entries the leader keeps in
+	// memory so a briefly-disconnected follower can resume without a full
+	// re-snapshot (default: 8192). 0 disables leader-side replication.
+	ReplicationRingSize int `yaml:"replication_ring_size"`
+
 	// Logging
 	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
 	LogFormat string `yaml:"log_format"` // json|text (default: text)
@@ -90,9 +103,14 @@ func DefaultConfig() Config {
 		TxTimeout:       5 * time.Minute,
 		WatchBufferSize: engine.DefaultWatchBufferSize,
 		DefaultTTL:      0,
-		LogLevel:        "info",
-		LogFormat:       "text",
-		SlowQueryMs:     0,
+
+		ReplicateFrom:       "",
+		FollowerID:          "",
+		ReplicationRingSize: engine.DefaultReplicationRingSize,
+
+		LogLevel:    "info",
+		LogFormat:   "text",
+		SlowQueryMs: 0,
 
 		MaxConcurrentStreams: 0,
 		MaxInflight:          0,
@@ -113,6 +131,8 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		SyncInterval:    c.SyncInterval,
 		WatchBufferSize: c.WatchBufferSize,
 		DefaultTTL:      c.DefaultTTL,
+
+		ReplicationRingSize: c.ReplicationRingSize,
 	}
 }
 
@@ -136,9 +156,13 @@ type fileConfig struct {
 	TxTimeout       string         `yaml:"tx_timeout"`
 	WatchBufferSize int            `yaml:"watch_buffer_size"`
 	DefaultTTL      string         `yaml:"default_ttl"`
-	LogLevel        string         `yaml:"log_level"`
-	LogFormat       string         `yaml:"log_format"`
-	SlowQueryMs     int            `yaml:"slow_query_ms"`
+
+	ReplicateFrom       string `yaml:"replicate_from"`
+	FollowerID          string `yaml:"follower_id"`
+	ReplicationRingSize int    `yaml:"replication_ring_size"`
+	LogLevel            string `yaml:"log_level"`
+	LogFormat           string `yaml:"log_format"`
+	SlowQueryMs         int    `yaml:"slow_query_ms"`
 
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
 	MaxInflight          int     `yaml:"max_inflight"`
@@ -177,9 +201,14 @@ func LoadConfigFile(path string) (Config, error) {
 		TxTimeout:       defaults.TxTimeout.String(),
 		WatchBufferSize: defaults.WatchBufferSize,
 		DefaultTTL:      defaults.DefaultTTL.String(),
-		LogLevel:        defaults.LogLevel,
-		LogFormat:       defaults.LogFormat,
-		SlowQueryMs:     defaults.SlowQueryMs,
+
+		ReplicateFrom:       defaults.ReplicateFrom,
+		FollowerID:          defaults.FollowerID,
+		ReplicationRingSize: defaults.ReplicationRingSize,
+
+		LogLevel:    defaults.LogLevel,
+		LogFormat:   defaults.LogFormat,
+		SlowQueryMs: defaults.SlowQueryMs,
 
 		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
 		MaxInflight:          defaults.MaxInflight,
@@ -233,9 +262,14 @@ func LoadConfigFile(path string) (Config, error) {
 		TxTimeout:       txTimeout,
 		WatchBufferSize: fc.WatchBufferSize,
 		DefaultTTL:      defaultTTL,
-		LogLevel:        fc.LogLevel,
-		LogFormat:       fc.LogFormat,
-		SlowQueryMs:     fc.SlowQueryMs,
+
+		ReplicateFrom:       fc.ReplicateFrom,
+		FollowerID:          fc.FollowerID,
+		ReplicationRingSize: fc.ReplicationRingSize,
+
+		LogLevel:    fc.LogLevel,
+		LogFormat:   fc.LogFormat,
+		SlowQueryMs: fc.SlowQueryMs,
 
 		MaxConcurrentStreams: fc.MaxConcurrentStreams,
 		MaxInflight:          fc.MaxInflight,

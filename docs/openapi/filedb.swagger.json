@@ -98,6 +98,29 @@
         ]
       }
     },
+    "/v1/replication/status": {
+      "get": {
+        "summary": "ReplicationStatus reports the leader's current LSN and, for each connected\nfollower, the last LSN shipped to it and its lag. Used for observability and\nto read the leader's LSN watermark before bootstrapping a fresh follower.",
+        "operationId": "FileDB_ReplicationStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ReplicationStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/{collection}/aggregate": {
       "post": {
         "summary": "Aggregate computes count and numeric aggregations (sum/avg/min/max) over the\nlive records matching the same Filter as Find, optionally grouped by a field.\nIt server-streams one message per group; a plain (ungrouped) aggregation\nstreams a single message. Aggregation runs entirely in the engine — the\ncollection is never materialised on the client.",
@@ -1235,6 +1258,28 @@
         }
       }
     },
+    "v1FollowerStatus": {
+      "type": "object",
+      "properties": {
+        "followerId": {
+          "type": "string"
+        },
+        "ackedLsn": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The last LSN the leader has shipped to this follower. In R1's async model\nthis is the replicated (sent) LSN; a follower-acknowledged applied LSN lands\nwith R2's acknowledged-LSN channel."
+        },
+        "lag": {
+          "type": "string",
+          "format": "uint64",
+          "title": "leader_lsn - acked_lsn"
+        },
+        "connectedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "v1InsertManyResponse": {
       "type": "object",
       "properties": {
@@ -1340,6 +1385,23 @@
           "type": "string",
           "format": "uint64",
           "description": "Monotonic per-record revision, bumped on every write. Fresh records start\nat 1. Feed it to UpdateIfRev for optimistic-concurrency updates."
+        }
+      }
+    },
+    "v1ReplicationStatusResponse": {
+      "type": "object",
+      "properties": {
+        "leaderLsn": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The highest LSN the leader has committed and assigned."
+        },
+        "followers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1FollowerStatus"
+          }
         }
       }
     },

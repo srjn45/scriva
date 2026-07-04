@@ -66,13 +66,15 @@ var writeMethods = map[string]bool{
 // that methodRequiresWrite can distinguish a known read from an unknown method
 // (which is denied to read-only keys as a precaution).
 var readMethods = map[string]bool{
-	"ListCollections": true,
-	"FindById":        true,
-	"Find":            true,
-	"ListIndexes":     true,
-	"Watch":           true,
-	"CollectionStats": true,
-	"Snapshot":        true,
+	"ListCollections":   true,
+	"FindById":          true,
+	"Find":              true,
+	"ListIndexes":       true,
+	"Watch":             true,
+	"CollectionStats":   true,
+	"Snapshot":          true,
+	"Replicate":         true,
+	"ReplicationStatus": true,
 }
 
 // methodRequiresWrite reports whether the given gRPC full method name

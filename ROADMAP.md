@@ -60,6 +60,11 @@ seven client SDKs. See [CHANGELOG.md](CHANGELOG.md) for the per-release
 breakdown. The next arc is planned in
 [**docs/roadmap-v0.6.md**](docs/roadmap-v0.6.md).
 
+The **v0.8.0 Replication & HA** arc has begun: **R1 — leader→follower log
+shipping** has landed (async replication with a monotonic global LSN, snapshot
+bootstrap + stream catch-up, `--replicate-from` follower mode, and a
+`ReplicationStatus` RPC). R2 (read replicas) and R3 (manual failover) follow.
+
 ---
 
 ## What Is Done ✅

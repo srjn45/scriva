@@ -18,6 +18,14 @@ type DB struct {
 	defaultCfg  CollectionConfig
 	mu          sync.RWMutex
 	collections map[string]*Collection
+
+	// Replication (R1). broker is non-nil only when replication is enabled
+	// (CollectionConfig.ReplicationRingSize > 0); it sequences committed entries
+	// into a global LSN order and fans them out to followers. replMu guards the
+	// follower-side applied-LSN watermark.
+	broker     *replicationBroker
+	replMu     sync.Mutex
+	appliedLSN uint64
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -31,6 +39,9 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		defaultCfg:  cfg,
 		collections: make(map[string]*Collection),
 	}
+	// Build the replication broker (if enabled) and restore the LSN watermarks
+	// before opening any collection, so collections open with a live broker.
+	db.initReplication(cfg.ReplicationRingSize)
 	// Pre-open existing collections.
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
@@ -44,6 +55,7 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("db: open collection %q: %w", e.Name(), err)
 		}
+		col.broker = db.broker
 		db.collections[e.Name()] = col
 	}
 	return db, nil
@@ -62,6 +74,7 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	if err != nil {
 		return nil, err
 	}
+	col.broker = db.broker
 	db.collections[name] = col
 	return col, nil
 }
@@ -110,6 +123,7 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 	if err != nil {
 		return nil, fmt.Errorf("db: open collection %q: %w", name, err)
 	}
+	col.broker = db.broker
 	db.collections[name] = col
 	return col, nil
 }
@@ -177,6 +191,14 @@ func (db *DB) Close() error {
 	for name, col := range db.collections {
 		if err := col.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("db: close collection %q: %w", name, err)
+		}
+	}
+	// Persist the replication watermarks (leader LSN / follower applied LSN) so
+	// they survive a clean restart. Best-effort: apply is idempotent, so a lost
+	// write only widens the resync window.
+	if db.broker != nil || db.appliedLSN > 0 {
+		if err := db.persistReplState(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("db: persist replication state: %w", err)
 		}
 	}
 	return firstErr

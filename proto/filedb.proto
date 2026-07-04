@@ -202,6 +202,27 @@ service FileDB {
   // database. Restore by extracting it into a data directory. gRPC-only:
   // binary streaming does not map cleanly onto the REST gateway.
   rpc Snapshot(SnapshotRequest) returns (stream SnapshotChunk);
+
+  // --- Replication (R1) ---
+
+  // Replicate is the leader's log-shipping feed: a follower tails committed
+  // segment entries, each tagged with a monotonic global sequence number (LSN),
+  // and applies them through the normal write path to stay consistent. The
+  // follower asks to resume from the last LSN it applied (from_lsn); the leader
+  // streams every committed entry with lsn > from_lsn — first any recent history
+  // still buffered, then live writes as they commit. A follower too far behind
+  // for the leader's in-memory buffer gets FAILED_PRECONDITION and must
+  // re-bootstrap from a Snapshot. gRPC-only (binary, long-lived stream).
+  rpc Replicate(ReplicateRequest) returns (stream ReplicationRecord);
+
+  // ReplicationStatus reports the leader's current LSN and, for each connected
+  // follower, the last LSN shipped to it and its lag. Used for observability and
+  // to read the leader's LSN watermark before bootstrapping a fresh follower.
+  rpc ReplicationStatus(ReplicationStatusRequest) returns (ReplicationStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/replication/status"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -565,3 +586,59 @@ message CompactResponse { bool   ok         = 1; }
 
 message SnapshotRequest {}
 message SnapshotChunk   { bytes data = 1; }
+
+// ---------------------------------------------------------------------------
+// Replication (R1)
+// ---------------------------------------------------------------------------
+
+// ReplicationOp mirrors the committed segment operation being shipped. It is a
+// distinct enum from WatchOp because the replication feed carries the full
+// entry (revision, expiry, timestamp), not a filtered change notification.
+enum ReplicationOp {
+  REPLICATION_OP_UNSPECIFIED = 0;
+  REP_INSERT                 = 1;
+  REP_UPDATE                 = 2;
+  REP_DELETE                 = 3; // tombstone: data is unset
+}
+
+message ReplicateRequest {
+  // Resume point: the leader streams every committed entry whose lsn is strictly
+  // greater than from_lsn. A fresh follower that has bootstrapped from a Snapshot
+  // passes the leader LSN watermark it captured before the snapshot; a resuming
+  // follower passes the highest LSN it has durably applied.
+  uint64 from_lsn = 1;
+  // Opaque follower identity, surfaced in ReplicationStatus so an operator can
+  // tell followers apart. Not required for correctness.
+  string follower_id = 2;
+}
+
+// ReplicationRecord is one committed entry, shipped verbatim so the follower can
+// reproduce the leader's primary and secondary indexes identically.
+message ReplicationRecord {
+  uint64                    lsn        = 1;
+  string                    collection = 2;
+  ReplicationOp             op         = 3;
+  uint64                    id         = 4;
+  uint64                    rev        = 5; // record revision (1 on insert, +1 per update)
+  google.protobuf.Struct    data       = 6; // unset for REP_DELETE
+  int64                     expires_at = 7; // Unix-nano TTL deadline (0 = never)
+  google.protobuf.Timestamp ts         = 8; // the entry's commit timestamp
+}
+
+message ReplicationStatusRequest {}
+
+message ReplicationStatusResponse {
+  // The highest LSN the leader has committed and assigned.
+  uint64 leader_lsn = 1;
+  repeated FollowerStatus followers = 2;
+}
+
+message FollowerStatus {
+  string                    follower_id  = 1;
+  // The last LSN the leader has shipped to this follower. In R1's async model
+  // this is the replicated (sent) LSN; a follower-acknowledged applied LSN lands
+  // with R2's acknowledged-LSN channel.
+  uint64                    acked_lsn    = 2;
+  uint64                    lag          = 3; // leader_lsn - acked_lsn
+  google.protobuf.Timestamp connected_at = 4;
+}
