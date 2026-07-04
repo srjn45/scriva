@@ -65,12 +65,13 @@ try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
     // Insert
     long id = db.insert("users", Map.of("name", "Alice", "age", 30, "role", "admin"));
 
-    // Find by id
-    Map<String, Object> record = db.findById("users", id);
-    System.out.println(record); // {name=Alice, age=30.0, role=admin}
+    // Find by id — returns a Record value object
+    FileDBClient.Record record = db.findById("users", id);
+    System.out.println(record.get("name")); // Alice
+    System.out.println(record.id() + " rev=" + record.rev());
 
     // Find with filter
-    List<Map<String, Object>> admins = db.find("users",
+    List<FileDBClient.Record> admins = db.find("users",
             Map.of("field", "role", "op", "eq", "value", "admin"),
             0, 0, "name", false);
 
@@ -106,6 +107,25 @@ FileDBClient db = new FileDBClient(String host, int port, String apiKey, File tl
 
 ---
 
+### Records
+
+Reads return `FileDBClient.Record` value objects rather than raw maps:
+
+```java
+FileDBClient.Record r = db.findById("users", id);
+
+long   id           = r.id();            // server-assigned numeric id
+String key          = r.key();           // caller-supplied key ("" when keyless)
+boolean keyed       = r.hasKey();
+long   rev          = r.rev();           // per-record revision (starts at 1)
+Map<String,Object> data = r.data();      // the decoded document
+Object name         = r.get("name");     // shortcut for data().get("name")
+String created      = r.dateAdded();     // ISO-8601, may be null
+String modified     = r.dateModified();  // ISO-8601, may be null
+```
+
+---
+
 ### Collection management
 
 ```java
@@ -132,11 +152,11 @@ List<Long> ids = db.insertMany("col", List.of(
         Map.of("name", "Bob")
 ));
 
-// Find by id
-Map<String, Object> record = db.findById("col", id);
+// Find by id — returns a Record
+FileDBClient.Record record = db.findById("col", id);
 
 // Find with options (all optional — pass null/0/""/false to omit)
-List<Map<String, Object>> results = db.find(
+List<FileDBClient.Record> results = db.find(
         "col",
         filter,       // Map<String,Object> filter or null
         limit,        // int — 0 = no limit
@@ -145,8 +165,9 @@ List<Map<String, Object>> results = db.find(
         false         // boolean descending
 );
 
-// Convenience overload — returns all records with no filter or ordering
-List<Map<String, Object>> all = db.find("col");
+// Convenience overloads
+List<FileDBClient.Record> all      = db.find("col");
+List<FileDBClient.Record> filtered = db.find("col", filter);
 
 // Update — returns updated id
 long updatedId = db.update("col", id, Map.of("name", "new value"));
@@ -174,6 +195,131 @@ db.update("sessions", id, Map.of("token", "abc", "seen", true), 120L);
 
 `ttlSeconds = 0` inherits the collection's default TTL on insert; a value greater
 than 0 overrides it. Negative values are rejected by the server.
+
+---
+
+### Keyed CRUD, upsert & compare-and-swap (N1)
+
+Records can carry a caller-supplied string primary **key**, and every live record
+has a monotonic **revision** (`rev`, starting at 1, bumped on each write). These
+power keyed lookups and optimistic-concurrency updates.
+
+```java
+// Keyed insert — rejected with AlreadyExistsException if the key is taken
+long id = db.insertKeyed("users", "user:42", Map.of("name", "Alice"));
+// (equivalently: db.insert("users", data, 0L, "user:42"))
+
+// Upsert — insert under a key, or replace the existing keyed record (bumping rev)
+FileDBClient.Record r = db.upsert("users", "user:42", Map.of("name", "Alice", "plan", "pro"));
+
+// Fetch by key — raises NotFoundException when no live record carries the key
+FileDBClient.Record found = db.findByKey("users", "user:42");
+
+// Overwrite by key, preserving the key — returns id/key/rev/dateModified
+FileDBClient.UpdateResult upd = db.updateByKey("users", "user:42", Map.of("name", "Alice", "plan", "team"));
+System.out.println(upd.rev());
+
+// Delete by key — raises NotFoundException if absent
+boolean gone = db.deleteByKey("users", "user:42");
+
+// Compare-and-swap: apply the write only if the current rev matches expectedRev.
+// A stale rev (or missing key) is a clean no-op — never an error.
+FileDBClient.CasResult cas = db.updateIfRev("users", "user:42", r.rev(),
+        Map.of("name", "Alice", "plan", "enterprise"));
+if (cas.swapped()) {
+    System.out.println("new rev = " + cas.record().rev());
+}
+```
+
+Typed exceptions (both extend `FileDBException`, a `RuntimeException`):
+
+| gRPC status | Exception |
+|---|---|
+| `NOT_FOUND` | `NotFoundException` |
+| `ALREADY_EXISTS` | `AlreadyExistsException` |
+
+---
+
+### Field projection (N2)
+
+`findById`, `findByKey` and `find`/`findPage` accept an optional list of top-level
+fields to return in each record's `data`. `id`, `key` and `rev` are always
+included; unknown fields are silently omitted.
+
+```java
+FileDBClient.Record r = db.findById("users", id, List.of("name", "email"));
+FileDBClient.Record k = db.findByKey("users", "user:42", List.of("name"));
+
+// find/findPage take fields as the 6th argument (see below)
+```
+
+---
+
+### Keyset pagination & multi-field ordering (N3)
+
+`findPage` walks a collection page by page using an opaque keyset cursor —
+O(page) rather than O(offset). Ordering is a list of `FileDBClient.Order` sort
+keys applied lexicographically; the record id is always the final tiebreaker, so
+pagination is stable.
+
+```java
+List<FileDBClient.Order> order = List.of(
+        FileDBClient.Order.asc("team"),
+        FileDBClient.Order.desc("score")
+);
+
+String token = "";
+do {
+    FileDBClient.Page page = db.findPage(
+            "scores",
+            null,        // filter
+            50,          // limit (page size)
+            0,           // offset — keep 0 with a page token
+            order,       // multi-field ordering
+            null,        // fields projection (N2), or null for all
+            token        // keyset cursor, "" for the first page
+    );
+    for (FileDBClient.Record r : page.records()) {
+        // ...
+    }
+    token = page.nextPageToken();   // "" once the last page is reached
+} while (!token.isEmpty());
+```
+
+`find(collection, filter, limit, offset, List<Order>, fields, pageToken)` is the
+same call when you only want the records and not the next-page cursor. Keep the
+same filter, ordering and limit on every page.
+
+---
+
+### Aggregations (N4)
+
+```java
+// Count all live records, or only those matching a filter
+long total   = db.count("orders");
+long shipped = db.count("orders", Map.of("field", "status", "op", "eq", "value", "shipped"));
+
+// Group by a field with numeric aggregates over another field
+List<FileDBClient.AggResult> byRegion = db.groupBy(
+        "orders",
+        "region",                             // group-by field
+        List.of("sum", "avg", "min", "max"),  // which aggregations
+        "total",                              // numeric metric field
+        null                                  // optional filter
+);
+for (FileDBClient.AggResult g : byRegion) {
+    System.out.printf("%s: count=%d sum=%.2f avg=%.2f%n",
+            g.group(), g.count(), g.sum(), g.avg());
+}
+
+// Or call aggregate directly (group() is null for the whole-set group)
+List<FileDBClient.AggResult> whole = db.aggregate(
+        "orders", List.of("sum"), "total", "" /* no group-by */, null);
+```
+
+Each `AggResult` carries `group()`, `count()` and `numeric()`; the `sum()`,
+`avg()`, `min()`, `max()` accessors are meaningful only when `numeric()` is true
+(i.e. the group held at least one numeric value for the aggregate field).
 
 ---
 

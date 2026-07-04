@@ -1,6 +1,13 @@
 package com.srjn45.filedbv2.examples;
 
 import com.srjn45.filedbv2.FileDBClient;
+import com.srjn45.filedbv2.FileDBClient.AggResult;
+import com.srjn45.filedbv2.FileDBClient.CasResult;
+import com.srjn45.filedbv2.FileDBClient.Order;
+import com.srjn45.filedbv2.FileDBClient.Page;
+import com.srjn45.filedbv2.FileDBClient.Record;
+import com.srjn45.filedbv2.FileDBClient.UpdateResult;
+import com.srjn45.filedbv2.NotFoundException;
 import filedb.v1.Filedb.WatchEvent;
 import io.grpc.stub.StreamObserver;
 
@@ -10,7 +17,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * End-to-end example: connect, create a collection, insert, query, update, delete, watch.
+ * End-to-end example: connect, create a collection, insert, query, update, delete,
+ * plus the v0.7.0 wire API — keyed CRUD & CAS (N1), field projection (N2), keyset
+ * pagination + multi-field ordering (N3), and aggregations (N4) — and watch.
  *
  * Run with:
  *   ./gradlew run -PmainClass=com.srjn45.filedbv2.examples.BasicExample
@@ -27,6 +36,8 @@ public class BasicExample {
 
         try (FileDBClient db = new FileDBClient(host, port, apiKey)) {
             runBasicExample(db);
+            runKeyedExample(db);
+            runPagingAndAggExample(db);
             runWatchExample(db);
         }
     }
@@ -60,19 +71,24 @@ public class BasicExample {
 
         // ---- Find by id ----
         System.out.println("\n=== FindById ===");
-        Map<String, Object> record = db.findById(col, id1);
+        Record record = db.findById(col, id1);
         System.out.println("FindById(" + id1 + "): " + record);
+
+        // ---- Field projection (N2) ----
+        System.out.println("\n=== FindById with projection (name only) ===");
+        Record projected = db.findById(col, id1, List.of("name"));
+        System.out.println("Projected data: " + projected.data());
 
         // ---- Find with filter ----
         System.out.println("\n=== Find (role=user) ===");
-        List<Map<String, Object>> users = db.find(col,
+        List<Record> users = db.find(col,
                 Map.of("field", "role", "op", "eq", "value", "user"),
                 0, 0, "name", false);
         users.forEach(r -> System.out.println("  " + r));
 
         // ---- Find with AND filter ----
         System.out.println("\n=== Find (age > 25 AND role = user) ===");
-        List<Map<String, Object>> filtered = db.find(col,
+        List<Record> filtered = db.find(col,
                 Map.of("and", List.of(
                         Map.of("field", "age",  "op", "gt",  "value", "25"),
                         Map.of("field", "role", "op", "eq",  "value", "user")
@@ -100,14 +116,6 @@ public class BasicExample {
         boolean compacted = db.compact(col);
         System.out.println("Compacted: " + compacted);
 
-        // ---- Per-record TTL ----
-        System.out.println("\n=== Per-record TTL ===");
-        long ttlId = db.insert(col, Map.of("name", "Ephemeral", "role", "temp"), 3600L);
-        System.out.println("Inserted #" + ttlId + " with a 3600s TTL");
-        // ttlSeconds = 0 (default overload) is sticky — keeps the existing deadline
-        db.update(col, ttlId, Map.of("name", "Ephemeral", "role", "temp", "touched", true));
-        System.out.println("Updated the TTL record (deadline preserved)");
-
         // ---- Snapshot (whole-database backup) ----
         System.out.println("\n=== Snapshot ===");
         try {
@@ -124,6 +132,97 @@ public class BasicExample {
         boolean dropped = db.dropCollection(col);
         System.out.println("Dropped: " + dropped);
         System.out.println("Collections after drop: " + db.listCollections());
+    }
+
+    /** Keyed CRUD, upsert and optimistic concurrency (N1). */
+    private static void runKeyedExample(FileDBClient db) {
+        final String col = "keyed_java";
+        db.createCollection(col);
+
+        System.out.println("\n=== Keyed CRUD (N1) ===");
+
+        // Upsert inserts on first call, replaces (bumping rev) thereafter.
+        Record created = db.upsert(col, "user:1", Map.of("name", "Alice", "plan", "free"));
+        System.out.println("Upsert insert: " + created + " (rev=" + created.rev() + ")");
+
+        Record replaced = db.upsert(col, "user:1", Map.of("name", "Alice", "plan", "pro"));
+        System.out.println("Upsert replace: " + replaced + " (rev=" + replaced.rev() + ")");
+
+        // Fetch by key.
+        Record fetched = db.findByKey(col, "user:1");
+        System.out.println("FindByKey: " + fetched);
+
+        // Compare-and-swap: only applies when the expected rev still matches.
+        CasResult ok = db.updateIfRev(col, "user:1", replaced.rev(),
+                Map.of("name", "Alice", "plan", "enterprise"));
+        System.out.println("CAS (fresh rev): swapped=" + ok.swapped() + " -> " + ok.record());
+
+        CasResult stale = db.updateIfRev(col, "user:1", 1L,
+                Map.of("name", "Alice", "plan", "downgrade"));
+        System.out.println("CAS (stale rev): swapped=" + stale.swapped() + " (no-op)");
+
+        // Update / delete by key.
+        UpdateResult upd = db.updateByKey(col, "user:1", Map.of("name", "Alice", "plan", "team"));
+        System.out.println("UpdateByKey: id=" + upd.id() + " key=" + upd.key() + " rev=" + upd.rev());
+
+        // Keyed insert rejects a duplicate key.
+        try {
+            db.insertKeyed(col, "user:1", Map.of("name", "clash"));
+        } catch (com.srjn45.filedbv2.AlreadyExistsException e) {
+            System.out.println("Keyed insert on a taken key -> AlreadyExistsException (expected)");
+        }
+
+        boolean gone = db.deleteByKey(col, "user:1");
+        System.out.println("DeleteByKey: " + gone);
+        try {
+            db.findByKey(col, "user:1");
+        } catch (NotFoundException e) {
+            System.out.println("FindByKey after delete -> NotFoundException (expected)");
+        }
+
+        db.dropCollection(col);
+    }
+
+    /** Keyset pagination + multi-field ordering (N3) and aggregations (N4). */
+    private static void runPagingAndAggExample(FileDBClient db) {
+        final String col = "analytics_java";
+        db.createCollection(col);
+
+        db.insertMany(col, List.of(
+                Map.of("name", "Alice", "team", "red",  "score", 10),
+                Map.of("name", "Bob",   "team", "blue", "score", 20),
+                Map.of("name", "Carol", "team", "red",  "score", 30),
+                Map.of("name", "Dave",  "team", "blue", "score", 40),
+                Map.of("name", "Eve",   "team", "red",  "score", 50)
+        ));
+
+        // ---- Keyset pagination (N3): page by page with a stable multi-field sort ----
+        System.out.println("\n=== Keyset pagination + multi-field order (N3) ===");
+        List<Order> order = List.of(Order.asc("team"), Order.desc("score"));
+        String token = "";
+        int page = 0;
+        do {
+            Page p = db.findPage(col, null, 2, 0, order, null, token);
+            System.out.println("Page " + (++page) + ":");
+            p.records().forEach(r -> System.out.println("  " + r.get("team") + " " + r.get("score")));
+            token = p.nextPageToken();
+        } while (!token.isEmpty());
+
+        // ---- Aggregations (N4) ----
+        System.out.println("\n=== Aggregations (N4) ===");
+        System.out.println("count(all) = " + db.count(col));
+        System.out.println("count(team=red) = "
+                + db.count(col, Map.of("field", "team", "op", "eq", "value", "red")));
+
+        List<AggResult> byTeam = db.groupBy(col, "team",
+                List.of("sum", "avg", "min", "max"), "score", null);
+        System.out.println("group by team (sum/avg/min/max of score):");
+        for (AggResult g : byTeam) {
+            System.out.printf("  %s -> count=%d sum=%.0f avg=%.1f min=%.0f max=%.0f%n",
+                    g.group(), g.count(), g.sum(), g.avg(), g.min(), g.max());
+        }
+
+        db.dropCollection(col);
     }
 
     private static void runWatchExample(FileDBClient db) throws InterruptedException {

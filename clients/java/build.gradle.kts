@@ -2,6 +2,7 @@ import com.google.protobuf.gradle.*
 
 plugins {
     `java-library`
+    application
     id("com.google.protobuf") version "0.9.4"
 }
 
@@ -15,6 +16,14 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// `gradle run -PmainClass=com.srjn45.filedbv2.examples.BasicExample`
+application {
+    mainClass.set(
+        (project.findProperty("mainClass") as String?)
+            ?: "com.srjn45.filedbv2.examples.BasicExample"
+    )
 }
 
 val grpcVersion = "1.64.0"
