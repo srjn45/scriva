@@ -7,7 +7,7 @@ The public surface is the :class:`FileDB` client class::
     db = FileDB("localhost", 5433, "dev-key")
 """
 
-from .client import FileDB
+from .client import AlreadyExistsError, FileDB, FileDBError, NotFoundError
 
-__all__ = ["FileDB"]
-__version__ = "0.1.0"
+__all__ = ["FileDB", "FileDBError", "NotFoundError", "AlreadyExistsError"]
+__version__ = "0.7.0"

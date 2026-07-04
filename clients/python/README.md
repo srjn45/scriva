@@ -120,9 +120,15 @@ records: list[dict] = db.find(
     filter={"field": "age", "op": "gte", "value": "18"},
     limit=0,            # 0 = no limit
     offset=0,
-    order_by="age",
+    order_by="age",     # scalar (deprecated) OR a multi-field list — see below
     descending=False,
+    fields=None,        # projection: only these top-level fields (id/key/rev always returned)
+    page_token="",      # keyset cursor from a previous find_page (see Pagination)
 )
+
+# Insert one record under a caller-supplied string key (keyed create) — a key
+# already held by a live record raises AlreadyExistsError.
+rid = db.insert("col", {"field": "value"}, key="user:alice")
 
 # Update — returns the updated ID
 rid = db.update("col", rid, {"field": "new value"})
@@ -141,10 +147,126 @@ Record dict shape:
 {
     "id": "1",                       # uint64 returned as a string
     "data": {...},                   # the document
+    "key": "user:alice",             # caller-supplied string key, present when set
+    "rev": 1,                        # per-record revision, bumped on every write
     "date_added": "2026-06-29T...",  # ISO-8601, present when set
     "date_modified": "2026-06-29T...",
 }
 ```
+
+### Field projection
+
+Pass `fields=[...]` to `find`, `find_page`, `find_by_id` or `find_by_key` to
+return only those top-level fields in `data`. `id`, `key` and `rev` are always
+included; an unknown field is silently omitted; an empty/omitted list returns the
+full record.
+
+```python
+db.find("col", fields=["name", "email"])
+db.find_by_id("col", rid, fields=["name"])
+```
+
+### Sorting & keyset pagination
+
+`order_by` accepts either a single field name (the deprecated scalar sort, paired
+with `descending=`) or a list for a stable multi-field sort — each item a field
+name, a `(field, desc)` pair, or a `{"field": ..., "desc": ...}` mapping:
+
+```python
+db.find("col", order_by=[("role", False), ("age", True)])   # role asc, age desc
+db.find("col", order_by=["name"])                           # single field, asc
+```
+
+`find_page` returns `(records, next_page_token)` for O(page) keyset pagination.
+Feed the token back as `page_token=` and keep the same filter, ordering and
+limit on every page; an empty token means the last page was reached:
+
+```python
+page, token = db.find_page("col", limit=100, order_by="age")
+while token:
+    page, token = db.find_page("col", limit=100, order_by="age", page_token=token)
+```
+
+### Keyed CRUD, upsert & compare-and-swap
+
+Records can carry a caller-supplied string **key** and a monotonic **rev**
+(revision), enabling natural keys, upsert and optimistic-concurrency updates.
+
+```python
+# Upsert — insert under key, or replace the existing keyed record (bumps rev).
+rec: dict = db.upsert("col", "user:alice", {"name": "Alice", "score": 10})
+
+# Fetch / update / delete by key. A missing key raises NotFoundError.
+rec: dict  = db.find_by_key("col", "user:alice", fields=None)
+info: dict = db.update_by_key("col", "user:alice", {"name": "Alice", "score": 20})
+ok: bool   = db.delete_by_key("col", "user:alice")
+
+# Keyed create via insert(..., key=...) — a duplicate key raises AlreadyExistsError.
+rid = db.insert("col", {"name": "Bob"}, key="user:bob")
+
+# Compare-and-swap: applies only if the record's current rev == expected_rev.
+# A stale rev (or missing key) is a clean no-op — swapped=False, never an error.
+res = db.update_if_rev("col", "user:alice", expected_rev=2, data={"score": 30})
+if res["swapped"]:
+    print("new rev:", res["record"]["rev"])
+```
+
+`update_by_key` returns `{"id", "key", "rev", "date_modified"}`; `update_if_rev`
+returns `{"swapped": bool, "record": dict | None}` (record set only on success).
+
+### Aggregations
+
+`Aggregate` computes a count plus optional numeric aggregations (`sum`/`avg`/
+`min`/`max`), honouring the same filter as `find`, optionally grouped by a field.
+
+```python
+# Count matching records.
+n: int = db.count("col")
+n = db.count("col", {"field": "role", "op": "eq", "value": "admin"})
+
+# Group by a field, aggregating a numeric field per group.
+groups = db.group_by(
+    "col", "role",
+    aggregations=["sum", "avg", "min", "max"],
+    metric="age",
+)
+# [{"group": "admin", "count": 2, "numeric": True,
+#   "sum": 61.0, "avg": 30.5, "min": 30.0, "max": 35.0}, ...]
+
+# Full form — mirrors the proto (group_by="" aggregates the whole set).
+groups = db.aggregate(
+    "col",
+    aggregations=["sum", "avg"],
+    field="age",          # numeric field for sum/avg/min/max
+    group_by="role",      # optional group-by field
+    filter={"field": "age", "op": "gte", "value": "18"},
+)
+```
+
+Each group dict carries `group` (the group value, `None` for the whole-set group
+or records missing the field), `count`, and `numeric` — `sum`/`avg`/`min`/`max`
+are present only when `numeric` is `True`.
+
+### Errors
+
+Keyed operations map the engine's gRPC status codes onto typed exceptions
+(exported from `filedbv2`):
+
+```python
+from filedbv2 import FileDB, NotFoundError, AlreadyExistsError
+
+try:
+    db.insert("col", {"name": "Bob"}, key="user:bob")   # duplicate key
+except AlreadyExistsError:
+    ...
+
+try:
+    db.find_by_key("col", "missing")                    # or update_by_key/delete_by_key
+except NotFoundError:
+    ...
+```
+
+Both derive from `FileDBError`. Other gRPC failures propagate as `grpc.RpcError`.
 
 ### Secondary indexes
 
@@ -172,7 +294,8 @@ ok: bool   = db.rollback_tx(tx_id)
 ```python
 for event in db.watch("col"):
     print(event["op"], event["record"]["id"], event["record"]["data"])
-    # event["op"] is "INSERTED" | "UPDATED" | "DELETED"
+    # event["op"] is "INSERTED" | "UPDATED" | "DELETED" | "OVERFLOW"
+    # OVERFLOW signals dropped events (the subscriber fell behind); resync.
 ```
 
 With an optional filter — only matching events are delivered:

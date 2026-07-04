@@ -8,7 +8,7 @@ Run:
     python examples/test_basic.py
 """
 
-from filedbv2 import FileDB
+from filedbv2 import AlreadyExistsError, FileDB, NotFoundError
 
 
 def main() -> None:
@@ -45,6 +45,26 @@ def main() -> None:
         "test_py", {"field": "role", "op": "eq", "value": "admin"}, order_by="name"
     )
     print("Admins:", [f"{r['id']}: {r['data']}" for r in admins])
+
+    # --- Projection (N2): only return selected fields ---
+    print("\n=== Find with projection (fields=['name']) ===")
+    projected = db.find("test_py", fields=["name"])
+    print("Projected:", [r["data"] for r in projected])
+
+    # --- Multi-field sort (N3) ---
+    print("\n=== Find (multi-field order_by: role asc, age desc) ===")
+    sorted_recs = db.find(
+        "test_py", order_by=[("role", False), ("age", True)]
+    )
+    print("Sorted:", [(r["data"].get("role"), r["data"].get("age")) for r in sorted_recs])
+
+    # --- Keyset pagination (N3) ---
+    print("\n=== Keyset pagination (limit=2, order_by=age) ===")
+    page, token = db.find_page("test_py", limit=2, order_by="age")
+    print("Page 1:", [r["data"].get("name") for r in page])
+    while token:
+        page, token = db.find_page("test_py", limit=2, order_by="age", page_token=token)
+        print("Next page:", [r["data"].get("name") for r in page])
 
     # --- AND filter ---
     print("\n=== Find (AND: role=user AND age>=25) ===")
@@ -92,6 +112,60 @@ def main() -> None:
 
     tx_id2 = db.begin_tx("test_py")
     print("Rolled back:", db.rollback_tx(tx_id2))
+
+    # --- Keyed CRUD, Upsert & CAS (N1) ---
+    print("\n=== Keyed CRUD (N1) ===")
+    rec = db.upsert("test_py", "user:alice", {"name": "Alice", "score": 10})
+    print("Upsert (insert):", rec)  # rev == 1
+    rec = db.upsert("test_py", "user:alice", {"name": "Alice", "score": 20})
+    print("Upsert (replace):", rec)  # rev == 2
+
+    print("FindByKey:", db.find_by_key("test_py", "user:alice"))
+
+    updated = db.update_by_key("test_py", "user:alice", {"name": "Alice", "score": 30})
+    print("UpdateByKey:", updated)  # rev == 3
+
+    # Keyed create — a duplicate key is rejected with AlreadyExistsError.
+    kid = db.insert("test_py", {"name": "Frank"}, key="user:frank")
+    print("Keyed insert id:", kid)
+    try:
+        db.insert("test_py", {"name": "Frank II"}, key="user:frank")
+    except AlreadyExistsError as e:
+        print("Duplicate key rejected as expected:", type(e).__name__)
+
+    # Compare-and-swap on rev.
+    current_rev = db.find_by_key("test_py", "user:alice")["rev"]
+    cas = db.update_if_rev(
+        "test_py", "user:alice", current_rev, {"name": "Alice", "score": 40}
+    )
+    print("CAS (fresh rev) swapped:", cas["swapped"], "-> rev", cas["record"]["rev"])
+    stale = db.update_if_rev(
+        "test_py", "user:alice", current_rev, {"name": "Alice", "score": 99}
+    )
+    print("CAS (stale rev) swapped:", stale["swapped"])  # False, clean no-op
+
+    print("DeleteByKey:", db.delete_by_key("test_py", "user:frank"))
+    try:
+        db.find_by_key("test_py", "user:frank")
+    except NotFoundError as e:
+        print("Missing key raises as expected:", type(e).__name__)
+
+    # --- Aggregations (N4) ---
+    print("\n=== Aggregations (N4) ===")
+    print("Total count:", db.count("test_py"))
+    print(
+        "Admin count:",
+        db.count("test_py", {"field": "role", "op": "eq", "value": "admin"}),
+    )
+    by_role = db.group_by(
+        "test_py", "role", aggregations=["sum", "avg", "min", "max"], metric="age"
+    )
+    for g in by_role:
+        print(f"  role={g['group']!r} count={g['count']} numeric={g['numeric']}", end="")
+        if g["numeric"]:
+            print(f" sum={g['sum']} avg={g['avg']:.1f} min={g['min']} max={g['max']}")
+        else:
+            print()
 
     # --- Stats ---
     print("\n=== Stats ===")

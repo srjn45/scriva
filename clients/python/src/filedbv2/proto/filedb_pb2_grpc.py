@@ -84,6 +84,31 @@ class FileDBStub:
                 request_serializer=filedb__pb2.DeleteRequest.SerializeToString,
                 response_deserializer=filedb__pb2.DeleteResponse.FromString,
                 _registered_method=True)
+        self.Upsert = channel.unary_unary(
+                '/filedb.v1.FileDB/Upsert',
+                request_serializer=filedb__pb2.UpsertRequest.SerializeToString,
+                response_deserializer=filedb__pb2.UpsertResponse.FromString,
+                _registered_method=True)
+        self.FindByKey = channel.unary_unary(
+                '/filedb.v1.FileDB/FindByKey',
+                request_serializer=filedb__pb2.FindByKeyRequest.SerializeToString,
+                response_deserializer=filedb__pb2.FindResponse.FromString,
+                _registered_method=True)
+        self.UpdateByKey = channel.unary_unary(
+                '/filedb.v1.FileDB/UpdateByKey',
+                request_serializer=filedb__pb2.UpdateByKeyRequest.SerializeToString,
+                response_deserializer=filedb__pb2.UpdateResponse.FromString,
+                _registered_method=True)
+        self.DeleteByKey = channel.unary_unary(
+                '/filedb.v1.FileDB/DeleteByKey',
+                request_serializer=filedb__pb2.DeleteByKeyRequest.SerializeToString,
+                response_deserializer=filedb__pb2.DeleteResponse.FromString,
+                _registered_method=True)
+        self.UpdateIfRev = channel.unary_unary(
+                '/filedb.v1.FileDB/UpdateIfRev',
+                request_serializer=filedb__pb2.UpdateIfRevRequest.SerializeToString,
+                response_deserializer=filedb__pb2.UpdateIfRevResponse.FromString,
+                _registered_method=True)
         self.EnsureIndex = channel.unary_unary(
                 '/filedb.v1.FileDB/EnsureIndex',
                 request_serializer=filedb__pb2.EnsureIndexRequest.SerializeToString,
@@ -118,6 +143,11 @@ class FileDBStub:
                 '/filedb.v1.FileDB/Watch',
                 request_serializer=filedb__pb2.WatchRequest.SerializeToString,
                 response_deserializer=filedb__pb2.WatchEvent.FromString,
+                _registered_method=True)
+        self.Aggregate = channel.unary_stream(
+                '/filedb.v1.FileDB/Aggregate',
+                request_serializer=filedb__pb2.AggregateRequest.SerializeToString,
+                response_deserializer=filedb__pb2.AggregateResponse.FromString,
                 _registered_method=True)
         self.CollectionStats = channel.unary_unary(
                 '/filedb.v1.FileDB/CollectionStats',
@@ -201,6 +231,55 @@ class FileDBServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Upsert(self, request, context):
+        """--- Keyed CRUD, Upsert & compare-and-swap (N1) ---
+
+        These map straight onto the embedded engine's keyed operations, giving
+        network clients natural (caller-supplied) string keys, upsert, and
+        optimistic-concurrency updates keyed on a per-record revision (`rev`).
+
+        Upsert inserts data under key if no live record carries it, or replaces the
+        existing record's data if one does — atomically. Returns the resulting
+        record with its (incremented on replace) revision. This is the keyed-insert
+        path: there is no separate InsertWithKey RPC.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FindByKey(self, request, context):
+        """FindByKey returns the record carrying the caller-supplied string key.
+        A missing key yields NOT_FOUND.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateByKey(self, request, context):
+        """UpdateByKey overwrites the record carrying key, preserving the key itself.
+        A missing key yields NOT_FOUND.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteByKey(self, request, context):
+        """DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateIfRev(self, request, context):
+        """UpdateIfRev conditionally updates the record carrying key: the write is
+        applied only if the record's current revision equals expected_rev. A stale
+        revision (or a missing key) is a clean no-op reported as swapped=false, not
+        an error.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def EnsureIndex(self, request, context):
         """--- Secondary indexes ---
 
@@ -244,6 +323,19 @@ class FileDBServicer:
     def Watch(self, request, context):
         """--- Watch (server-streaming change feed) ---
 
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Aggregate(self, request, context):
+        """--- Aggregations (N4) ---
+
+        Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+        live records matching the same Filter as Find, optionally grouped by a field.
+        It server-streams one message per group; a plain (ungrouped) aggregation
+        streams a single message. Aggregation runs entirely in the engine — the
+        collection is never materialised on the client.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -324,6 +416,31 @@ def add_FileDBServicer_to_server(servicer, server):
                     request_deserializer=filedb__pb2.DeleteRequest.FromString,
                     response_serializer=filedb__pb2.DeleteResponse.SerializeToString,
             ),
+            'Upsert': grpc.unary_unary_rpc_method_handler(
+                    servicer.Upsert,
+                    request_deserializer=filedb__pb2.UpsertRequest.FromString,
+                    response_serializer=filedb__pb2.UpsertResponse.SerializeToString,
+            ),
+            'FindByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.FindByKey,
+                    request_deserializer=filedb__pb2.FindByKeyRequest.FromString,
+                    response_serializer=filedb__pb2.FindResponse.SerializeToString,
+            ),
+            'UpdateByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateByKey,
+                    request_deserializer=filedb__pb2.UpdateByKeyRequest.FromString,
+                    response_serializer=filedb__pb2.UpdateResponse.SerializeToString,
+            ),
+            'DeleteByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteByKey,
+                    request_deserializer=filedb__pb2.DeleteByKeyRequest.FromString,
+                    response_serializer=filedb__pb2.DeleteResponse.SerializeToString,
+            ),
+            'UpdateIfRev': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateIfRev,
+                    request_deserializer=filedb__pb2.UpdateIfRevRequest.FromString,
+                    response_serializer=filedb__pb2.UpdateIfRevResponse.SerializeToString,
+            ),
             'EnsureIndex': grpc.unary_unary_rpc_method_handler(
                     servicer.EnsureIndex,
                     request_deserializer=filedb__pb2.EnsureIndexRequest.FromString,
@@ -358,6 +475,11 @@ def add_FileDBServicer_to_server(servicer, server):
                     servicer.Watch,
                     request_deserializer=filedb__pb2.WatchRequest.FromString,
                     response_serializer=filedb__pb2.WatchEvent.SerializeToString,
+            ),
+            'Aggregate': grpc.unary_stream_rpc_method_handler(
+                    servicer.Aggregate,
+                    request_deserializer=filedb__pb2.AggregateRequest.FromString,
+                    response_serializer=filedb__pb2.AggregateResponse.SerializeToString,
             ),
             'CollectionStats': grpc.unary_unary_rpc_method_handler(
                     servicer.CollectionStats,
@@ -634,6 +756,141 @@ class FileDB:
             _registered_method=True)
 
     @staticmethod
+    def Upsert(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/Upsert',
+            filedb__pb2.UpsertRequest.SerializeToString,
+            filedb__pb2.UpsertResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FindByKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/FindByKey',
+            filedb__pb2.FindByKeyRequest.SerializeToString,
+            filedb__pb2.FindResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateByKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/UpdateByKey',
+            filedb__pb2.UpdateByKeyRequest.SerializeToString,
+            filedb__pb2.UpdateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteByKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/DeleteByKey',
+            filedb__pb2.DeleteByKeyRequest.SerializeToString,
+            filedb__pb2.DeleteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateIfRev(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/filedb.v1.FileDB/UpdateIfRev',
+            filedb__pb2.UpdateIfRevRequest.SerializeToString,
+            filedb__pb2.UpdateIfRevResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def EnsureIndex(request,
             target,
             options=(),
@@ -812,6 +1069,33 @@ class FileDB:
             '/filedb.v1.FileDB/Watch',
             filedb__pb2.WatchRequest.SerializeToString,
             filedb__pb2.WatchEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Aggregate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/filedb.v1.FileDB/Aggregate',
+            filedb__pb2.AggregateRequest.SerializeToString,
+            filedb__pb2.AggregateResponse.FromString,
             options,
             channel_credentials,
             insecure,
