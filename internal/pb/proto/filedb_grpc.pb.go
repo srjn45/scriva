@@ -28,6 +28,11 @@ const (
 	FileDB_Find_FullMethodName             = "/filedb.v1.FileDB/Find"
 	FileDB_Update_FullMethodName           = "/filedb.v1.FileDB/Update"
 	FileDB_Delete_FullMethodName           = "/filedb.v1.FileDB/Delete"
+	FileDB_Upsert_FullMethodName           = "/filedb.v1.FileDB/Upsert"
+	FileDB_FindByKey_FullMethodName        = "/filedb.v1.FileDB/FindByKey"
+	FileDB_UpdateByKey_FullMethodName      = "/filedb.v1.FileDB/UpdateByKey"
+	FileDB_DeleteByKey_FullMethodName      = "/filedb.v1.FileDB/DeleteByKey"
+	FileDB_UpdateIfRev_FullMethodName      = "/filedb.v1.FileDB/UpdateIfRev"
 	FileDB_EnsureIndex_FullMethodName      = "/filedb.v1.FileDB/EnsureIndex"
 	FileDB_DropIndex_FullMethodName        = "/filedb.v1.FileDB/DropIndex"
 	FileDB_ListIndexes_FullMethodName      = "/filedb.v1.FileDB/ListIndexes"
@@ -54,6 +59,24 @@ type FileDBClient interface {
 	Find(ctx context.Context, in *FindRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FindResponse], error)
 	Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// Upsert inserts data under key if no live record carries it, or replaces the
+	// existing record's data if one does — atomically. Returns the resulting
+	// record with its (incremented on replace) revision. This is the keyed-insert
+	// path: there is no separate InsertWithKey RPC.
+	Upsert(ctx context.Context, in *UpsertRequest, opts ...grpc.CallOption) (*UpsertResponse, error)
+	// FindByKey returns the record carrying the caller-supplied string key.
+	// A missing key yields NOT_FOUND.
+	FindByKey(ctx context.Context, in *FindByKeyRequest, opts ...grpc.CallOption) (*FindResponse, error)
+	// UpdateByKey overwrites the record carrying key, preserving the key itself.
+	// A missing key yields NOT_FOUND.
+	UpdateByKey(ctx context.Context, in *UpdateByKeyRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
+	// DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+	DeleteByKey(ctx context.Context, in *DeleteByKeyRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// UpdateIfRev conditionally updates the record carrying key: the write is
+	// applied only if the record's current revision equals expected_rev. A stale
+	// revision (or a missing key) is a clean no-op reported as swapped=false, not
+	// an error.
+	UpdateIfRev(ctx context.Context, in *UpdateIfRevRequest, opts ...grpc.CallOption) (*UpdateIfRevResponse, error)
 	EnsureIndex(ctx context.Context, in *EnsureIndexRequest, opts ...grpc.CallOption) (*EnsureIndexResponse, error)
 	DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error)
 	ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error)
@@ -172,6 +195,56 @@ func (c *fileDBClient) Delete(ctx context.Context, in *DeleteRequest, opts ...gr
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteResponse)
 	err := c.cc.Invoke(ctx, FileDB_Delete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) Upsert(ctx context.Context, in *UpsertRequest, opts ...grpc.CallOption) (*UpsertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpsertResponse)
+	err := c.cc.Invoke(ctx, FileDB_Upsert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) FindByKey(ctx context.Context, in *FindByKeyRequest, opts ...grpc.CallOption) (*FindResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FindResponse)
+	err := c.cc.Invoke(ctx, FileDB_FindByKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) UpdateByKey(ctx context.Context, in *UpdateByKeyRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateResponse)
+	err := c.cc.Invoke(ctx, FileDB_UpdateByKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) DeleteByKey(ctx context.Context, in *DeleteByKeyRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteResponse)
+	err := c.cc.Invoke(ctx, FileDB_DeleteByKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) UpdateIfRev(ctx context.Context, in *UpdateIfRevRequest, opts ...grpc.CallOption) (*UpdateIfRevResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateIfRevResponse)
+	err := c.cc.Invoke(ctx, FileDB_UpdateIfRev_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -310,6 +383,24 @@ type FileDBServer interface {
 	Find(*FindRequest, grpc.ServerStreamingServer[FindResponse]) error
 	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	// Upsert inserts data under key if no live record carries it, or replaces the
+	// existing record's data if one does — atomically. Returns the resulting
+	// record with its (incremented on replace) revision. This is the keyed-insert
+	// path: there is no separate InsertWithKey RPC.
+	Upsert(context.Context, *UpsertRequest) (*UpsertResponse, error)
+	// FindByKey returns the record carrying the caller-supplied string key.
+	// A missing key yields NOT_FOUND.
+	FindByKey(context.Context, *FindByKeyRequest) (*FindResponse, error)
+	// UpdateByKey overwrites the record carrying key, preserving the key itself.
+	// A missing key yields NOT_FOUND.
+	UpdateByKey(context.Context, *UpdateByKeyRequest) (*UpdateResponse, error)
+	// DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+	DeleteByKey(context.Context, *DeleteByKeyRequest) (*DeleteResponse, error)
+	// UpdateIfRev conditionally updates the record carrying key: the write is
+	// applied only if the record's current revision equals expected_rev. A stale
+	// revision (or a missing key) is a clean no-op reported as swapped=false, not
+	// an error.
+	UpdateIfRev(context.Context, *UpdateIfRevRequest) (*UpdateIfRevResponse, error)
 	EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error)
 	DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error)
 	ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error)
@@ -361,6 +452,21 @@ func (UnimplementedFileDBServer) Update(context.Context, *UpdateRequest) (*Updat
 }
 func (UnimplementedFileDBServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedFileDBServer) Upsert(context.Context, *UpsertRequest) (*UpsertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Upsert not implemented")
+}
+func (UnimplementedFileDBServer) FindByKey(context.Context, *FindByKeyRequest) (*FindResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FindByKey not implemented")
+}
+func (UnimplementedFileDBServer) UpdateByKey(context.Context, *UpdateByKeyRequest) (*UpdateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateByKey not implemented")
+}
+func (UnimplementedFileDBServer) DeleteByKey(context.Context, *DeleteByKeyRequest) (*DeleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteByKey not implemented")
+}
+func (UnimplementedFileDBServer) UpdateIfRev(context.Context, *UpdateIfRevRequest) (*UpdateIfRevResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateIfRev not implemented")
 }
 func (UnimplementedFileDBServer) EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnsureIndex not implemented")
@@ -564,6 +670,96 @@ func _FileDB_Delete_Handler(srv interface{}, ctx context.Context, dec func(inter
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(FileDBServer).Delete(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_Upsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpsertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).Upsert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_Upsert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).Upsert(ctx, req.(*UpsertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_FindByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FindByKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).FindByKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_FindByKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).FindByKey(ctx, req.(*FindByKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_UpdateByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateByKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).UpdateByKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_UpdateByKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).UpdateByKey(ctx, req.(*UpdateByKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_DeleteByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteByKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).DeleteByKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_DeleteByKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).DeleteByKey(ctx, req.(*DeleteByKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_UpdateIfRev_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateIfRevRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).UpdateIfRev(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_UpdateIfRev_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).UpdateIfRev(ctx, req.(*UpdateIfRevRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -772,6 +968,26 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _FileDB_Delete_Handler,
+		},
+		{
+			MethodName: "Upsert",
+			Handler:    _FileDB_Upsert_Handler,
+		},
+		{
+			MethodName: "FindByKey",
+			Handler:    _FileDB_FindByKey_Handler,
+		},
+		{
+			MethodName: "UpdateByKey",
+			Handler:    _FileDB_UpdateByKey_Handler,
+		},
+		{
+			MethodName: "DeleteByKey",
+			Handler:    _FileDB_DeleteByKey_Handler,
+		},
+		{
+			MethodName: "UpdateIfRev",
+			Handler:    _FileDB_UpdateIfRev_Handler,
 		},
 		{
 			MethodName: "EnsureIndex",

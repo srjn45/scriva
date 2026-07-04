@@ -674,6 +674,50 @@ Distributed tracing (`server/tracing.go`) is **opt-in and off by default**: `cmd
 
 The net effect: a slow `Find` produces a trace spanning gateway → gRPC (`/filedb.v1.FileDB/Find`) → `engine.scan`, making it obvious whether the cost was in transport, a saturated limiter, or a large collection scan.
 
+### Keyed CRUD, Upsert & CAS on the wire (N1)
+
+The [caller-supplied string keys](#caller-supplied-string-keys),
+[revisions/compare-and-swap](#revisions-and-compare-and-swap), and
+[key-based upsert](#key-based-upsert) the engine has always had are surfaced over
+gRPC/REST by a thin handler layer in `server/grpc.go` — the handlers **map
+straight onto the engine methods and add no logic of their own**:
+
+| RPC | REST | Engine method |
+|---|---|---|
+| `Insert` (with `key`) | `POST /v1/{collection}/records` | `InsertWithKey` |
+| `Upsert` | `POST /v1/{collection}/records:upsert` | `Upsert` |
+| `FindByKey` | `GET /v1/{collection}/keys/{key}` | `GetByKey` |
+| `UpdateByKey` | `PUT /v1/{collection}/keys/{key}` | `UpdateByKey` |
+| `DeleteByKey` | `DELETE /v1/{collection}/keys/{key}` | `DeleteByKey` |
+| `UpdateIfRev` | `POST /v1/{collection}/keys/{key}:cas` | `UpdateIfRev` |
+
+There is deliberately **no `InsertWithKey` RPC**: a keyed create is expressed by
+setting the additive `key` field on the existing `Insert` request (empty = the
+unchanged server-assigned-id behaviour). A keyed insert bypasses the transaction
+and per-record-TTL paths (the engine's keyed insert supports neither), which the
+handler rejects with `InvalidArgument`.
+
+**Error-code mapping.** The handlers translate the engine's *typed* errors into
+gRPC status codes, so a client sees a stable code rather than an opaque string:
+
+| Engine error | gRPC code |
+|---|---|
+| `engine.ErrKeyNotFound` | `NotFound` |
+| `engine.ErrDuplicateKey` | `AlreadyExists` |
+| `engine.ErrReservedField` (data sets `_key` directly) | `InvalidArgument` |
+
+`UpdateIfRev` is **not** an error path: a stale revision or a missing key returns
+`swapped=false` with no error (mirroring the engine's `(false, nil)` no-op), so a
+client distinguishes "someone else won the race, retry" from "the call failed".
+
+**`key`/`rev` on responses.** `Record` gained `key` (field 5) and `rev` (field 6),
+and `InsertResponse`/`UpdateResponse` gained the same pair — all additive field
+numbers, so pre-N1 clients are unaffected. The read handlers populate them from
+the engine's `Record{ID, Key, Rev, …}` (via `Get`/`GetByKey`) and, for streaming
+`Find`, from `ScanResult.Rev` plus the `_key` field carried in `data`. `Watch`
+events carry the key but no revision (the change feed does not track it), so their
+`rev` is `0`.
+
 ---
 
 ## Web Admin UI

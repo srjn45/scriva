@@ -149,11 +149,16 @@ func (WatchOp) EnumDescriptor() ([]byte, []int) {
 }
 
 type Record struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Data          *structpb.Struct       `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
-	DateAdded     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=date_added,json=dateAdded,proto3" json:"date_added,omitempty"`
-	DateModified  *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=date_modified,json=dateModified,proto3" json:"date_modified,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Data         *structpb.Struct       `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	DateAdded    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=date_added,json=dateAdded,proto3" json:"date_added,omitempty"`
+	DateModified *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=date_modified,json=dateModified,proto3" json:"date_modified,omitempty"`
+	// Caller-supplied string primary key, empty for records inserted without one.
+	Key string `protobuf:"bytes,5,opt,name=key,proto3" json:"key,omitempty"`
+	// Monotonic per-record revision, bumped on every write. Fresh records start
+	// at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+	Rev           uint64 `protobuf:"varint,6,opt,name=rev,proto3" json:"rev,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -214,6 +219,20 @@ func (x *Record) GetDateModified() *timestamppb.Timestamp {
 		return x.DateModified
 	}
 	return nil
+}
+
+func (x *Record) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Record) GetRev() uint64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
 }
 
 // A composable filter node.
@@ -746,7 +765,13 @@ type InsertRequest struct {
 	// Optional per-record TTL, in seconds. When > 0, the record expires this long
 	// after insertion, overriding any collection default. 0 (the default)
 	// applies the collection's default TTL, if any.
-	TtlSeconds    int64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	TtlSeconds int64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	// Optional caller-supplied string primary key (keyed Create). When set, the
+	// record is inserted under this key and a key already held by a live record
+	// is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+	// server-assigned-id behaviour. A keyed insert does not participate in
+	// transactions or per-record TTL.
+	Key           string `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -802,10 +827,21 @@ func (x *InsertRequest) GetTtlSeconds() int64 {
 	return 0
 }
 
+func (x *InsertRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
 type InsertResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	DateAdded     string                 `protobuf:"bytes,2,opt,name=date_added,json=dateAdded,proto3" json:"date_added,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Id        uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	DateAdded string                 `protobuf:"bytes,2,opt,name=date_added,json=dateAdded,proto3" json:"date_added,omitempty"`
+	// Caller-supplied string key (empty for a keyless insert) and the record's
+	// revision. A fresh insert always starts at rev 1.
+	Key           string `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Rev           uint64 `protobuf:"varint,4,opt,name=rev,proto3" json:"rev,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -852,6 +888,20 @@ func (x *InsertResponse) GetDateAdded() string {
 		return x.DateAdded
 	}
 	return ""
+}
+
+func (x *InsertResponse) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *InsertResponse) GetRev() uint64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
 }
 
 type InsertManyRequest struct {
@@ -1212,9 +1262,13 @@ func (x *UpdateRequest) GetTtlSeconds() int64 {
 }
 
 type UpdateResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	DateModified  string                 `protobuf:"bytes,2,opt,name=date_modified,json=dateModified,proto3" json:"date_modified,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	DateModified string                 `protobuf:"bytes,2,opt,name=date_modified,json=dateModified,proto3" json:"date_modified,omitempty"`
+	// Caller-supplied string key (empty for a keyless update) and the record's
+	// revision after the write.
+	Key           string `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Rev           uint64 `protobuf:"varint,4,opt,name=rev,proto3" json:"rev,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1261,6 +1315,20 @@ func (x *UpdateResponse) GetDateModified() string {
 		return x.DateModified
 	}
 	return ""
+}
+
+func (x *UpdateResponse) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UpdateResponse) GetRev() uint64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
 }
 
 type DeleteRequest struct {
@@ -1359,6 +1427,398 @@ func (x *DeleteResponse) GetOk() bool {
 	return false
 }
 
+type UpsertRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Data          *structpb.Struct       `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertRequest) Reset() {
+	*x = UpsertRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertRequest) ProtoMessage() {}
+
+func (x *UpsertRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertRequest.ProtoReflect.Descriptor instead.
+func (*UpsertRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *UpsertRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *UpsertRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UpsertRequest) GetData() *structpb.Struct {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type UpsertResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The resulting record, including its key and (incremented on replace) rev.
+	Record        *Record `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertResponse) Reset() {
+	*x = UpsertResponse{}
+	mi := &file_proto_filedb_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertResponse) ProtoMessage() {}
+
+func (x *UpsertResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertResponse.ProtoReflect.Descriptor instead.
+func (*UpsertResponse) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *UpsertResponse) GetRecord() *Record {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+type FindByKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindByKeyRequest) Reset() {
+	*x = FindByKeyRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindByKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindByKeyRequest) ProtoMessage() {}
+
+func (x *FindByKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindByKeyRequest.ProtoReflect.Descriptor instead.
+func (*FindByKeyRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *FindByKeyRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *FindByKeyRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type UpdateByKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Data          *structpb.Struct       `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateByKeyRequest) Reset() {
+	*x = UpdateByKeyRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateByKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateByKeyRequest) ProtoMessage() {}
+
+func (x *UpdateByKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateByKeyRequest.ProtoReflect.Descriptor instead.
+func (*UpdateByKeyRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *UpdateByKeyRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *UpdateByKeyRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UpdateByKeyRequest) GetData() *structpb.Struct {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type DeleteByKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteByKeyRequest) Reset() {
+	*x = DeleteByKeyRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteByKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteByKeyRequest) ProtoMessage() {}
+
+func (x *DeleteByKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteByKeyRequest.ProtoReflect.Descriptor instead.
+func (*DeleteByKeyRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DeleteByKeyRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *DeleteByKeyRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type UpdateIfRevRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRev   uint64                 `protobuf:"varint,3,opt,name=expected_rev,json=expectedRev,proto3" json:"expected_rev,omitempty"`
+	Data          *structpb.Struct       `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateIfRevRequest) Reset() {
+	*x = UpdateIfRevRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateIfRevRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateIfRevRequest) ProtoMessage() {}
+
+func (x *UpdateIfRevRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateIfRevRequest.ProtoReflect.Descriptor instead.
+func (*UpdateIfRevRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *UpdateIfRevRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *UpdateIfRevRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UpdateIfRevRequest) GetExpectedRev() uint64 {
+	if x != nil {
+		return x.ExpectedRev
+	}
+	return 0
+}
+
+func (x *UpdateIfRevRequest) GetData() *structpb.Struct {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type UpdateIfRevResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// swapped is true when expected_rev matched and the update applied; false —
+	// never an error — when the revision was stale or no live record carries key.
+	Swapped bool `protobuf:"varint,1,opt,name=swapped,proto3" json:"swapped,omitempty"`
+	// The resulting record when swapped is true; unset otherwise.
+	Record        *Record `protobuf:"bytes,2,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateIfRevResponse) Reset() {
+	*x = UpdateIfRevResponse{}
+	mi := &file_proto_filedb_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateIfRevResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateIfRevResponse) ProtoMessage() {}
+
+func (x *UpdateIfRevResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateIfRevResponse.ProtoReflect.Descriptor instead.
+func (*UpdateIfRevResponse) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *UpdateIfRevResponse) GetSwapped() bool {
+	if x != nil {
+		return x.Swapped
+	}
+	return false
+}
+
+func (x *UpdateIfRevResponse) GetRecord() *Record {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
 type EnsureIndexRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
@@ -1369,7 +1829,7 @@ type EnsureIndexRequest struct {
 
 func (x *EnsureIndexRequest) Reset() {
 	*x = EnsureIndexRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[22]
+	mi := &file_proto_filedb_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1381,7 +1841,7 @@ func (x *EnsureIndexRequest) String() string {
 func (*EnsureIndexRequest) ProtoMessage() {}
 
 func (x *EnsureIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[22]
+	mi := &file_proto_filedb_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1394,7 +1854,7 @@ func (x *EnsureIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureIndexRequest.ProtoReflect.Descriptor instead.
 func (*EnsureIndexRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{22}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *EnsureIndexRequest) GetCollection() string {
@@ -1421,7 +1881,7 @@ type EnsureIndexResponse struct {
 
 func (x *EnsureIndexResponse) Reset() {
 	*x = EnsureIndexResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[23]
+	mi := &file_proto_filedb_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1433,7 +1893,7 @@ func (x *EnsureIndexResponse) String() string {
 func (*EnsureIndexResponse) ProtoMessage() {}
 
 func (x *EnsureIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[23]
+	mi := &file_proto_filedb_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1446,7 +1906,7 @@ func (x *EnsureIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureIndexResponse.ProtoReflect.Descriptor instead.
 func (*EnsureIndexResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{23}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *EnsureIndexResponse) GetCollection() string {
@@ -1473,7 +1933,7 @@ type DropIndexRequest struct {
 
 func (x *DropIndexRequest) Reset() {
 	*x = DropIndexRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[24]
+	mi := &file_proto_filedb_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1485,7 +1945,7 @@ func (x *DropIndexRequest) String() string {
 func (*DropIndexRequest) ProtoMessage() {}
 
 func (x *DropIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[24]
+	mi := &file_proto_filedb_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1498,7 +1958,7 @@ func (x *DropIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropIndexRequest.ProtoReflect.Descriptor instead.
 func (*DropIndexRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{24}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DropIndexRequest) GetCollection() string {
@@ -1524,7 +1984,7 @@ type DropIndexResponse struct {
 
 func (x *DropIndexResponse) Reset() {
 	*x = DropIndexResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[25]
+	mi := &file_proto_filedb_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1996,7 @@ func (x *DropIndexResponse) String() string {
 func (*DropIndexResponse) ProtoMessage() {}
 
 func (x *DropIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[25]
+	mi := &file_proto_filedb_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +2009,7 @@ func (x *DropIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropIndexResponse.ProtoReflect.Descriptor instead.
 func (*DropIndexResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{25}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *DropIndexResponse) GetOk() bool {
@@ -1568,7 +2028,7 @@ type ListIndexesRequest struct {
 
 func (x *ListIndexesRequest) Reset() {
 	*x = ListIndexesRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[26]
+	mi := &file_proto_filedb_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1580,7 +2040,7 @@ func (x *ListIndexesRequest) String() string {
 func (*ListIndexesRequest) ProtoMessage() {}
 
 func (x *ListIndexesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[26]
+	mi := &file_proto_filedb_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1593,7 +2053,7 @@ func (x *ListIndexesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIndexesRequest.ProtoReflect.Descriptor instead.
 func (*ListIndexesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{26}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListIndexesRequest) GetCollection() string {
@@ -1612,7 +2072,7 @@ type ListIndexesResponse struct {
 
 func (x *ListIndexesResponse) Reset() {
 	*x = ListIndexesResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[27]
+	mi := &file_proto_filedb_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1624,7 +2084,7 @@ func (x *ListIndexesResponse) String() string {
 func (*ListIndexesResponse) ProtoMessage() {}
 
 func (x *ListIndexesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[27]
+	mi := &file_proto_filedb_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1637,7 +2097,7 @@ func (x *ListIndexesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIndexesResponse.ProtoReflect.Descriptor instead.
 func (*ListIndexesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{27}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListIndexesResponse) GetFields() []string {
@@ -1656,7 +2116,7 @@ type BeginTxRequest struct {
 
 func (x *BeginTxRequest) Reset() {
 	*x = BeginTxRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[28]
+	mi := &file_proto_filedb_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1668,7 +2128,7 @@ func (x *BeginTxRequest) String() string {
 func (*BeginTxRequest) ProtoMessage() {}
 
 func (x *BeginTxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[28]
+	mi := &file_proto_filedb_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1681,7 +2141,7 @@ func (x *BeginTxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginTxRequest.ProtoReflect.Descriptor instead.
 func (*BeginTxRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{28}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *BeginTxRequest) GetCollection() string {
@@ -1700,7 +2160,7 @@ type BeginTxResponse struct {
 
 func (x *BeginTxResponse) Reset() {
 	*x = BeginTxResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[29]
+	mi := &file_proto_filedb_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1712,7 +2172,7 @@ func (x *BeginTxResponse) String() string {
 func (*BeginTxResponse) ProtoMessage() {}
 
 func (x *BeginTxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[29]
+	mi := &file_proto_filedb_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1725,7 +2185,7 @@ func (x *BeginTxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginTxResponse.ProtoReflect.Descriptor instead.
 func (*BeginTxResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{29}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *BeginTxResponse) GetTxId() string {
@@ -1744,7 +2204,7 @@ type CommitTxRequest struct {
 
 func (x *CommitTxRequest) Reset() {
 	*x = CommitTxRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[30]
+	mi := &file_proto_filedb_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1756,7 +2216,7 @@ func (x *CommitTxRequest) String() string {
 func (*CommitTxRequest) ProtoMessage() {}
 
 func (x *CommitTxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[30]
+	mi := &file_proto_filedb_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1769,7 +2229,7 @@ func (x *CommitTxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitTxRequest.ProtoReflect.Descriptor instead.
 func (*CommitTxRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{30}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CommitTxRequest) GetTxId() string {
@@ -1788,7 +2248,7 @@ type CommitTxResponse struct {
 
 func (x *CommitTxResponse) Reset() {
 	*x = CommitTxResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[31]
+	mi := &file_proto_filedb_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1800,7 +2260,7 @@ func (x *CommitTxResponse) String() string {
 func (*CommitTxResponse) ProtoMessage() {}
 
 func (x *CommitTxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[31]
+	mi := &file_proto_filedb_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1813,7 +2273,7 @@ func (x *CommitTxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitTxResponse.ProtoReflect.Descriptor instead.
 func (*CommitTxResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{31}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CommitTxResponse) GetOk() bool {
@@ -1832,7 +2292,7 @@ type RollbackTxRequest struct {
 
 func (x *RollbackTxRequest) Reset() {
 	*x = RollbackTxRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[32]
+	mi := &file_proto_filedb_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1844,7 +2304,7 @@ func (x *RollbackTxRequest) String() string {
 func (*RollbackTxRequest) ProtoMessage() {}
 
 func (x *RollbackTxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[32]
+	mi := &file_proto_filedb_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1857,7 +2317,7 @@ func (x *RollbackTxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackTxRequest.ProtoReflect.Descriptor instead.
 func (*RollbackTxRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{32}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RollbackTxRequest) GetTxId() string {
@@ -1876,7 +2336,7 @@ type RollbackTxResponse struct {
 
 func (x *RollbackTxResponse) Reset() {
 	*x = RollbackTxResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[33]
+	mi := &file_proto_filedb_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1888,7 +2348,7 @@ func (x *RollbackTxResponse) String() string {
 func (*RollbackTxResponse) ProtoMessage() {}
 
 func (x *RollbackTxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[33]
+	mi := &file_proto_filedb_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1901,7 +2361,7 @@ func (x *RollbackTxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackTxResponse.ProtoReflect.Descriptor instead.
 func (*RollbackTxResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{33}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RollbackTxResponse) GetOk() bool {
@@ -1921,7 +2381,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[34]
+	mi := &file_proto_filedb_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1933,7 +2393,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[34]
+	mi := &file_proto_filedb_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1946,7 +2406,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{34}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WatchRequest) GetCollection() string {
@@ -1975,7 +2435,7 @@ type WatchEvent struct {
 
 func (x *WatchEvent) Reset() {
 	*x = WatchEvent{}
-	mi := &file_proto_filedb_proto_msgTypes[35]
+	mi := &file_proto_filedb_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1987,7 +2447,7 @@ func (x *WatchEvent) String() string {
 func (*WatchEvent) ProtoMessage() {}
 
 func (x *WatchEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[35]
+	mi := &file_proto_filedb_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2000,7 +2460,7 @@ func (x *WatchEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchEvent.ProtoReflect.Descriptor instead.
 func (*WatchEvent) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{35}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *WatchEvent) GetOp() WatchOp {
@@ -2040,7 +2500,7 @@ type CollectionStatsRequest struct {
 
 func (x *CollectionStatsRequest) Reset() {
 	*x = CollectionStatsRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[36]
+	mi := &file_proto_filedb_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2052,7 +2512,7 @@ func (x *CollectionStatsRequest) String() string {
 func (*CollectionStatsRequest) ProtoMessage() {}
 
 func (x *CollectionStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[36]
+	mi := &file_proto_filedb_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2065,7 +2525,7 @@ func (x *CollectionStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectionStatsRequest.ProtoReflect.Descriptor instead.
 func (*CollectionStatsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{36}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CollectionStatsRequest) GetCollection() string {
@@ -2088,7 +2548,7 @@ type CollectionStatsResponse struct {
 
 func (x *CollectionStatsResponse) Reset() {
 	*x = CollectionStatsResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[37]
+	mi := &file_proto_filedb_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2100,7 +2560,7 @@ func (x *CollectionStatsResponse) String() string {
 func (*CollectionStatsResponse) ProtoMessage() {}
 
 func (x *CollectionStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[37]
+	mi := &file_proto_filedb_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2113,7 +2573,7 @@ func (x *CollectionStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectionStatsResponse.ProtoReflect.Descriptor instead.
 func (*CollectionStatsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{37}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *CollectionStatsResponse) GetCollection() string {
@@ -2160,7 +2620,7 @@ type CompactRequest struct {
 
 func (x *CompactRequest) Reset() {
 	*x = CompactRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[38]
+	mi := &file_proto_filedb_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2172,7 +2632,7 @@ func (x *CompactRequest) String() string {
 func (*CompactRequest) ProtoMessage() {}
 
 func (x *CompactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[38]
+	mi := &file_proto_filedb_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2185,7 +2645,7 @@ func (x *CompactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactRequest.ProtoReflect.Descriptor instead.
 func (*CompactRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{38}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CompactRequest) GetCollection() string {
@@ -2204,7 +2664,7 @@ type CompactResponse struct {
 
 func (x *CompactResponse) Reset() {
 	*x = CompactResponse{}
-	mi := &file_proto_filedb_proto_msgTypes[39]
+	mi := &file_proto_filedb_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2216,7 +2676,7 @@ func (x *CompactResponse) String() string {
 func (*CompactResponse) ProtoMessage() {}
 
 func (x *CompactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[39]
+	mi := &file_proto_filedb_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2229,7 +2689,7 @@ func (x *CompactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactResponse.ProtoReflect.Descriptor instead.
 func (*CompactResponse) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{39}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *CompactResponse) GetOk() bool {
@@ -2247,7 +2707,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_proto_filedb_proto_msgTypes[40]
+	mi := &file_proto_filedb_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2259,7 +2719,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[40]
+	mi := &file_proto_filedb_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2272,7 +2732,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{40}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{47}
 }
 
 type SnapshotChunk struct {
@@ -2284,7 +2744,7 @@ type SnapshotChunk struct {
 
 func (x *SnapshotChunk) Reset() {
 	*x = SnapshotChunk{}
-	mi := &file_proto_filedb_proto_msgTypes[41]
+	mi := &file_proto_filedb_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2296,7 +2756,7 @@ func (x *SnapshotChunk) String() string {
 func (*SnapshotChunk) ProtoMessage() {}
 
 func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_filedb_proto_msgTypes[41]
+	mi := &file_proto_filedb_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2309,7 +2769,7 @@ func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotChunk.ProtoReflect.Descriptor instead.
 func (*SnapshotChunk) Descriptor() ([]byte, []int) {
-	return file_proto_filedb_proto_rawDescGZIP(), []int{41}
+	return file_proto_filedb_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SnapshotChunk) GetData() []byte {
@@ -2323,13 +2783,15 @@ var File_proto_filedb_proto protoreflect.FileDescriptor
 
 const file_proto_filedb_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/filedb.proto\x12\tfiledb.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\"\xc1\x01\n" +
+	"\x12proto/filedb.proto\x12\tfiledb.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\"\xe5\x01\n" +
 	"\x06Record\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12+\n" +
 	"\x04data\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04data\x129\n" +
 	"\n" +
 	"date_added\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tdateAdded\x12?\n" +
-	"\rdate_modified\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\fdateModified\"\x91\x01\n" +
+	"\rdate_modified\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\fdateModified\x12\x10\n" +
+	"\x03key\x18\x05 \x01(\tR\x03key\x12\x10\n" +
+	"\x03rev\x18\x06 \x01(\x04R\x03rev\"\x91\x01\n" +
 	"\x06Filter\x12.\n" +
 	"\x05field\x18\x01 \x01(\v2\x16.filedb.v1.FieldFilterH\x00R\x05field\x12(\n" +
 	"\x03and\x18\x02 \x01(\v2\x14.filedb.v1.AndFilterH\x00R\x03and\x12%\n" +
@@ -2356,18 +2818,21 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x18\n" +
 	"\x16ListCollectionsRequest\"/\n" +
 	"\x17ListCollectionsResponse\x12\x14\n" +
-	"\x05names\x18\x01 \x03(\tR\x05names\"}\n" +
+	"\x05names\x18\x01 \x03(\tR\x05names\"\x8f\x01\n" +
 	"\rInsertRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12+\n" +
 	"\x04data\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1f\n" +
 	"\vttl_seconds\x18\x03 \x01(\x03R\n" +
-	"ttlSeconds\"?\n" +
+	"ttlSeconds\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\"c\n" +
 	"\x0eInsertResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1d\n" +
 	"\n" +
-	"date_added\x18\x02 \x01(\tR\tdateAdded\"\x87\x01\n" +
+	"date_added\x18\x02 \x01(\tR\tdateAdded\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\x12\x10\n" +
+	"\x03rev\x18\x04 \x01(\x04R\x03rev\"\x87\x01\n" +
 	"\x11InsertManyRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -2402,17 +2867,53 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\x12+\n" +
 	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1f\n" +
 	"\vttl_seconds\x18\x04 \x01(\x03R\n" +
-	"ttlSeconds\"E\n" +
+	"ttlSeconds\"i\n" +
 	"\x0eUpdateResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12#\n" +
-	"\rdate_modified\x18\x02 \x01(\tR\fdateModified\"?\n" +
+	"\rdate_modified\x18\x02 \x01(\tR\fdateModified\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\x12\x10\n" +
+	"\x03rev\x18\x04 \x01(\x04R\x03rev\"?\n" +
 	"\rDeleteRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\x04R\x02id\" \n" +
 	"\x0eDeleteResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok\"J\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"n\n" +
+	"\rUpsertRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\";\n" +
+	"\x0eUpsertResponse\x12)\n" +
+	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"D\n" +
+	"\x10FindByKeyRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\"s\n" +
+	"\x12UpdateByKeyRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\"F\n" +
+	"\x12DeleteByKeyRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\"\x96\x01\n" +
+	"\x12UpdateIfRevRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12!\n" +
+	"\fexpected_rev\x18\x03 \x01(\x04R\vexpectedRev\x12+\n" +
+	"\x04data\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x04data\"Z\n" +
+	"\x13UpdateIfRevResponse\x12\x18\n" +
+	"\aswapped\x18\x01 \x01(\bR\aswapped\x12)\n" +
+	"\x06record\x18\x02 \x01(\v2\x11.filedb.v1.RecordR\x06record\"J\n" +
 	"\x12EnsureIndexRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -2500,7 +3001,7 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\bINSERTED\x10\x01\x12\v\n" +
 	"\aUPDATED\x10\x02\x12\v\n" +
 	"\aDELETED\x10\x03\x12\f\n" +
-	"\bOVERFLOW\x10\x042\x8b\x0f\n" +
+	"\bOVERFLOW\x10\x042\xb7\x13\n" +
 	"\x06FileDB\x12w\n" +
 	"\x10CreateCollection\x12\".filedb.v1.CreateCollectionRequest\x1a#.filedb.v1.CreateCollectionResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/collections\x12u\n" +
 	"\x0eDropCollection\x12 .filedb.v1.DropCollectionRequest\x1a!.filedb.v1.DropCollectionResponse\"\x1e\x82\xd3\xe4\x93\x02\x18*\x16/v1/collections/{name}\x12q\n" +
@@ -2511,7 +3012,12 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\bFindById\x12\x1a.filedb.v1.FindByIdRequest\x1a\x17.filedb.v1.FindResponse\"%\x82\xd3\xe4\x93\x02\x1f\x12\x1d/v1/{collection}/records/{id}\x12c\n" +
 	"\x04Find\x12\x16.filedb.v1.FindRequest\x1a\x17.filedb.v1.FindResponse\"(\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/{collection}/records/find0\x01\x12g\n" +
 	"\x06Update\x12\x18.filedb.v1.UpdateRequest\x1a\x19.filedb.v1.UpdateResponse\"(\x82\xd3\xe4\x93\x02\":\x01*\x1a\x1d/v1/{collection}/records/{id}\x12d\n" +
-	"\x06Delete\x12\x18.filedb.v1.DeleteRequest\x1a\x19.filedb.v1.DeleteResponse\"%\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/{collection}/records/{id}\x12q\n" +
+	"\x06Delete\x12\x18.filedb.v1.DeleteRequest\x1a\x19.filedb.v1.DeleteResponse\"%\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/{collection}/records/{id}\x12i\n" +
+	"\x06Upsert\x12\x18.filedb.v1.UpsertRequest\x1a\x19.filedb.v1.UpsertResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/{collection}/records:upsert\x12f\n" +
+	"\tFindByKey\x12\x1b.filedb.v1.FindByKeyRequest\x1a\x17.filedb.v1.FindResponse\"#\x82\xd3\xe4\x93\x02\x1d\x12\x1b/v1/{collection}/keys/{key}\x12o\n" +
+	"\vUpdateByKey\x12\x1d.filedb.v1.UpdateByKeyRequest\x1a\x19.filedb.v1.UpdateResponse\"&\x82\xd3\xe4\x93\x02 :\x01*\x1a\x1b/v1/{collection}/keys/{key}\x12l\n" +
+	"\vDeleteByKey\x12\x1d.filedb.v1.DeleteByKeyRequest\x1a\x19.filedb.v1.DeleteResponse\"#\x82\xd3\xe4\x93\x02\x1d*\x1b/v1/{collection}/keys/{key}\x12x\n" +
+	"\vUpdateIfRev\x12\x1d.filedb.v1.UpdateIfRevRequest\x1a\x1e.filedb.v1.UpdateIfRevResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/{collection}/keys/{key}:cas\x12q\n" +
 	"\vEnsureIndex\x12\x1d.filedb.v1.EnsureIndexRequest\x1a\x1e.filedb.v1.EnsureIndexResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/{collection}/indexes\x12p\n" +
 	"\tDropIndex\x12\x1b.filedb.v1.DropIndexRequest\x1a\x1c.filedb.v1.DropIndexResponse\"(\x82\xd3\xe4\x93\x02\"* /v1/{collection}/indexes/{field}\x12n\n" +
 	"\vListIndexes\x12\x1d.filedb.v1.ListIndexesRequest\x1a\x1e.filedb.v1.ListIndexesResponse\" \x82\xd3\xe4\x93\x02\x1a\x12\x18/v1/{collection}/indexes\x12@\n" +
@@ -2537,7 +3043,7 @@ func file_proto_filedb_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_filedb_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_proto_filedb_proto_goTypes = []any{
 	(FilterOp)(0),                    // 0: filedb.v1.FilterOp
 	(WatchOp)(0),                     // 1: filedb.v1.WatchOp
@@ -2563,91 +3069,113 @@ var file_proto_filedb_proto_goTypes = []any{
 	(*UpdateResponse)(nil),           // 21: filedb.v1.UpdateResponse
 	(*DeleteRequest)(nil),            // 22: filedb.v1.DeleteRequest
 	(*DeleteResponse)(nil),           // 23: filedb.v1.DeleteResponse
-	(*EnsureIndexRequest)(nil),       // 24: filedb.v1.EnsureIndexRequest
-	(*EnsureIndexResponse)(nil),      // 25: filedb.v1.EnsureIndexResponse
-	(*DropIndexRequest)(nil),         // 26: filedb.v1.DropIndexRequest
-	(*DropIndexResponse)(nil),        // 27: filedb.v1.DropIndexResponse
-	(*ListIndexesRequest)(nil),       // 28: filedb.v1.ListIndexesRequest
-	(*ListIndexesResponse)(nil),      // 29: filedb.v1.ListIndexesResponse
-	(*BeginTxRequest)(nil),           // 30: filedb.v1.BeginTxRequest
-	(*BeginTxResponse)(nil),          // 31: filedb.v1.BeginTxResponse
-	(*CommitTxRequest)(nil),          // 32: filedb.v1.CommitTxRequest
-	(*CommitTxResponse)(nil),         // 33: filedb.v1.CommitTxResponse
-	(*RollbackTxRequest)(nil),        // 34: filedb.v1.RollbackTxRequest
-	(*RollbackTxResponse)(nil),       // 35: filedb.v1.RollbackTxResponse
-	(*WatchRequest)(nil),             // 36: filedb.v1.WatchRequest
-	(*WatchEvent)(nil),               // 37: filedb.v1.WatchEvent
-	(*CollectionStatsRequest)(nil),   // 38: filedb.v1.CollectionStatsRequest
-	(*CollectionStatsResponse)(nil),  // 39: filedb.v1.CollectionStatsResponse
-	(*CompactRequest)(nil),           // 40: filedb.v1.CompactRequest
-	(*CompactResponse)(nil),          // 41: filedb.v1.CompactResponse
-	(*SnapshotRequest)(nil),          // 42: filedb.v1.SnapshotRequest
-	(*SnapshotChunk)(nil),            // 43: filedb.v1.SnapshotChunk
-	(*structpb.Struct)(nil),          // 44: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),    // 45: google.protobuf.Timestamp
+	(*UpsertRequest)(nil),            // 24: filedb.v1.UpsertRequest
+	(*UpsertResponse)(nil),           // 25: filedb.v1.UpsertResponse
+	(*FindByKeyRequest)(nil),         // 26: filedb.v1.FindByKeyRequest
+	(*UpdateByKeyRequest)(nil),       // 27: filedb.v1.UpdateByKeyRequest
+	(*DeleteByKeyRequest)(nil),       // 28: filedb.v1.DeleteByKeyRequest
+	(*UpdateIfRevRequest)(nil),       // 29: filedb.v1.UpdateIfRevRequest
+	(*UpdateIfRevResponse)(nil),      // 30: filedb.v1.UpdateIfRevResponse
+	(*EnsureIndexRequest)(nil),       // 31: filedb.v1.EnsureIndexRequest
+	(*EnsureIndexResponse)(nil),      // 32: filedb.v1.EnsureIndexResponse
+	(*DropIndexRequest)(nil),         // 33: filedb.v1.DropIndexRequest
+	(*DropIndexResponse)(nil),        // 34: filedb.v1.DropIndexResponse
+	(*ListIndexesRequest)(nil),       // 35: filedb.v1.ListIndexesRequest
+	(*ListIndexesResponse)(nil),      // 36: filedb.v1.ListIndexesResponse
+	(*BeginTxRequest)(nil),           // 37: filedb.v1.BeginTxRequest
+	(*BeginTxResponse)(nil),          // 38: filedb.v1.BeginTxResponse
+	(*CommitTxRequest)(nil),          // 39: filedb.v1.CommitTxRequest
+	(*CommitTxResponse)(nil),         // 40: filedb.v1.CommitTxResponse
+	(*RollbackTxRequest)(nil),        // 41: filedb.v1.RollbackTxRequest
+	(*RollbackTxResponse)(nil),       // 42: filedb.v1.RollbackTxResponse
+	(*WatchRequest)(nil),             // 43: filedb.v1.WatchRequest
+	(*WatchEvent)(nil),               // 44: filedb.v1.WatchEvent
+	(*CollectionStatsRequest)(nil),   // 45: filedb.v1.CollectionStatsRequest
+	(*CollectionStatsResponse)(nil),  // 46: filedb.v1.CollectionStatsResponse
+	(*CompactRequest)(nil),           // 47: filedb.v1.CompactRequest
+	(*CompactResponse)(nil),          // 48: filedb.v1.CompactResponse
+	(*SnapshotRequest)(nil),          // 49: filedb.v1.SnapshotRequest
+	(*SnapshotChunk)(nil),            // 50: filedb.v1.SnapshotChunk
+	(*structpb.Struct)(nil),          // 51: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),    // 52: google.protobuf.Timestamp
 }
 var file_proto_filedb_proto_depIdxs = []int32{
-	44, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
-	45, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
-	45, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
+	51, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
+	52, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
+	52, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
 	4,  // 3: filedb.v1.Filter.field:type_name -> filedb.v1.FieldFilter
 	5,  // 4: filedb.v1.Filter.and:type_name -> filedb.v1.AndFilter
 	6,  // 5: filedb.v1.Filter.or:type_name -> filedb.v1.OrFilter
 	0,  // 6: filedb.v1.FieldFilter.op:type_name -> filedb.v1.FilterOp
 	3,  // 7: filedb.v1.AndFilter.filters:type_name -> filedb.v1.Filter
 	3,  // 8: filedb.v1.OrFilter.filters:type_name -> filedb.v1.Filter
-	44, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
-	44, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
+	51, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
+	51, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
 	3,  // 11: filedb.v1.FindRequest.filter:type_name -> filedb.v1.Filter
 	2,  // 12: filedb.v1.FindResponse.record:type_name -> filedb.v1.Record
-	44, // 13: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
-	3,  // 14: filedb.v1.WatchRequest.filter:type_name -> filedb.v1.Filter
-	1,  // 15: filedb.v1.WatchEvent.op:type_name -> filedb.v1.WatchOp
-	2,  // 16: filedb.v1.WatchEvent.record:type_name -> filedb.v1.Record
-	45, // 17: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
-	7,  // 18: filedb.v1.FileDB.CreateCollection:input_type -> filedb.v1.CreateCollectionRequest
-	9,  // 19: filedb.v1.FileDB.DropCollection:input_type -> filedb.v1.DropCollectionRequest
-	11, // 20: filedb.v1.FileDB.ListCollections:input_type -> filedb.v1.ListCollectionsRequest
-	13, // 21: filedb.v1.FileDB.Insert:input_type -> filedb.v1.InsertRequest
-	15, // 22: filedb.v1.FileDB.InsertMany:input_type -> filedb.v1.InsertManyRequest
-	17, // 23: filedb.v1.FileDB.FindById:input_type -> filedb.v1.FindByIdRequest
-	18, // 24: filedb.v1.FileDB.Find:input_type -> filedb.v1.FindRequest
-	20, // 25: filedb.v1.FileDB.Update:input_type -> filedb.v1.UpdateRequest
-	22, // 26: filedb.v1.FileDB.Delete:input_type -> filedb.v1.DeleteRequest
-	24, // 27: filedb.v1.FileDB.EnsureIndex:input_type -> filedb.v1.EnsureIndexRequest
-	26, // 28: filedb.v1.FileDB.DropIndex:input_type -> filedb.v1.DropIndexRequest
-	28, // 29: filedb.v1.FileDB.ListIndexes:input_type -> filedb.v1.ListIndexesRequest
-	30, // 30: filedb.v1.FileDB.BeginTx:input_type -> filedb.v1.BeginTxRequest
-	32, // 31: filedb.v1.FileDB.CommitTx:input_type -> filedb.v1.CommitTxRequest
-	34, // 32: filedb.v1.FileDB.RollbackTx:input_type -> filedb.v1.RollbackTxRequest
-	36, // 33: filedb.v1.FileDB.Watch:input_type -> filedb.v1.WatchRequest
-	38, // 34: filedb.v1.FileDB.CollectionStats:input_type -> filedb.v1.CollectionStatsRequest
-	40, // 35: filedb.v1.FileDB.Compact:input_type -> filedb.v1.CompactRequest
-	42, // 36: filedb.v1.FileDB.Snapshot:input_type -> filedb.v1.SnapshotRequest
-	8,  // 37: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
-	10, // 38: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
-	12, // 39: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
-	14, // 40: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
-	16, // 41: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
-	19, // 42: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
-	19, // 43: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
-	21, // 44: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
-	23, // 45: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
-	25, // 46: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
-	27, // 47: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
-	29, // 48: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
-	31, // 49: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
-	33, // 50: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
-	35, // 51: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
-	37, // 52: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
-	39, // 53: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
-	41, // 54: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
-	43, // 55: filedb.v1.FileDB.Snapshot:output_type -> filedb.v1.SnapshotChunk
-	37, // [37:56] is the sub-list for method output_type
-	18, // [18:37] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	51, // 13: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
+	51, // 14: filedb.v1.UpsertRequest.data:type_name -> google.protobuf.Struct
+	2,  // 15: filedb.v1.UpsertResponse.record:type_name -> filedb.v1.Record
+	51, // 16: filedb.v1.UpdateByKeyRequest.data:type_name -> google.protobuf.Struct
+	51, // 17: filedb.v1.UpdateIfRevRequest.data:type_name -> google.protobuf.Struct
+	2,  // 18: filedb.v1.UpdateIfRevResponse.record:type_name -> filedb.v1.Record
+	3,  // 19: filedb.v1.WatchRequest.filter:type_name -> filedb.v1.Filter
+	1,  // 20: filedb.v1.WatchEvent.op:type_name -> filedb.v1.WatchOp
+	2,  // 21: filedb.v1.WatchEvent.record:type_name -> filedb.v1.Record
+	52, // 22: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
+	7,  // 23: filedb.v1.FileDB.CreateCollection:input_type -> filedb.v1.CreateCollectionRequest
+	9,  // 24: filedb.v1.FileDB.DropCollection:input_type -> filedb.v1.DropCollectionRequest
+	11, // 25: filedb.v1.FileDB.ListCollections:input_type -> filedb.v1.ListCollectionsRequest
+	13, // 26: filedb.v1.FileDB.Insert:input_type -> filedb.v1.InsertRequest
+	15, // 27: filedb.v1.FileDB.InsertMany:input_type -> filedb.v1.InsertManyRequest
+	17, // 28: filedb.v1.FileDB.FindById:input_type -> filedb.v1.FindByIdRequest
+	18, // 29: filedb.v1.FileDB.Find:input_type -> filedb.v1.FindRequest
+	20, // 30: filedb.v1.FileDB.Update:input_type -> filedb.v1.UpdateRequest
+	22, // 31: filedb.v1.FileDB.Delete:input_type -> filedb.v1.DeleteRequest
+	24, // 32: filedb.v1.FileDB.Upsert:input_type -> filedb.v1.UpsertRequest
+	26, // 33: filedb.v1.FileDB.FindByKey:input_type -> filedb.v1.FindByKeyRequest
+	27, // 34: filedb.v1.FileDB.UpdateByKey:input_type -> filedb.v1.UpdateByKeyRequest
+	28, // 35: filedb.v1.FileDB.DeleteByKey:input_type -> filedb.v1.DeleteByKeyRequest
+	29, // 36: filedb.v1.FileDB.UpdateIfRev:input_type -> filedb.v1.UpdateIfRevRequest
+	31, // 37: filedb.v1.FileDB.EnsureIndex:input_type -> filedb.v1.EnsureIndexRequest
+	33, // 38: filedb.v1.FileDB.DropIndex:input_type -> filedb.v1.DropIndexRequest
+	35, // 39: filedb.v1.FileDB.ListIndexes:input_type -> filedb.v1.ListIndexesRequest
+	37, // 40: filedb.v1.FileDB.BeginTx:input_type -> filedb.v1.BeginTxRequest
+	39, // 41: filedb.v1.FileDB.CommitTx:input_type -> filedb.v1.CommitTxRequest
+	41, // 42: filedb.v1.FileDB.RollbackTx:input_type -> filedb.v1.RollbackTxRequest
+	43, // 43: filedb.v1.FileDB.Watch:input_type -> filedb.v1.WatchRequest
+	45, // 44: filedb.v1.FileDB.CollectionStats:input_type -> filedb.v1.CollectionStatsRequest
+	47, // 45: filedb.v1.FileDB.Compact:input_type -> filedb.v1.CompactRequest
+	49, // 46: filedb.v1.FileDB.Snapshot:input_type -> filedb.v1.SnapshotRequest
+	8,  // 47: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
+	10, // 48: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
+	12, // 49: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
+	14, // 50: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
+	16, // 51: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
+	19, // 52: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
+	19, // 53: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
+	21, // 54: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
+	23, // 55: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
+	25, // 56: filedb.v1.FileDB.Upsert:output_type -> filedb.v1.UpsertResponse
+	19, // 57: filedb.v1.FileDB.FindByKey:output_type -> filedb.v1.FindResponse
+	21, // 58: filedb.v1.FileDB.UpdateByKey:output_type -> filedb.v1.UpdateResponse
+	23, // 59: filedb.v1.FileDB.DeleteByKey:output_type -> filedb.v1.DeleteResponse
+	30, // 60: filedb.v1.FileDB.UpdateIfRev:output_type -> filedb.v1.UpdateIfRevResponse
+	32, // 61: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
+	34, // 62: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
+	36, // 63: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
+	38, // 64: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
+	40, // 65: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
+	42, // 66: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
+	44, // 67: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
+	46, // 68: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
+	48, // 69: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
+	50, // 70: filedb.v1.FileDB.Snapshot:output_type -> filedb.v1.SnapshotChunk
+	47, // [47:71] is the sub-list for method output_type
+	23, // [23:47] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_proto_filedb_proto_init() }
@@ -2666,7 +3194,7 @@ func file_proto_filedb_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_filedb_proto_rawDesc), len(file_proto_filedb_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   42,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

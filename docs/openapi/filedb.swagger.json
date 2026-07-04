@@ -239,6 +239,166 @@
         ]
       }
     },
+    "/v1/{collection}/keys/{key}": {
+      "get": {
+        "summary": "FindByKey returns the record carrying the caller-supplied string key.\nA missing key yields NOT_FOUND.",
+        "operationId": "FileDB_FindByKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1FindResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      },
+      "delete": {
+        "summary": "DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.",
+        "operationId": "FileDB_DeleteByKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      },
+      "put": {
+        "summary": "UpdateByKey overwrites the record carrying key, preserving the key itself.\nA missing key yields NOT_FOUND.",
+        "operationId": "FileDB_UpdateByKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpdateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/FileDBUpdateByKeyBody"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
+    "/v1/{collection}/keys/{key}:cas": {
+      "post": {
+        "summary": "UpdateIfRev conditionally updates the record carrying key: the write is\napplied only if the record's current revision equals expected_rev. A stale\nrevision (or a missing key) is a clean no-op reported as swapped=false, not\nan error.",
+        "operationId": "FileDB_UpdateIfRev",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpdateIfRevResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/FileDBUpdateIfRevBody"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/{collection}/records": {
       "post": {
         "operationId": "FileDB_Insert",
@@ -478,6 +638,45 @@
         ]
       }
     },
+    "/v1/{collection}/records:upsert": {
+      "post": {
+        "summary": "Upsert inserts data under key if no live record carries it, or replaces the\nexisting record's data if one does — atomically. Returns the resulting\nrecord with its (incremented on replace) revision. This is the keyed-insert\npath: there is no separate InsertWithKey RPC.",
+        "operationId": "FileDB_Upsert",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpsertResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/FileDBUpsertBody"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/{collection}/stats": {
       "get": {
         "operationId": "FileDB_CollectionStats",
@@ -602,6 +801,10 @@
           "type": "string",
           "format": "int64",
           "description": "Optional per-record TTL, in seconds. When \u003e 0, the record expires this long\nafter insertion, overriding any collection default. 0 (the default)\napplies the collection's default TTL, if any."
+        },
+        "key": {
+          "type": "string",
+          "description": "Optional caller-supplied string primary key (keyed Create). When set, the\nrecord is inserted under this key and a key already held by a live record\nis rejected with ALREADY_EXISTS. Empty (the default) preserves the existing\nserver-assigned-id behaviour. A keyed insert does not participate in\ntransactions or per-record TTL."
         }
       }
     },
@@ -631,6 +834,37 @@
           "type": "string",
           "format": "int64",
           "description": "Optional per-record TTL, in seconds, resetting the record's deadline to\nthis long from now. When \u003e 0 it overrides the collection default; 0 (the\ndefault) re-applies the collection default TTL, if any."
+        }
+      }
+    },
+    "FileDBUpdateByKeyBody": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object"
+        }
+      }
+    },
+    "FileDBUpdateIfRevBody": {
+      "type": "object",
+      "properties": {
+        "expectedRev": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "data": {
+          "type": "object"
+        }
+      }
+    },
+    "FileDBUpsertBody": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object"
         }
       }
     },
@@ -857,6 +1091,14 @@
         },
         "dateAdded": {
           "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "description": "Caller-supplied string key (empty for a keyless insert) and the record's\nrevision. A fresh insert always starts at rev 1."
+        },
+        "rev": {
+          "type": "string",
+          "format": "uint64"
         }
       }
     },
@@ -911,6 +1153,28 @@
         "dateModified": {
           "type": "string",
           "format": "date-time"
+        },
+        "key": {
+          "type": "string",
+          "description": "Caller-supplied string primary key, empty for records inserted without one."
+        },
+        "rev": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Monotonic per-record revision, bumped on every write. Fresh records start\nat 1. Feed it to UpdateIfRev for optimistic-concurrency updates."
+        }
+      }
+    },
+    "v1UpdateIfRevResponse": {
+      "type": "object",
+      "properties": {
+        "swapped": {
+          "type": "boolean",
+          "description": "swapped is true when expected_rev matched and the update applied; false —\nnever an error — when the revision was stale or no live record carries key."
+        },
+        "record": {
+          "$ref": "#/definitions/v1Record",
+          "description": "The resulting record when swapped is true; unset otherwise."
         }
       }
     },
@@ -923,6 +1187,23 @@
         },
         "dateModified": {
           "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "description": "Caller-supplied string key (empty for a keyless update) and the record's\nrevision after the write."
+        },
+        "rev": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1UpsertResponse": {
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "#/definitions/v1Record",
+          "description": "The resulting record, including its key and (incremented on replace) rev."
         }
       }
     },

@@ -1534,6 +1534,193 @@ func TestIntegration_Tracing_DisabledIsNoop(t *testing.T) {
 	}
 }
 
+// ---- N1: keyed CRUD, Upsert, CAS & Rev over the wire ------------------------
+
+// TestIntegration_N1_UpsertInsertThenReplace verifies that Upsert inserts on a
+// fresh key at rev 1, then replaces on the same key returning the same id with
+// an incremented rev and the new data.
+func TestIntegration_N1_UpsertInsertThenReplace(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "kv"})
+
+	ins, err := c.Upsert(ctx(), &pb.UpsertRequest{
+		Collection: "kv", Key: "u1", Data: mustStruct(t, map[string]any{"n": float64(1)}),
+	})
+	if err != nil {
+		t.Fatalf("Upsert insert: %v", err)
+	}
+	if ins.Record.Key != "u1" || ins.Record.Rev != 1 {
+		t.Fatalf("Upsert insert: got key=%q rev=%d, want key=u1 rev=1", ins.Record.Key, ins.Record.Rev)
+	}
+	if got := ins.Record.Data.Fields["n"].GetNumberValue(); got != 1 {
+		t.Fatalf("Upsert insert n: got %v, want 1", got)
+	}
+
+	rep, err := c.Upsert(ctx(), &pb.UpsertRequest{
+		Collection: "kv", Key: "u1", Data: mustStruct(t, map[string]any{"n": float64(2)}),
+	})
+	if err != nil {
+		t.Fatalf("Upsert replace: %v", err)
+	}
+	if rep.Record.Id != ins.Record.Id {
+		t.Errorf("Upsert replace id: got %d, want %d (same record)", rep.Record.Id, ins.Record.Id)
+	}
+	if rep.Record.Rev != 2 {
+		t.Errorf("Upsert replace rev: got %d, want 2 (incremented)", rep.Record.Rev)
+	}
+	if got := rep.Record.Data.Fields["n"].GetNumberValue(); got != 2 {
+		t.Errorf("Upsert replace n: got %v, want 2", got)
+	}
+
+	// FindByKey observes the replaced record.
+	fr, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "kv", Key: "u1"})
+	if err != nil {
+		t.Fatalf("FindByKey: %v", err)
+	}
+	if fr.Record.Rev != 2 || fr.Record.Key != "u1" {
+		t.Errorf("FindByKey: got key=%q rev=%d, want key=u1 rev=2", fr.Record.Key, fr.Record.Rev)
+	}
+	if got := fr.Record.Data.Fields["n"].GetNumberValue(); got != 2 {
+		t.Errorf("FindByKey n: got %v, want 2", got)
+	}
+}
+
+// TestIntegration_N1_CAS verifies UpdateIfRev: a stale revision is a clean
+// no-op (swapped=false, no error) that leaves the record untouched, and the
+// current revision applies and bumps the rev.
+func TestIntegration_N1_CAS(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "cas"})
+
+	if _, err := c.Upsert(ctx(), &pb.UpsertRequest{
+		Collection: "cas", Key: "c1", Data: mustStruct(t, map[string]any{"v": "a"}),
+	}); err != nil {
+		t.Fatalf("seed Upsert: %v", err)
+	}
+
+	// Stale rev → clean no-op, no error, no record.
+	stale, err := c.UpdateIfRev(ctx(), &pb.UpdateIfRevRequest{
+		Collection: "cas", Key: "c1", ExpectedRev: 99, Data: mustStruct(t, map[string]any{"v": "stale"}),
+	})
+	if err != nil {
+		t.Fatalf("UpdateIfRev stale: unexpected error %v", err)
+	}
+	if stale.Swapped {
+		t.Error("UpdateIfRev stale: got swapped=true, want false")
+	}
+	if stale.Record != nil {
+		t.Errorf("UpdateIfRev stale: got record %v, want nil", stale.Record)
+	}
+	fr, _ := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "cas", Key: "c1"})
+	if got := fr.Record.Data.Fields["v"].GetStringValue(); got != "a" {
+		t.Errorf("after stale CAS: value=%q, want unchanged \"a\"", got)
+	}
+
+	// Current rev → applies and bumps rev.
+	ok, err := c.UpdateIfRev(ctx(), &pb.UpdateIfRevRequest{
+		Collection: "cas", Key: "c1", ExpectedRev: 1, Data: mustStruct(t, map[string]any{"v": "b"}),
+	})
+	if err != nil {
+		t.Fatalf("UpdateIfRev current: %v", err)
+	}
+	if !ok.Swapped {
+		t.Fatal("UpdateIfRev current: got swapped=false, want true")
+	}
+	if ok.Record == nil || ok.Record.Rev != 2 {
+		t.Fatalf("UpdateIfRev current: got record %v, want rev 2", ok.Record)
+	}
+	if got := ok.Record.Data.Fields["v"].GetStringValue(); got != "b" {
+		t.Errorf("UpdateIfRev current value: got %q, want b", got)
+	}
+}
+
+// TestIntegration_N1_DuplicateKey verifies a keyed insert of an already-held key
+// is rejected with ALREADY_EXISTS.
+func TestIntegration_N1_DuplicateKey(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "dup"})
+
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{
+		Collection: "dup", Key: "k1", Data: mustStruct(t, map[string]any{"n": float64(1)}),
+	}); err != nil {
+		t.Fatalf("first keyed insert: %v", err)
+	}
+	_, err := c.Insert(ctx(), &pb.InsertRequest{
+		Collection: "dup", Key: "k1", Data: mustStruct(t, map[string]any{"n": float64(2)}),
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("duplicate keyed insert: got code %v (err %v), want AlreadyExists", status.Code(err), err)
+	}
+}
+
+// TestIntegration_N1_MissingKeyNotFound verifies FindByKey/UpdateByKey/
+// DeleteByKey on an absent key each return NOT_FOUND.
+func TestIntegration_N1_MissingKeyNotFound(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "miss"})
+	// A keyed write creates the _key index so resolveKey has a real index to miss.
+	c.Insert(ctx(), &pb.InsertRequest{Collection: "miss", Key: "present", Data: mustStruct(t, map[string]any{"n": float64(1)})})
+
+	if _, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "miss", Key: "ghost"}); status.Code(err) != codes.NotFound {
+		t.Errorf("FindByKey missing: got %v, want NotFound", status.Code(err))
+	}
+	if _, err := c.UpdateByKey(ctx(), &pb.UpdateByKeyRequest{
+		Collection: "miss", Key: "ghost", Data: mustStruct(t, map[string]any{"n": float64(9)}),
+	}); status.Code(err) != codes.NotFound {
+		t.Errorf("UpdateByKey missing: got %v, want NotFound", status.Code(err))
+	}
+	if _, err := c.DeleteByKey(ctx(), &pb.DeleteByKeyRequest{Collection: "miss", Key: "ghost"}); status.Code(err) != codes.NotFound {
+		t.Errorf("DeleteByKey missing: got %v, want NotFound", status.Code(err))
+	}
+}
+
+// TestIntegration_N1_KeyRevPopulated verifies key/rev are populated on the
+// record-bearing responses: keyed Insert, FindById, Find stream, and UpdateByKey.
+func TestIntegration_N1_KeyRevPopulated(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "kr"})
+
+	ins, err := c.Insert(ctx(), &pb.InsertRequest{
+		Collection: "kr", Key: "kr1", Data: mustStruct(t, map[string]any{"n": float64(1)}),
+	})
+	if err != nil {
+		t.Fatalf("keyed Insert: %v", err)
+	}
+	if ins.Key != "kr1" || ins.Rev != 1 {
+		t.Errorf("InsertResponse: got key=%q rev=%d, want key=kr1 rev=1", ins.Key, ins.Rev)
+	}
+
+	// FindById surfaces key/rev.
+	fb, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "kr", Id: ins.Id})
+	if err != nil {
+		t.Fatalf("FindById: %v", err)
+	}
+	if fb.Record.Key != "kr1" || fb.Record.Rev != 1 {
+		t.Errorf("FindById record: got key=%q rev=%d, want key=kr1 rev=1", fb.Record.Key, fb.Record.Rev)
+	}
+
+	// Find stream surfaces key/rev.
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "kr"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs := collectFind(t, stream)
+	if len(recs) != 1 || recs[0].Key != "kr1" || recs[0].Rev != 1 {
+		t.Errorf("Find record: got %+v, want one record key=kr1 rev=1", recs)
+	}
+
+	// UpdateByKey surfaces the id, key, and bumped rev.
+	ub, err := c.UpdateByKey(ctx(), &pb.UpdateByKeyRequest{
+		Collection: "kr", Key: "kr1", Data: mustStruct(t, map[string]any{"n": float64(2)}),
+	})
+	if err != nil {
+		t.Fatalf("UpdateByKey: %v", err)
+	}
+	if ub.Id != ins.Id || ub.Key != "kr1" || ub.Rev != 2 {
+		t.Errorf("UpdateByKey response: got id=%d key=%q rev=%d, want id=%d key=kr1 rev=2", ub.Id, ub.Key, ub.Rev, ins.Id)
+	}
+}
+
 // mustStruct builds a *structpb.Struct or fails the test.
 func mustStruct(t *testing.T, m map[string]any) *structpb.Struct {
 	t.Helper()
