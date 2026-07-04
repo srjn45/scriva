@@ -94,8 +94,8 @@ sequentially and treats an entry as live only when the primary index still
 points at exactly its `(segment, offset)`, skipping superseded versions and
 tombstones. This keeps the deduplication cost off the heap.
 
-`limit`, `offset`, and `order_by` are pushed **into** the engine so their cost is
-paid before materialization:
+`limit`, `offset`, `order_by_fields`, and the `page_token` cursor are pushed
+**into** the engine so their cost is paid before materialization:
 
 | Query shape | Rows examined | Memory held |
 |---|---|---|
@@ -108,14 +108,47 @@ a million. A `gt`/`lt` predicate on an indexed field is likewise served from the
 index's ordered key view (see [Secondary Indexes](#secondary-indexes)); ordering
 by a non-indexed field still examines every candidate.
 
-**Ordering guarantees.** With `order_by`, results are sorted by that field using
+**Ordering guarantees.** `order_by_fields` is a list of `{field, desc}` sort keys
+(`ScanOptions.Sort` in the engine) applied lexicographically — the first field is
+dominant, and each field carries its own direction. Every comparison uses
 `query.Compare` — the *same* type-aware comparison the `gt`/`gte`/`lt`/`lte`
 filter operators use, so a sort and a filter never disagree about how two values
 relate. Numbers order numerically (`2` before `10`, not the lexical `"10"` before
 `"2"`) and strings order lexically; mixed types degrade to a deterministic string
-comparison. `descending` reverses the order. Ties are broken by ascending `id` so
-pages are deterministic and a bounded top-K agrees with a full sort. Without
-`order_by`, results are returned in insertion (id) order.
+comparison. The record **`id` is always the implicit final tiebreaker** (ascending),
+so the ordering is *total*: results are deterministic, a bounded top-K agrees with a
+full sort, and — crucially — a keyset cursor is unambiguous. The deprecated scalar
+`order_by`/`descending` is promoted to a single-element `Sort` when
+`order_by_fields` is empty, so the two share one code path. Without any ordering,
+results are returned in insertion (id) order.
+
+**Keyset (cursor) pagination.** `offset` skips rows by *counting* past them —
+O(offset). A `page_token` instead lets the engine *seek* past the rows already
+returned — O(page) regardless of depth. The mechanics:
+
+- The token is an opaque, URL-safe **base64 of compact JSON** — `{"k":[…sort-key
+  values…],"i":<id>}` — encoding the `(sort-key tuple, id)` of the last row emitted
+  on the previous page. The codec (`encodeCursor`/`decodeCursor` in `engine/scan.go`)
+  is defined entirely in the engine with **no grpc/proto dependency**, so the
+  embeddable engine keeps its zero transport imports; JSON round-trips numbers as
+  `float64`, which `query.Compare` treats identically to the numeric types decoded
+  from a segment.
+- On a paginated scan the engine rebuilds a synthetic boundary `ScanResult` from the
+  token and keeps only rows that sort **strictly after** it under the very same
+  `sortLess` used for ordering. Because that order is total (id tiebreak), "strictly
+  after" excludes exactly the boundary row and nothing else — so no row is skipped or
+  re-emitted, even across concurrent inserts. Concatenated pages therefore cover every
+  matching row **exactly once, no duplicates and no gaps**.
+- After emitting a page, the engine sets `ScanStats.NextPageToken` **only when the
+  limit truncated the result** (there were more matching rows than `offset+limit`),
+  encoding the last emitted row. The server rides this token on the **final streamed
+  `FindResponse`** (buffering one record so the last message can carry it) — no extra
+  record-less message that would break an older client. An empty token means the last
+  page was reached. A malformed token, or one whose key count disagrees with the
+  ordering, surfaces as `engine.ErrInvalidPageToken` → gRPC `InvalidArgument`.
+
+A cursor requires an ordering (`order_by_fields` or the deprecated scalar); pass the
+same ordering, filter, and limit on every page, with `offset = 0`.
 
 **Cancellation.** `ScanStream` threads the request `context` and checks it
 between segments and records, so a client that cancels a long `Find` (or

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -147,8 +148,9 @@ func findCmd(flags *cliFlags) *cobra.Command {
 	var (
 		limit      uint32
 		offset     uint32
-		orderBy    string
+		orderBy    []string
 		descending bool
+		pageToken  string
 		fields     []string
 	)
 	cmd := &cobra.Command{
@@ -162,13 +164,23 @@ func findCmd(flags *cliFlags) *cobra.Command {
 			}
 			defer cleanup()
 
+			orderByFields, err := parseOrderBy(orderBy)
+			if err != nil {
+				return err
+			}
 			req := &pb.FindRequest{
-				Collection: args[0],
-				Limit:      limit,
-				Offset:     offset,
-				OrderBy:    orderBy,
-				Descending: descending,
-				Fields:     fields,
+				Collection:    args[0],
+				Limit:         limit,
+				Offset:        offset,
+				OrderByFields: orderByFields,
+				Descending:    descending,
+				PageToken:     pageToken,
+				Fields:        fields,
+			}
+			// A single bare --order-by (no direction) also honours --descending so
+			// the flag stays a drop-in for the pre-N3 single-field sort.
+			if len(orderByFields) == 1 && !strings.Contains(orderBy[0], ":") {
+				orderByFields[0].Desc = descending
 			}
 
 			if len(args) == 2 {
@@ -182,6 +194,7 @@ func findCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var nextToken string
 			for {
 				resp, err := stream.Recv()
 				if errors.Is(err, io.EOF) {
@@ -190,17 +203,59 @@ func findCmd(flags *cliFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				printRecord(cmd, resp.Record)
+				if resp.PageToken != "" {
+					nextToken = resp.PageToken
+				}
+				if resp.Record != nil {
+					printRecord(cmd, resp.Record)
+				}
+			}
+			// Surface the resume cursor so the next page can be fetched with
+			// --page-token; empty means the last page was reached.
+			if nextToken != "" {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "next-page-token: %s\n", nextToken); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().Uint32Var(&limit, "limit", 0, "Max records to return (0 = all)")
 	cmd.Flags().Uint32Var(&offset, "offset", 0, "Skip N records")
-	cmd.Flags().StringVar(&orderBy, "order-by", "", "Field name to sort by")
-	cmd.Flags().BoolVar(&descending, "descending", false, "Sort in descending order")
+	cmd.Flags().StringArrayVar(&orderBy, "order-by", nil, "Sort key as field[:asc|:desc] (repeatable for a multi-field sort; id is the final tiebreak)")
+	cmd.Flags().BoolVar(&descending, "descending", false, "Sort a single bare --order-by descending (deprecated; prefer field:desc)")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "Keyset cursor from a previous find's next-page-token (requires --order-by)")
 	cmd.Flags().StringSliceVar(&fields, "fields", nil, "Comma-separated fields to return (id/key/rev always included; empty = full record)")
 	return cmd
+}
+
+// parseOrderBy turns repeated --order-by flags into proto OrderBy sort keys. Each
+// value is field[:asc|:desc]; a bare field defaults to ascending. Fields are
+// applied in the order given (first dominant); the engine adds an id tiebreak.
+func parseOrderBy(specs []string) ([]*pb.OrderBy, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	out := make([]*pb.OrderBy, 0, len(specs))
+	for _, s := range specs {
+		field, dir, hasDir := strings.Cut(s, ":")
+		if field == "" {
+			return nil, fmt.Errorf("order-by: empty field in %q", s)
+		}
+		ob := &pb.OrderBy{Field: field}
+		if hasDir {
+			switch strings.ToLower(dir) {
+			case "asc":
+				ob.Desc = false
+			case "desc":
+				ob.Desc = true
+			default:
+				return nil, fmt.Errorf("order-by: %q has invalid direction %q (want asc or desc)", s, dir)
+			}
+		}
+		out = append(out, ob)
+	}
+	return out, nil
 }
 
 func findByIDCmd(flags *cliFlags) *cobra.Command {

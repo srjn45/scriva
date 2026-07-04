@@ -137,6 +137,35 @@ pre-existing clients are unaffected.
   and the embeddable engine keeps its zero transport dependencies. New CLI flag
   `--fields` (comma-separated) on `find`, `get`, and `find-by-key`. Additive
   field numbers only; the SDK parity sweep is a separate follow-on wave.
+- **Keyset (cursor) pagination + multi-field order_by (N3).** `Find` can now sort
+  by several fields and paginate deep result sets in O(page) instead of O(offset):
+  - **Multi-field, directional sort.** New `repeated OrderBy { field, desc }
+    order_by_fields` on `FindRequest` applies sort keys lexicographically (first
+    dominant), each with its own direction, reusing the same type-aware
+    `query.Compare` as the filter operators. The record `id` is always the implicit
+    final tiebreaker, so the ordering is **total** and pages are stable.
+  - **Opaque keyset cursor.** New `string page_token` on both `FindRequest` and
+    `FindResponse`. A response carries the next `page_token` on its final streamed
+    message when more rows remain (empty = last page); feed it back to seek strictly
+    past the rows already returned rather than counting past them. Concatenated pages
+    cover every matching row **exactly once — no duplicates, no gaps — even under
+    concurrent inserts**. The cursor is a base64 of compact JSON encoding the last
+    `(sort-key tuple, id)`; its codec lives entirely in the engine
+    (`engine.ScanOptions.PageToken` / `ScanStats.NextPageToken`, new
+    `engine.SortField`), so the embeddable engine keeps **zero** transport
+    dependencies. A malformed token → `engine.ErrInvalidPageToken` → gRPC
+    `InvalidArgument`. `offset` is retained for backward compatibility.
+  - New CLI: repeatable `--order-by field[:asc|:desc]` (multi-field) and a
+    `--page-token` passthrough on `find`; a full page prints its
+    `next-page-token:` for the next fetch. The 7-language SDK parity sweep is a
+    separate follow-on wave.
+  - **⚠️ Deprecation / migration.** The scalar `FindRequest.order_by` and
+    `descending` fields are now marked `[deprecated = true]`. They still work — and
+    are honoured **only** when `order_by_fields` is empty — for one release, then
+    will be removed (a minor-bump break, per the versioning policy above). **Migrate**
+    `order_by:"f", descending:d` → `order_by_fields:[{field:"f", desc:d}]`. The CLI
+    `--descending` flag likewise still applies to a single bare `--order-by`; prefer
+    the `field:desc` form.
 
 ## [0.3.0] — 2026-07-03
 

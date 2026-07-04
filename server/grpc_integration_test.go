@@ -339,6 +339,193 @@ func TestIntegration_Find_UnorderedLimit(t *testing.T) {
 	}
 }
 
+// collectFindPage drains a Find stream into its records and the next-page cursor.
+// The token rides the final record's message (N3), so it survives collection into
+// a single trailing value; an empty token means the last page was reached.
+func collectFindPage(t *testing.T, stream pb.FileDB_FindClient) ([]*pb.Record, string) {
+	t.Helper()
+	var recs []*pb.Record
+	var token string
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Find.Recv: %v", err)
+		}
+		if resp.PageToken != "" {
+			token = resp.PageToken
+		}
+		if resp.Record != nil {
+			recs = append(recs, resp.Record)
+		}
+	}
+	return recs, token
+}
+
+// TestIntegration_Find_KeysetPagination cursor-paginates a collection end-to-end
+// over gRPC and asserts the concatenated pages cover every row exactly once — no
+// dupes, no gaps — even when new rows are inserted between page fetches.
+func TestIntegration_Find_KeysetPagination(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "feed"})
+
+	const total = 200
+	original := map[uint64]bool{}
+	for i := 0; i < total; i++ {
+		// A small bucket domain forces many ties, so pagination only works if the
+		// cursor carries the id tiebreak alongside the sort key.
+		d, _ := structpb.NewStruct(map[string]any{"bucket": float64(i % 6), "n": float64(i)})
+		resp, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "feed", Data: d})
+		if err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		original[resp.Id] = true
+	}
+
+	seen := map[uint64]bool{}
+	token := ""
+	inserted := 0
+	for page := 0; page < 1000; page++ {
+		stream, err := c.Find(ctx(), &pb.FindRequest{
+			Collection:    "feed",
+			OrderByFields: []*pb.OrderBy{{Field: "bucket"}},
+			Limit:         17,
+			PageToken:     token,
+		})
+		if err != nil {
+			t.Fatalf("Find page %d: %v", page, err)
+		}
+		recs, next := collectFindPage(t, stream)
+		if len(recs) > 17 {
+			t.Fatalf("page %d returned %d rows > limit", page, len(recs))
+		}
+		for _, r := range recs {
+			if seen[r.Id] {
+				t.Fatalf("id %d returned on more than one page", r.Id)
+			}
+			seen[r.Id] = true
+		}
+		if next == "" {
+			break
+		}
+		token = next
+		// Insert a fresh row between fetches; it must not perturb the original set.
+		d, _ := structpb.NewStruct(map[string]any{"bucket": float64(page % 6), "n": float64(10000 + page)})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "feed", Data: d})
+		inserted++
+	}
+
+	for id := range original {
+		if !seen[id] {
+			t.Errorf("original id %d never returned across pages (gap)", id)
+		}
+	}
+}
+
+// TestIntegration_Find_MultiFieldOrderTieBreak drives a two-field sort with a
+// per-field direction over gRPC and asserts ties on the sort keys resolve on a
+// stable ascending id, so the ordering is total and deterministic.
+func TestIntegration_Find_MultiFieldOrderTieBreak(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "roster"})
+
+	rows := []map[string]any{
+		{"team": "b", "score": float64(10)},
+		{"team": "a", "score": float64(20)},
+		{"team": "a", "score": float64(10)},
+		{"team": "b", "score": float64(20)},
+		{"team": "a", "score": float64(10)},
+	}
+	ids := make([]uint64, len(rows))
+	for i, r := range rows {
+		d, _ := structpb.NewStruct(r)
+		resp, _ := c.Insert(ctx(), &pb.InsertRequest{Collection: "roster", Data: d})
+		ids[i] = resp.Id
+	}
+
+	// team ASC, then score DESC; the two team=a/score=10 rows tie and must come
+	// back in ascending id order.
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection: "roster",
+		OrderByFields: []*pb.OrderBy{
+			{Field: "team", Desc: false},
+			{Field: "score", Desc: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs, _ := collectFindPage(t, stream)
+	wantIDs := []uint64{ids[1], ids[2], ids[4], ids[3], ids[0]}
+	if len(recs) != len(wantIDs) {
+		t.Fatalf("got %d records, want %d", len(recs), len(wantIDs))
+	}
+	for i, w := range wantIDs {
+		if recs[i].Id != w {
+			gotIDs := make([]uint64, len(recs))
+			for j, r := range recs {
+				gotIDs[j] = r.Id
+			}
+			t.Fatalf("multi-field sort ids = %v, want %v", gotIDs, wantIDs)
+		}
+	}
+}
+
+// TestIntegration_Find_DeprecatedScalarOrderBy pins back-compat: the deprecated
+// scalar order_by/descending are still honoured when order_by_fields is empty.
+func TestIntegration_Find_DeprecatedScalarOrderBy(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "legacy"})
+	for _, n := range []float64{3, 1, 5, 2, 4} {
+		d, _ := structpb.NewStruct(map[string]any{"v": n})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "legacy", Data: d})
+	}
+
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection: "legacy",
+		OrderBy:    "v", // deprecated scalar path
+		Descending: true,
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	recs, _ := collectFindPage(t, stream)
+	want := []float64{5, 4, 3, 2, 1}
+	if len(recs) != len(want) {
+		t.Fatalf("got %d records, want %d", len(recs), len(want))
+	}
+	for i, w := range want {
+		if got := recs[i].Data.Fields["v"].GetNumberValue(); got != w {
+			t.Errorf("scalar order_by desc[%d] = %v, want %v", i, got, w)
+		}
+	}
+}
+
+// TestIntegration_Find_InvalidPageToken checks a malformed cursor is rejected with
+// InvalidArgument rather than silently returning wrong or empty results.
+func TestIntegration_Find_InvalidPageToken(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "cur"})
+	d, _ := structpb.NewStruct(map[string]any{"v": float64(1)})
+	c.Insert(ctx(), &pb.InsertRequest{Collection: "cur", Data: d})
+
+	stream, err := c.Find(ctx(), &pb.FindRequest{
+		Collection:    "cur",
+		OrderByFields: []*pb.OrderBy{{Field: "v"}},
+		Limit:         1,
+		PageToken:     "!!! not a real token !!!",
+	})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	_, err = stream.Recv()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("invalid page token: want InvalidArgument, got %v", err)
+	}
+}
+
 // TestIntegration_Find_Projection drives field projection (N2) end-to-end over
 // gRPC: a projected Find returns only the requested fields, an empty projection
 // returns the full record, and an unknown requested field is silently absent.

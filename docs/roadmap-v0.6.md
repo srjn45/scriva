@@ -357,7 +357,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 **v0.7.0 — Network/engine API parity + query breadth**
 - [x] N1 — keyed CRUD, Upsert, CAS & Rev over the wire
 - [x] N2 — field projection on Find/FindById
-- [ ] N3 — keyset (cursor) pagination + multi-field order_by
+- [x] N3 — keyset (cursor) pagination + multi-field order_by
 - [ ] N4 — aggregations (count / group-by / numeric)
 
 **v0.8.0 — Replication & HA**

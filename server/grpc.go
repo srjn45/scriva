@@ -223,32 +223,80 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 	// The engine honours order/offset/limit and streams matches as it reads,
 	// so a limited query never materialises the whole collection. stream.Context()
 	// is threaded through so a client cancelling the RPC stops server-side work.
+	// order_by_fields (N3) supersedes the deprecated scalar order_by/descending;
+	// the engine falls back to the scalar when Sort is empty, so passing both is
+	// safe. page_token drives keyset pagination.
 	opts := engine.ScanOptions{
 		Filter:     f,
 		Limit:      int(req.Limit),
 		Offset:     int(req.Offset),
-		OrderBy:    req.OrderBy,
-		Descending: req.Descending,
+		OrderBy:    req.OrderBy,    //nolint:staticcheck // deprecated scalar honoured for back-compat (N3)
+		Descending: req.Descending, //nolint:staticcheck // deprecated scalar honoured for back-compat (N3)
+		Sort:       protoOrderByToSort(req.OrderByFields),
+		PageToken:  req.PageToken,
 		Fields:     req.Fields,
 	}
+
+	// The next-page token is known only once the scan finishes, but a
+	// server-streaming Find has no trailer to carry it. Send each record one step
+	// behind so the final record message can carry the resume cursor in its
+	// page_token; a keyless empty token on the last page just leaves the field
+	// unset. Buffering one record keeps this backward compatible — no extra
+	// record-less message that an older client would choke on.
+	var pending *pb.Record
+	flush := func(token string) error {
+		if pending == nil {
+			return nil
+		}
+		err := stream.Send(&pb.FindResponse{Record: pending, PageToken: token})
+		pending = nil
+		return err
+	}
 	stats, err := col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
+		if err := flush(""); err != nil {
+			return err
+		}
 		rec, err := toProtoRecord(r.ID, keyOf(r.Data), r.Rev, r.Data, r.Ts)
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
 		}
-		return stream.Send(&pb.FindResponse{Record: rec})
+		pending = rec
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return status.FromContextError(err).Err()
+		}
+		if errors.Is(err, engine.ErrInvalidPageToken) {
+			return status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		if _, ok := status.FromError(err); ok {
 			return err // already a gRPC status (stream.Send / marshal error) — preserve its code
 		}
 		return status.Errorf(codes.Internal, "find: %v", err)
 	}
+	if err := flush(stats.NextPageToken); err != nil {
+		if _, ok := status.FromError(err); ok {
+			return err
+		}
+		return status.Errorf(codes.Internal, "find: %v", err)
+	}
 	s.recordScan(req.Collection, req.Filter, stats, time.Since(start))
 	return nil
+}
+
+// protoOrderByToSort maps the repeated proto OrderBy sort keys to the engine's
+// SortField slice, preserving order and per-field direction. An empty input
+// yields nil, letting the engine fall back to the deprecated scalar order_by.
+func protoOrderByToSort(obs []*pb.OrderBy) []engine.SortField {
+	if len(obs) == 0 {
+		return nil
+	}
+	out := make([]engine.SortField, 0, len(obs))
+	for _, ob := range obs {
+		out = append(out, engine.SortField{Field: ob.Field, Desc: ob.Desc})
+	}
+	return out
 }
 
 // recordScan feeds a completed scan's cost to the metrics histogram and, when a
