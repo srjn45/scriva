@@ -138,6 +138,92 @@ echo "Inserted record #$ttlId with a 3600s TTL\n";
 $db->update(COLLECTION, $ttlId, ['name' => 'Ephemeral', 'role' => 'temp', 'touched' => true]);
 echo "Updated the TTL record (deadline preserved)\n";
 
+// ── Field projection (N2) ────────────────────────────────────────────────────
+$slim = $db->findById(COLLECTION, $id3, fields: ['name']);
+echo 'Projected findById (name only): ' . json_encode($slim['data'])
+    . " (rev={$slim['rev']})\n";
+
+// ── Keyset pagination + multi-field ordering (N3) ────────────────────────────
+$page1 = $db->findPage(
+    COLLECTION,
+    limit: 2,
+    orderByFields: [['field' => 'age', 'desc' => false]],
+);
+echo 'Page 1 (2 by age asc): ';
+foreach ($page1['records'] as $r) {
+    echo $r['data']['name'] . '(' . $r['data']['age'] . ') ';
+}
+echo "\n";
+if ($page1['page_token'] !== '') {
+    $page2 = $db->findPage(
+        COLLECTION,
+        limit: 2,
+        orderByFields: [['field' => 'age', 'desc' => false]],
+        pageToken: $page1['page_token'],
+    );
+    echo 'Page 2: ';
+    foreach ($page2['records'] as $r) {
+        echo $r['data']['name'] . '(' . $r['data']['age'] . ') ';
+    }
+    echo "\n";
+}
+
+// ── Keyed CRUD, upsert & compare-and-swap (N1) ───────────────────────────────
+$up = $db->upsert(COLLECTION, 'user:alice', ['name' => 'Alice', 'age' => 31]);
+echo "Upsert key=user:alice -> rev={$up['rev']}\n";
+$up2 = $db->upsert(COLLECTION, 'user:alice', ['name' => 'Alice', 'age' => 32]);
+echo "Upsert again (replace) -> rev={$up2['rev']}\n";
+
+$fetched = $db->findByKey(COLLECTION, 'user:alice');
+echo 'FindByKey user:alice: ' . json_encode($fetched['data']) . "\n";
+
+// compare-and-swap: stale rev is a clean no-op
+$stale = $db->updateIfRev(COLLECTION, 'user:alice', 1, ['name' => 'Alice', 'age' => 99]);
+echo 'CAS with stale rev=1: swapped=' . ($stale['swapped'] ? 'true' : 'false') . "\n";
+$fresh = $db->updateIfRev(COLLECTION, 'user:alice', $up2['rev'], ['name' => 'Alice', 'age' => 33]);
+echo 'CAS with fresh rev=' . $up2['rev'] . ': swapped='
+    . ($fresh['swapped'] ? 'true' : 'false') . " (rev={$fresh['record']['rev']})\n";
+
+$db->updateByKey(COLLECTION, 'user:alice', ['name' => 'Alice', 'age' => 34]);
+echo "UpdateByKey user:alice ok\n";
+
+// keyed insert conflict maps to AlreadyExistsException
+try {
+    $db->insert(COLLECTION, ['name' => 'dup'], key: 'user:alice');
+    echo "ERROR: expected AlreadyExistsException\n";
+} catch (\FileDBv2\AlreadyExistsException $e) {
+    echo "Keyed insert on taken key threw AlreadyExistsException (as expected)\n";
+}
+
+$db->deleteByKey(COLLECTION, 'user:alice');
+echo "DeleteByKey user:alice ok\n";
+try {
+    $db->findByKey(COLLECTION, 'user:alice');
+    echo "ERROR: expected NotFoundException\n";
+} catch (\FileDBv2\NotFoundException $e) {
+    echo "FindByKey on missing key threw NotFoundException (as expected)\n";
+}
+
+// ── Aggregations (N4) ────────────────────────────────────────────────────────
+$total = $db->count(COLLECTION);
+echo "Count (all): $total\n";
+$admins3 = $db->count(COLLECTION, ['field' => 'role', 'op' => 'eq', 'value' => 'user']);
+echo "Count (role=user): $admins3\n";
+
+$byRole = $db->groupBy(COLLECTION, 'role', 'age', ['sum', 'avg', 'min', 'max']);
+echo "Group by role (age stats):\n";
+foreach ($byRole as $g) {
+    $gv = $g['group_value'] ?? '(null)';
+    if ($g['numeric']) {
+        printf(
+            "  %-10s count=%d sum=%.0f avg=%.1f min=%.0f max=%.0f\n",
+            $gv, $g['count'], $g['sum'], $g['avg'], $g['min'], $g['max']
+        );
+    } else {
+        printf("  %-10s count=%d\n", $gv, $g['count']);
+    }
+}
+
 // ── Snapshot (whole-database backup) ─────────────────────────────────────────
 $backup = sys_get_temp_dir() . '/filedb_php_snapshot.tar.gz';
 $bytes = $db->snapshotToFile($backup);

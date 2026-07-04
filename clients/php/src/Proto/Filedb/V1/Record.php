@@ -29,6 +29,19 @@ class Record extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>.google.protobuf.Timestamp date_modified = 4 [json_name = "dateModified"];</code>
      */
     protected $date_modified = null;
+    /**
+     * Caller-supplied string primary key, empty for records inserted without one.
+     *
+     * Generated from protobuf field <code>string key = 5 [json_name = "key"];</code>
+     */
+    protected $key = '';
+    /**
+     * Monotonic per-record revision, bumped on every write. Fresh records start
+     * at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+     *
+     * Generated from protobuf field <code>uint64 rev = 6 [json_name = "rev"];</code>
+     */
+    protected $rev = 0;
 
     /**
      * Constructor.
@@ -40,6 +53,11 @@ class Record extends \Google\Protobuf\Internal\Message
      *     @type \Google\Protobuf\Struct $data
      *     @type \Google\Protobuf\Timestamp $date_added
      *     @type \Google\Protobuf\Timestamp $date_modified
+     *     @type string $key
+     *           Caller-supplied string primary key, empty for records inserted without one.
+     *     @type int|string $rev
+     *           Monotonic per-record revision, bumped on every write. Fresh records start
+     *           at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
      * }
      */
     public function __construct($data = NULL) {
@@ -161,6 +179,60 @@ class Record extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Timestamp::class);
         $this->date_modified = $var;
+
+        return $this;
+    }
+
+    /**
+     * Caller-supplied string primary key, empty for records inserted without one.
+     *
+     * Generated from protobuf field <code>string key = 5 [json_name = "key"];</code>
+     * @return string
+     */
+    public function getKey()
+    {
+        return $this->key;
+    }
+
+    /**
+     * Caller-supplied string primary key, empty for records inserted without one.
+     *
+     * Generated from protobuf field <code>string key = 5 [json_name = "key"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setKey($var)
+    {
+        GPBUtil::checkString($var, True);
+        $this->key = $var;
+
+        return $this;
+    }
+
+    /**
+     * Monotonic per-record revision, bumped on every write. Fresh records start
+     * at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+     *
+     * Generated from protobuf field <code>uint64 rev = 6 [json_name = "rev"];</code>
+     * @return int|string
+     */
+    public function getRev()
+    {
+        return $this->rev;
+    }
+
+    /**
+     * Monotonic per-record revision, bumped on every write. Fresh records start
+     * at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+     *
+     * Generated from protobuf field <code>uint64 rev = 6 [json_name = "rev"];</code>
+     * @param int|string $var
+     * @return $this
+     */
+    public function setRev($var)
+    {
+        GPBUtil::checkUint64($var);
+        $this->rev = $var;
 
         return $this;
     }

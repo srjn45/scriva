@@ -29,6 +29,16 @@ class InsertRequest extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>int64 ttl_seconds = 3 [json_name = "ttlSeconds"];</code>
      */
     protected $ttl_seconds = 0;
+    /**
+     * Optional caller-supplied string primary key (keyed Create). When set, the
+     * record is inserted under this key and a key already held by a live record
+     * is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+     * server-assigned-id behaviour. A keyed insert does not participate in
+     * transactions or per-record TTL.
+     *
+     * Generated from protobuf field <code>string key = 4 [json_name = "key"];</code>
+     */
+    protected $key = '';
 
     /**
      * Constructor.
@@ -42,6 +52,12 @@ class InsertRequest extends \Google\Protobuf\Internal\Message
      *           Optional per-record TTL, in seconds. When > 0, the record expires this long
      *           after insertion, overriding any collection default. 0 (the default)
      *           applies the collection's default TTL, if any.
+     *     @type string $key
+     *           Optional caller-supplied string primary key (keyed Create). When set, the
+     *           record is inserted under this key and a key already held by a live record
+     *           is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+     *           server-assigned-id behaviour. A keyed insert does not participate in
+     *           transactions or per-record TTL.
      * }
      */
     public function __construct($data = NULL) {
@@ -129,6 +145,40 @@ class InsertRequest extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkInt64($var);
         $this->ttl_seconds = $var;
+
+        return $this;
+    }
+
+    /**
+     * Optional caller-supplied string primary key (keyed Create). When set, the
+     * record is inserted under this key and a key already held by a live record
+     * is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+     * server-assigned-id behaviour. A keyed insert does not participate in
+     * transactions or per-record TTL.
+     *
+     * Generated from protobuf field <code>string key = 4 [json_name = "key"];</code>
+     * @return string
+     */
+    public function getKey()
+    {
+        return $this->key;
+    }
+
+    /**
+     * Optional caller-supplied string primary key (keyed Create). When set, the
+     * record is inserted under this key and a key already held by a live record
+     * is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+     * server-assigned-id behaviour. A keyed insert does not participate in
+     * transactions or per-record TTL.
+     *
+     * Generated from protobuf field <code>string key = 4 [json_name = "key"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setKey($var)
+    {
+        GPBUtil::checkString($var, True);
+        $this->key = $var;
 
         return $this;
     }

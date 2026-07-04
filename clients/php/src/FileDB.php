@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace FileDBv2;
 
+use Filedb\V1\AggregateOp;
+use Filedb\V1\AggregateRequest;
 use Filedb\V1\AndFilter;
 use Filedb\V1\BeginTxRequest;
 use Filedb\V1\CollectionStatsRequest;
 use Filedb\V1\CommitTxRequest;
 use Filedb\V1\CompactRequest;
 use Filedb\V1\CreateCollectionRequest;
+use Filedb\V1\DeleteByKeyRequest;
 use Filedb\V1\DeleteRequest;
 use Filedb\V1\DropCollectionRequest;
 use Filedb\V1\DropIndexRequest;
@@ -19,15 +22,20 @@ use Filedb\V1\FileDBClient as GrpcStub;
 use Filedb\V1\Filter;
 use Filedb\V1\FilterOp;
 use Filedb\V1\FindByIdRequest;
+use Filedb\V1\FindByKeyRequest;
 use Filedb\V1\FindRequest;
 use Filedb\V1\InsertManyRequest;
 use Filedb\V1\InsertRequest;
 use Filedb\V1\ListCollectionsRequest;
 use Filedb\V1\ListIndexesRequest;
+use Filedb\V1\OrderBy;
 use Filedb\V1\OrFilter;
 use Filedb\V1\RollbackTxRequest;
 use Filedb\V1\SnapshotRequest;
+use Filedb\V1\UpdateByKeyRequest;
+use Filedb\V1\UpdateIfRevRequest;
 use Filedb\V1\UpdateRequest;
+use Filedb\V1\UpsertRequest;
 use Filedb\V1\WatchRequest;
 use Google\Protobuf\Struct;
 use Google\Protobuf\Value;
@@ -67,6 +75,14 @@ class FileDB
         'lte'      => FilterOp::LTE,
         'contains' => FilterOp::CONTAINS,
         'regex'    => FilterOp::REGEX,
+    ];
+
+    private static array $AGG_OP_MAP = [
+        'count' => AggregateOp::AGG_COUNT,
+        'sum'   => AggregateOp::AGG_SUM,
+        'avg'   => AggregateOp::AGG_AVG,
+        'min'   => AggregateOp::AGG_MIN,
+        'max'   => AggregateOp::AGG_MAX,
     ];
 
     private static array $WATCH_OP_NAMES = [
@@ -162,13 +178,19 @@ class FileDB
      * @param int $ttlSeconds Per-record TTL in seconds. When > 0, overrides the
      *     collection default and expires the record this many seconds from now.
      *     0 (the default) inherits the collection's default TTL.
+     * @param string $key Optional caller-supplied string primary key (keyed
+     *     Create, N1). When non-empty the record is inserted under this key; a key
+     *     already held by a live record throws AlreadyExistsException. A keyed
+     *     insert ignores $ttlSeconds and does not participate in transactions.
+     *     Empty (the default) preserves the server-assigned-id behaviour.
      */
-    public function insert(string $collection, array $data, int $ttlSeconds = 0): int
+    public function insert(string $collection, array $data, int $ttlSeconds = 0, string $key = ''): int
     {
         $req = new InsertRequest();
         $req->setCollection($collection);
         $req->setData($this->arrayToStruct($data));
         $req->setTtlSeconds($ttlSeconds);
+        $req->setKey($key);
         [$resp, $status] = $this->stub->Insert($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return (int) $resp->getId();
@@ -198,13 +220,20 @@ class FileDB
     /**
      * Fetch a single record by ID.
      *
+     * @param string[] $fields Optional field projection (N2): when non-empty, only
+     *     these top-level fields are returned in the record's data. id, key and rev
+     *     are always included; an unknown field is silently omitted. Empty (the
+     *     default) returns the full record.
      * @return array<string, mixed>
      */
-    public function findById(string $collection, int $id): array
+    public function findById(string $collection, int $id, array $fields = []): array
     {
         $req = new FindByIdRequest();
         $req->setCollection($collection);
         $req->setId($id);
+        if ($fields !== []) {
+            $req->setFields($fields);
+        }
         [$resp, $status] = $this->stub->FindById($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return $this->recordToArray($resp->getRecord());
@@ -214,7 +243,25 @@ class FileDB
      * Query records. The Find RPC is server-streaming; results are collected
      * into an array.
      *
+     * Supports field projection (N2), keyset pagination (N3) and multi-field
+     * ordering (N3). To page through results with a stable keyset cursor, use
+     * findPage() instead, which also returns the next-page token.
+     *
      * @param array<string, mixed>|null $filter  See filterToProto() for the filter format
+     * @param int    $limit       0 = no limit
+     * @param int    $offset      Rows to skip (ignored when $pageToken is set for keyset paging)
+     * @param string $orderBy     Deprecated single-field sort; honoured only when
+     *                            $orderByFields is empty. Prefer $orderByFields.
+     * @param bool   $descending  Direction for the deprecated $orderBy
+     * @param string[] $fields    Field projection (N2): only these top-level fields
+     *                            are returned in each record's data (id/key/rev
+     *                            always included). Empty = full records.
+     * @param array<array{field: string, desc?: bool}>|null $orderByFields
+     *                            Multi-field, per-field-directional sort (N3). When
+     *                            non-empty it supersedes $orderBy/$descending. Each
+     *                            entry is ['field' => 'name', 'desc' => true|false].
+     * @param string $pageToken   Opaque keyset cursor (N3) from a previous findPage()
+     *                            call; empty requests the first page.
      * @return array<array<string, mixed>>
      */
     public function find(
@@ -223,7 +270,52 @@ class FileDB
         int $limit = 0,
         int $offset = 0,
         string $orderBy = '',
-        bool $descending = false
+        bool $descending = false,
+        array $fields = [],
+        ?array $orderByFields = null,
+        string $pageToken = ''
+    ): array {
+        return $this->findPage(
+            $collection,
+            $filter,
+            $limit,
+            $offset,
+            $orderBy,
+            $descending,
+            $fields,
+            $orderByFields,
+            $pageToken
+        )['records'];
+    }
+
+    /**
+     * Query records and also return the next-page keyset cursor (N3).
+     *
+     * Identical arguments to find(), but returns:
+     *
+     *   ['records' => [...record arrays...], 'page_token' => '<cursor>']
+     *
+     * When 'page_token' is a non-empty string more rows remain under the requested
+     * ordering — pass it back as $pageToken (with the same filter, ordering and
+     * limit) to fetch the next page. An empty 'page_token' means the last page was
+     * reached. Keyset paging is only meaningful with an ordering; combine it with
+     * offset = 0.
+     *
+     * @param array<string, mixed>|null $filter
+     * @param string[] $fields
+     * @param array<array{field: string, desc?: bool}>|null $orderByFields
+     * @return array{records: array<array<string, mixed>>, page_token: string}
+     */
+    public function findPage(
+        string $collection,
+        ?array $filter = null,
+        int $limit = 0,
+        int $offset = 0,
+        string $orderBy = '',
+        bool $descending = false,
+        array $fields = [],
+        ?array $orderByFields = null,
+        string $pageToken = ''
     ): array {
         $req = new FindRequest();
         $req->setCollection($collection);
@@ -231,18 +323,32 @@ class FileDB
         $req->setOffset($offset);
         $req->setOrderBy($orderBy);
         $req->setDescending($descending);
+        $req->setPageToken($pageToken);
+        if ($fields !== []) {
+            $req->setFields($fields);
+        }
+        if ($orderByFields !== null && $orderByFields !== []) {
+            $req->setOrderByFields(array_map([$this, 'orderByToProto'], $orderByFields));
+        }
         if ($filter !== null) {
             $req->setFilter($this->filterToProto($filter));
         }
 
         $call = $this->stub->Find($req, $this->metadata);
         $results = [];
+        $nextToken = '';
         foreach ($call->responses() as $resp) {
-            $results[] = $this->recordToArray($resp->getRecord());
+            // The cursor rides on the final streamed message, which may carry no
+            // record of its own — only collect a record when one is present.
+            if ($resp->hasRecord()) {
+                $results[] = $this->recordToArray($resp->getRecord());
+            }
+            if ($resp->getPageToken() !== '') {
+                $nextToken = $resp->getPageToken();
+            }
         }
-        $status = $call->getStatus();
-        $this->checkStatus($status);
-        return $results;
+        $this->checkStatus($call->getStatus());
+        return ['records' => $results, 'page_token' => $nextToken];
     }
 
     /**
@@ -276,6 +382,121 @@ class FileDB
         [$resp, $status] = $this->stub->Delete($req, $this->metadata)->wait();
         $this->checkStatus($status);
         return $resp->getOk();
+    }
+
+    // -------------------------------------------------------------------------
+    // Keyed CRUD, Upsert & compare-and-swap (N1)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Insert-or-replace a record under a caller-supplied string key, atomically.
+     *
+     * If no live record carries $key the data is inserted; if one does, its data
+     * is replaced and its revision incremented. Returns the resulting record array
+     * (including its 'key' and 'rev').
+     *
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    public function upsert(string $collection, string $key, array $data): array
+    {
+        $req = new UpsertRequest();
+        $req->setCollection($collection);
+        $req->setKey($key);
+        $req->setData($this->arrayToStruct($data));
+        [$resp, $status] = $this->stub->Upsert($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        return $this->recordToArray($resp->getRecord());
+    }
+
+    /**
+     * Fetch the record carrying a caller-supplied string key.
+     *
+     * @param string[] $fields Optional field projection (N2); see findById().
+     * @return array<string, mixed>
+     * @throws NotFoundException if no live record carries $key.
+     */
+    public function findByKey(string $collection, string $key, array $fields = []): array
+    {
+        $req = new FindByKeyRequest();
+        $req->setCollection($collection);
+        $req->setKey($key);
+        if ($fields !== []) {
+            $req->setFields($fields);
+        }
+        [$resp, $status] = $this->stub->FindByKey($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        return $this->recordToArray($resp->getRecord());
+    }
+
+    /**
+     * Overwrite the record carrying $key, preserving the key itself. Returns a
+     * result array: ['id' => ..., 'key' => ..., 'rev' => ..., 'date_modified' => ...].
+     *
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     * @throws NotFoundException if no live record carries $key.
+     */
+    public function updateByKey(string $collection, string $key, array $data): array
+    {
+        $req = new UpdateByKeyRequest();
+        $req->setCollection($collection);
+        $req->setKey($key);
+        $req->setData($this->arrayToStruct($data));
+        [$resp, $status] = $this->stub->UpdateByKey($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        $out = [
+            'id'  => (string) $resp->getId(),
+            'key' => $resp->getKey(),
+            'rev' => (int) $resp->getRev(),
+        ];
+        if ($resp->getDateModified() !== '') {
+            $out['date_modified'] = $resp->getDateModified();
+        }
+        return $out;
+    }
+
+    /**
+     * Delete the record carrying $key. Returns true on success.
+     *
+     * @throws NotFoundException if no live record carries $key.
+     */
+    public function deleteByKey(string $collection, string $key): bool
+    {
+        $req = new DeleteByKeyRequest();
+        $req->setCollection($collection);
+        $req->setKey($key);
+        [$resp, $status] = $this->stub->DeleteByKey($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        return $resp->getOk();
+    }
+
+    /**
+     * Optimistic-concurrency update (compare-and-swap on the record's revision).
+     *
+     * The write is applied only if the record carrying $key currently has revision
+     * $expectedRev. A stale revision, or a missing key, is a clean no-op — not an
+     * error — reported as ['swapped' => false, 'record' => null].
+     *
+     * Returns ['swapped' => bool, 'record' => array|null]; when swapped is true the
+     * record array carries the new (incremented) revision.
+     *
+     * @param array<string, mixed> $data
+     * @return array{swapped: bool, record: array<string, mixed>|null}
+     */
+    public function updateIfRev(string $collection, string $key, int $expectedRev, array $data): array
+    {
+        $req = new UpdateIfRevRequest();
+        $req->setCollection($collection);
+        $req->setKey($key);
+        $req->setExpectedRev($expectedRev);
+        $req->setData($this->arrayToStruct($data));
+        [$resp, $status] = $this->stub->UpdateIfRev($req, $this->metadata)->wait();
+        $this->checkStatus($status);
+        return [
+            'swapped' => $resp->getSwapped(),
+            'record'  => $resp->hasRecord() ? $this->recordToArray($resp->getRecord()) : null,
+        ];
     }
 
     // -------------------------------------------------------------------------
@@ -425,6 +646,115 @@ class FileDB
     }
 
     // -------------------------------------------------------------------------
+    // Aggregations (N4)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Compute count and numeric aggregations (sum/avg/min/max) over the live
+     * records matching $filter, optionally grouped by a field. The Aggregate RPC
+     * is server-streaming (one message per group); results are collected into an
+     * array of group result arrays, each shaped like:
+     *
+     *   [
+     *     'group_value' => 'admin',  // the group_by value (null for the whole set)
+     *     'count'       => 3,
+     *     'sum'         => 90.0,     // only meaningful when 'numeric' is true
+     *     'avg'         => 30.0,
+     *     'min'         => 25.0,
+     *     'max'         => 35.0,
+     *     'numeric'     => true,
+     *   ]
+     *
+     * For an ungrouped request the array holds exactly one element with
+     * 'group_value' => null.
+     *
+     * @param array<string, mixed>|null $filter  Same filter format as find()
+     * @param string   $groupBy       Group-by field; empty aggregates the whole set
+     * @param string   $field         Numeric field for sum/avg/min/max (required for those)
+     * @param string[] $aggregations  Any of 'sum','avg','min','max' (count is always
+     *                                returned); empty yields count-only
+     * @return array<array<string, mixed>>
+     */
+    public function aggregate(
+        string $collection,
+        ?array $filter = null,
+        string $groupBy = '',
+        string $field = '',
+        array $aggregations = []
+    ): array {
+        $req = new AggregateRequest();
+        $req->setCollection($collection);
+        $req->setGroupBy($groupBy);
+        $req->setField($field);
+        if ($filter !== null) {
+            $req->setFilter($this->filterToProto($filter));
+        }
+        if ($aggregations !== []) {
+            $ops = [];
+            foreach ($aggregations as $name) {
+                $key = strtolower((string) $name);
+                if (!isset(self::$AGG_OP_MAP[$key])) {
+                    throw new \InvalidArgumentException(
+                        "Unknown aggregation '$name'; expected one of: "
+                        . implode(', ', array_keys(self::$AGG_OP_MAP))
+                    );
+                }
+                $ops[] = self::$AGG_OP_MAP[$key];
+            }
+            $req->setAggregations($ops);
+        }
+
+        $call = $this->stub->Aggregate($req, $this->metadata);
+        $groups = [];
+        foreach ($call->responses() as $resp) {
+            $group = [
+                'group_value' => $resp->hasGroupValue() ? $this->fromValue($resp->getGroupValue()) : null,
+                'count'       => (int) $resp->getCount(),
+                'numeric'     => $resp->getNumeric(),
+            ];
+            if ($resp->getNumeric()) {
+                $group['sum'] = $resp->getSum();
+                $group['avg'] = $resp->getAvg();
+                $group['min'] = $resp->getMin();
+                $group['max'] = $resp->getMax();
+            }
+            $groups[] = $group;
+        }
+        $this->checkStatus($call->getStatus());
+        return $groups;
+    }
+
+    /**
+     * Convenience count: the number of live records matching $filter. Empty
+     * $filter counts the whole collection.
+     *
+     * @param array<string, mixed>|null $filter
+     */
+    public function count(string $collection, ?array $filter = null): int
+    {
+        $groups = $this->aggregate($collection, $filter);
+        return $groups === [] ? 0 : (int) $groups[0]['count'];
+    }
+
+    /**
+     * Convenience group-by: aggregate over $field, bucketed by distinct values of
+     * $groupBy. Returns one result array per group (see aggregate()).
+     *
+     * @param string[] $aggregations Any of 'sum','avg','min','max' (count always returned)
+     * @param array<string, mixed>|null $filter
+     * @return array<array<string, mixed>>
+     */
+    public function groupBy(
+        string $collection,
+        string $groupBy,
+        string $field = '',
+        array $aggregations = [],
+        ?array $filter = null
+    ): array {
+        return $this->aggregate($collection, $filter, $groupBy, $field, $aggregations);
+    }
+
+    // -------------------------------------------------------------------------
     // Maintenance
     // -------------------------------------------------------------------------
 
@@ -540,6 +870,19 @@ class FileDB
         return $f;
     }
 
+    /**
+     * Convert a plain ['field' => 'name', 'desc' => bool] array to a proto OrderBy.
+     *
+     * @param array{field: string, desc?: bool} $spec
+     */
+    private function orderByToProto(array $spec): OrderBy
+    {
+        $ob = new OrderBy();
+        $ob->setField((string) ($spec['field'] ?? ''));
+        $ob->setDesc((bool) ($spec['desc'] ?? false));
+        return $ob;
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
@@ -634,6 +977,13 @@ class FileDB
             'id'   => (string) $record->getId(),
             'data' => $record->hasData() ? $this->structToArray($record->getData()) : [],
         ];
+        // Keyed CRUD surface (N1): the caller-supplied string key (present only
+        // for keyed records) and the monotonic per-record revision.
+        $key = $record->getKey();
+        if ($key !== '') {
+            $out['key'] = $key;
+        }
+        $out['rev'] = (int) $record->getRev();
         if ($record->hasDateAdded()) {
             $out['date_added'] = $record->getDateAdded()->toDateTime()->format(\DateTimeInterface::ATOM);
         }
@@ -644,14 +994,24 @@ class FileDB
     }
 
     /**
-     * Throw a RuntimeException if the gRPC status is not OK.
+     * Throw on a non-OK gRPC status, mapping the common keyed-CRUD codes to
+     * idiomatic exception subclasses: NOT_FOUND -> NotFoundException,
+     * ALREADY_EXISTS -> AlreadyExistsException, anything else -> FileDBException.
+     * All three extend \RuntimeException.
      */
     private function checkStatus(\stdClass $status): void
     {
-        if ($status->code !== \Grpc\STATUS_OK) {
-            throw new \RuntimeException(
-                sprintf('gRPC error %d: %s', $status->code, $status->details)
-            );
+        if ($status->code === \Grpc\STATUS_OK) {
+            return;
+        }
+        $message = sprintf('gRPC error %d: %s', $status->code, $status->details);
+        switch ($status->code) {
+            case \Grpc\STATUS_NOT_FOUND:
+                throw new NotFoundException($message, $status->code);
+            case \Grpc\STATUS_ALREADY_EXISTS:
+                throw new AlreadyExistsException($message, $status->code);
+            default:
+                throw new FileDBException($message, $status->code);
         }
     }
 }

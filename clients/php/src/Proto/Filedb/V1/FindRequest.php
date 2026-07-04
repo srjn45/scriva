@@ -32,15 +32,46 @@ class FindRequest extends \Google\Protobuf\Internal\Message
      */
     protected $offset = 0;
     /**
-     * field name
+     * Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+     * only when order_by_fields is empty, and slated for removal after one release.
+     * Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
      *
-     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy", deprecated = true];</code>
+     * @deprecated
      */
     protected $order_by = '';
     /**
-     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending", deprecated = true];</code>
+     * @deprecated
      */
     protected $descending = false;
+    /**
+     * Optional field projection: when non-empty, only these top-level fields are
+     * returned in each record's data. id, key and rev are always included. Empty
+     * (the default) returns full records. An unknown field is silently omitted.
+     *
+     * Generated from protobuf field <code>repeated string fields = 7 [json_name = "fields"];</code>
+     */
+    private $fields;
+    /**
+     * Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+     * the first page; otherwise it must be a page_token returned by a previous Find
+     * and the scan seeks past the rows already returned instead of counting past
+     * them (O(page), not O(offset)). Only meaningful with an ordering
+     * (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+     * and limit on every page. Combine with offset=0 for keyset paging.
+     *
+     * Generated from protobuf field <code>string page_token = 8 [json_name = "pageToken"];</code>
+     */
+    protected $page_token = '';
+    /**
+     * Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+     * the deprecated scalar order_by/descending. The record id is always the final
+     * tiebreaker, so the sort is total and pagination is stable.
+     *
+     * Generated from protobuf field <code>repeated .filedb.v1.OrderBy order_by_fields = 9 [json_name = "orderByFields"];</code>
+     */
+    private $order_by_fields;
 
     /**
      * Constructor.
@@ -54,8 +85,25 @@ class FindRequest extends \Google\Protobuf\Internal\Message
      *           0 = no limit
      *     @type int $offset
      *     @type string $order_by
-     *           field name
+     *           Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+     *           only when order_by_fields is empty, and slated for removal after one release.
+     *           Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
      *     @type bool $descending
+     *     @type array<string>|\Google\Protobuf\Internal\RepeatedField $fields
+     *           Optional field projection: when non-empty, only these top-level fields are
+     *           returned in each record's data. id, key and rev are always included. Empty
+     *           (the default) returns full records. An unknown field is silently omitted.
+     *     @type string $page_token
+     *           Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+     *           the first page; otherwise it must be a page_token returned by a previous Find
+     *           and the scan seeks past the rows already returned instead of counting past
+     *           them (O(page), not O(offset)). Only meaningful with an ordering
+     *           (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+     *           and limit on every page. Combine with offset=0 for keyset paging.
+     *     @type array<\Filedb\V1\OrderBy>|\Google\Protobuf\Internal\RepeatedField $order_by_fields
+     *           Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+     *           the deprecated scalar order_by/descending. The record id is always the final
+     *           tiebreaker, so the sort is total and pagination is stable.
      * }
      */
     public function __construct($data = NULL) {
@@ -166,25 +214,33 @@ class FindRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * field name
+     * Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+     * only when order_by_fields is empty, and slated for removal after one release.
+     * Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
      *
-     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy", deprecated = true];</code>
      * @return string
+     * @deprecated
      */
     public function getOrderBy()
     {
+        @trigger_error('order_by is deprecated.', E_USER_DEPRECATED);
         return $this->order_by;
     }
 
     /**
-     * field name
+     * Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+     * only when order_by_fields is empty, and slated for removal after one release.
+     * Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
      *
-     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy"];</code>
+     * Generated from protobuf field <code>string order_by = 5 [json_name = "orderBy", deprecated = true];</code>
      * @param string $var
      * @return $this
+     * @deprecated
      */
     public function setOrderBy($var)
     {
+        @trigger_error('order_by is deprecated.', E_USER_DEPRECATED);
         GPBUtil::checkString($var, True);
         $this->order_by = $var;
 
@@ -192,23 +248,123 @@ class FindRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending", deprecated = true];</code>
      * @return bool
+     * @deprecated
      */
     public function getDescending()
     {
+        @trigger_error('descending is deprecated.', E_USER_DEPRECATED);
         return $this->descending;
     }
 
     /**
-     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending"];</code>
+     * Generated from protobuf field <code>bool descending = 6 [json_name = "descending", deprecated = true];</code>
      * @param bool $var
      * @return $this
+     * @deprecated
      */
     public function setDescending($var)
     {
+        @trigger_error('descending is deprecated.', E_USER_DEPRECATED);
         GPBUtil::checkBool($var);
         $this->descending = $var;
+
+        return $this;
+    }
+
+    /**
+     * Optional field projection: when non-empty, only these top-level fields are
+     * returned in each record's data. id, key and rev are always included. Empty
+     * (the default) returns full records. An unknown field is silently omitted.
+     *
+     * Generated from protobuf field <code>repeated string fields = 7 [json_name = "fields"];</code>
+     * @return \Google\Protobuf\Internal\RepeatedField
+     */
+    public function getFields()
+    {
+        return $this->fields;
+    }
+
+    /**
+     * Optional field projection: when non-empty, only these top-level fields are
+     * returned in each record's data. id, key and rev are always included. Empty
+     * (the default) returns full records. An unknown field is silently omitted.
+     *
+     * Generated from protobuf field <code>repeated string fields = 7 [json_name = "fields"];</code>
+     * @param array<string>|\Google\Protobuf\Internal\RepeatedField $var
+     * @return $this
+     */
+    public function setFields($var)
+    {
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::STRING);
+        $this->fields = $arr;
+
+        return $this;
+    }
+
+    /**
+     * Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+     * the first page; otherwise it must be a page_token returned by a previous Find
+     * and the scan seeks past the rows already returned instead of counting past
+     * them (O(page), not O(offset)). Only meaningful with an ordering
+     * (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+     * and limit on every page. Combine with offset=0 for keyset paging.
+     *
+     * Generated from protobuf field <code>string page_token = 8 [json_name = "pageToken"];</code>
+     * @return string
+     */
+    public function getPageToken()
+    {
+        return $this->page_token;
+    }
+
+    /**
+     * Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+     * the first page; otherwise it must be a page_token returned by a previous Find
+     * and the scan seeks past the rows already returned instead of counting past
+     * them (O(page), not O(offset)). Only meaningful with an ordering
+     * (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+     * and limit on every page. Combine with offset=0 for keyset paging.
+     *
+     * Generated from protobuf field <code>string page_token = 8 [json_name = "pageToken"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setPageToken($var)
+    {
+        GPBUtil::checkString($var, True);
+        $this->page_token = $var;
+
+        return $this;
+    }
+
+    /**
+     * Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+     * the deprecated scalar order_by/descending. The record id is always the final
+     * tiebreaker, so the sort is total and pagination is stable.
+     *
+     * Generated from protobuf field <code>repeated .filedb.v1.OrderBy order_by_fields = 9 [json_name = "orderByFields"];</code>
+     * @return \Google\Protobuf\Internal\RepeatedField
+     */
+    public function getOrderByFields()
+    {
+        return $this->order_by_fields;
+    }
+
+    /**
+     * Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+     * the deprecated scalar order_by/descending. The record id is always the final
+     * tiebreaker, so the sort is total and pagination is stable.
+     *
+     * Generated from protobuf field <code>repeated .filedb.v1.OrderBy order_by_fields = 9 [json_name = "orderByFields"];</code>
+     * @param array<\Filedb\V1\OrderBy>|\Google\Protobuf\Internal\RepeatedField $var
+     * @return $this
+     */
+    public function setOrderByFields($var)
+    {
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::MESSAGE, \Filedb\V1\OrderBy::class);
+        $this->order_by_fields = $arr;
 
         return $this;
     }
