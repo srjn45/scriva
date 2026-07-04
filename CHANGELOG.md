@@ -196,6 +196,19 @@ pre-existing clients are unaffected.
     `count`), reusing the existing filter-JSON style. The 7-language SDK parity
     sweep is a separate follow-on wave.
 
+**All seven client SDKs brought to v0.7.0 wire parity.** The follow-on sweep
+promised by N1–N4 landed: every SDK now covers the full new surface —
+keyed CRUD / `upsert` / `find-by-key` / `update-by-key` / `delete-by-key` and
+`update-if-rev` CAS with `key`/`rev` surfaced on records and typed
+not-found / already-exists errors (N1); the `fields` read projection (N2);
+multi-field `order_by` with opaque keyset `page_token` pagination (N3); and the
+streaming `aggregate` / `count` / `group_by` RPC (N4). Each client refreshed its
+vendored `filedb.proto` and regenerated stubs against the current API; examples
+and READMEs demonstrate the new methods. Python (#56), JavaScript/TypeScript
+(#58), PHP (#57), Rust (#59), Java (#60), Ruby (#62), and C#/.NET (#61). The Go
+server CI is unchanged (it does not build the clients); each client was verified
+against a locally built v0.7.0 server where a toolchain was available.
+
 ## [0.3.0] — 2026-07-03
 
 **Client parity release.** Per-record TTL is now exposed over the wire, and all

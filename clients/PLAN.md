@@ -22,6 +22,15 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 | 6 | Rust | crates.io (`filedbv2`) | `clients/rust/` | ✅ Done |
 | 7 | C# / .NET | NuGet (`FileDBv2.Client`) | `clients/csharp/` | ✅ Done |
 
+**Wire-API parity:** all seven clients are current with the **v0.7.0** server
+surface. Beyond the base operations checklisted below, each client also
+implements the N1–N4 additions: keyed CRUD / `upsert` / `find-by-key` /
+`update-by-key` / `delete-by-key` / `update-if-rev` (CAS) with `key`/`rev` on
+records and typed not-found / already-exists errors (N1); `fields` read
+projection (N2); multi-field `order_by` + keyset `page_token` pagination (N3);
+and the streaming `aggregate` / `count` / `group_by` RPC (N4). PRs #56 (python),
+#57 (php), #58 (js), #59 (rust), #60 (java), #61 (csharp), #62 (ruby).
+
 ---
 
 ## Conventions (all languages)
