@@ -74,6 +74,7 @@ Key properties:
 - **Slow-query log** — opt-in `--slow-query-ms` logs any `Find` over the threshold at `WARN` with filter shape, rows scanned vs returned, and whether an index was used, so unindexed hot queries surface from logs and metrics (off by default)
 - **Health & readiness** — standard `grpc.health.v1.Health` service (SERVING → NOT_SERVING on graceful shutdown) plus HTTP `/healthz` (liveness) and `/readyz` (DB open + data dir writable) probes
 - **Backpressure & limits** — opt-in `--max-inflight` in-flight ceiling and per-key `--rate-limit` token bucket shed load with `RESOURCE_EXHAUSTED` instead of unbounded resource growth; `--max-concurrent-streams` caps per-connection HTTP/2 streams (all off by default)
+- **Distributed tracing** — opt-in OpenTelemetry spans to an OTLP collector (`--otlp-endpoint`, `--otlp-sample-ratio`); one span per RPC plus child `engine.scan`/`engine.compaction` spans, so a slow `Find` is traceable gateway → gRPC → engine (off by default; the embeddable engine gains no OTel dependency)
 - **Single binary** — no JVM, no Python, no config files required to get started
 - **Web admin UI** — browser-based collection and record manager at `clients/web/` (React + Vite, talks to the REST gateway)
 
@@ -119,7 +120,8 @@ _, _ = sessions.UpdateIfRev("sess-1", rec.Rev, map[string]any{"status": "closed"
 The embedded surface includes caller-supplied string keys, per-record revisions
 with compare-and-swap, upsert, count/exists, secondary indexes, in-process
 `Watch` subscriptions, and a `LoadJSONL` bulk-import path. The engine pulls in
-**no** gRPC/protobuf/Prometheus/cobra dependencies — a CI gate enforces that.
+**no** gRPC/protobuf/Prometheus/cobra/OpenTelemetry dependencies — a CI gate
+enforces that.
 
 This is a distinct distribution channel: **`go get` for embedding**, while the
 standalone server ships via Homebrew/apt/GHCR and tagged binary releases. Both

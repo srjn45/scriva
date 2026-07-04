@@ -74,6 +74,8 @@ All flags and their defaults:
 | `--max-inflight` | `0` | Server-wide concurrent in-flight RPC ceiling; excess calls get `RESOURCE_EXHAUSTED` (`0` = unlimited) |
 | `--rate-limit` | `0` | Per-API-key rate limit in requests/sec; over-budget calls get `RESOURCE_EXHAUSTED` (`0` = disabled) |
 | `--slow-query-ms` | `0` | Log any `Find` slower than this many milliseconds at `WARN`, with scan stats (`0` = disabled) |
+| `--otlp-endpoint` | *(none)* | OTLP/gRPC collector address for OpenTelemetry tracing, e.g. `localhost:4317` (empty = tracing disabled) |
+| `--otlp-sample-ratio` | `1.0` | Fraction of traces to sample when tracing is enabled (`0`–`1`) |
 | `--config` | *(none)* | Path to YAML config file |
 
 ---
@@ -104,6 +106,8 @@ max_concurrent_streams: 0   # per-connection HTTP/2 stream cap (0 = gRPC default
 max_inflight: 0             # server-wide in-flight RPC ceiling (0 = unlimited)
 rate_limit: 0               # per-API-key requests/sec (0 = disabled)
 slow_query_ms: 0            # log Find slower than this many ms at WARN (0 = disabled)
+otlp_endpoint: ""           # OTLP/gRPC collector address (empty = tracing disabled)
+otlp_sample_ratio: 1.0      # fraction of traces sampled when tracing is enabled
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
 ```
@@ -266,6 +270,48 @@ The same cost is exported as the `filedb_scan_rows_scanned` Prometheus histogram
 (labelled by `collection`), so you can alert on scan cost without scraping logs.
 See [architecture.md](architecture.md#slow-query-log--scan-stats) for how the
 stats flow from the engine to the log and the metric.
+
+---
+
+## Distributed tracing (OpenTelemetry)
+
+FileDB can emit [OpenTelemetry](https://opentelemetry.io/) traces so you can see
+where a slow request spends its time — across the gateway → gRPC → engine-scan
+hops. Tracing is **opt-in and off by default**: nothing is wired unless you set
+`--otlp-endpoint`, so there is zero overhead on the default path.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--otlp-endpoint` | *(none)* | Address of an OTLP/gRPC collector (e.g. `localhost:4317`). Empty = tracing disabled. |
+| `--otlp-sample-ratio` | `1.0` | Fraction of traces to sample at the root: `1.0` traces everything, `0.1` one in ten, `0` none. |
+
+Point the server at any OTLP-compatible collector — the
+[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), Jaeger
+(`4317`), Tempo, or a vendor endpoint:
+
+```bash
+# Run a local collector, then:
+filedb serve --data ./data \
+  --otlp-endpoint localhost:4317 \
+  --otlp-sample-ratio 1.0
+```
+
+What you get per traced request:
+
+- One **server span per RPC**, named after the method (e.g.
+  `/filedb.v1.FileDB/Find`) and tagged with `rpc.method` and the returned
+  `rpc.grpc.status_code`. A failed RPC marks the span as errored.
+- A child **`engine.scan`** span for every `Find`/`Scan`, so you can see which
+  query drove a long collection scan, and a **`engine.compaction`** span for
+  each compaction run.
+
+The connection to the collector is made in-the-clear (`insecure`) — run the
+collector locally or as a sidecar, or front it with a mesh that provides
+transport security. Sampling is parent-based: if an upstream caller already made
+a sampling decision (via propagated trace context), FileDB honours it, and the
+ratio applies only to traces it roots. See
+[architecture.md](architecture.md#tracing-opentelemetry) for how the interceptor
+and the engine hook fit together.
 
 ---
 

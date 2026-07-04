@@ -641,10 +641,10 @@ All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors 
 Both gRPC servers install the same interceptor chain, in this order:
 
 ```
-auth → limiter → logging → metrics → handler
+[tracing] → auth → limiter → logging → metrics → handler
 ```
 
-Auth runs first: on success it resolves the principal and attaches it to the request context (via a stream wrapper for streaming RPCs). The limiter runs next so it can read that principal — it applies the per-key rate limit and the in-flight semaphore, shedding over-budget calls before they reach the handler. Logging runs after the limiter so a shed call is still logged (with its `RESOURCE_EXHAUSTED` code). Metrics is innermost and records the Prometheus request histogram. Because logging and metrics sit *inside* auth, a call rejected by auth is not double-counted as a served request. **The limiter is chained only when at least one limit is configured**, so the default (unlimited) path keeps the exact `auth → logging → metrics` chain and adds no overhead.
+Auth runs first (of the always-present interceptors): on success it resolves the principal and attaches it to the request context (via a stream wrapper for streaming RPCs). The limiter runs next so it can read that principal — it applies the per-key rate limit and the in-flight semaphore, shedding over-budget calls before they reach the handler. Logging runs after the limiter so a shed call is still logged (with its `RESOURCE_EXHAUSTED` code). Metrics is innermost and records the Prometheus request histogram. Because logging and metrics sit *inside* auth, a call rejected by auth is not double-counted as a served request. **The limiter is chained only when at least one limit is configured**, so the default (unlimited) path keeps the exact `auth → logging → metrics` chain and adds no overhead. **Tracing, when enabled (`--otlp-endpoint`), is chained *outermost*** — before auth — so its per-RPC span wraps the whole handler (including the status of a call rejected by auth or the limiter) and its span-bearing context flows down through the chain into the engine scan hook; when tracing is off, it adds no interceptor at all.
 
 ### Request logging
 
@@ -663,6 +663,16 @@ The `Limiter` (`server/limits.go`) provides two independent, opt-in defences aga
 - **Per-principal token bucket (`--rate-limit`).** Each API-key principal (the resolved `name` the auth interceptor put on the context) gets its **own** `rate.Limiter`, created lazily on first request and stored in a mutex-guarded map. The rate is the configured requests/sec and the burst is one second's worth of budget (rounded up). Because the buckets are keyed by principal, throttling one key can never consume another key's budget. An unauthenticated deployment funnels every call into a single shared `"anonymous"` bucket.
 
 Both controls default to their zero value (unlimited / disabled). `NewLimiter` reports `Enabled()` only when at least one is active, and `cmd/filedb` chains the limiter interceptors solely in that case — so the common, un-limited deployment pays nothing. `grpc.MaxConcurrentStreams` (`--max-concurrent-streams`) is set directly as a `grpc.ServerOption` on both servers, capping the HTTP/2 streams a single connection may multiplex; it is orthogonal to the server-wide in-flight ceiling.
+
+### Tracing (OpenTelemetry)
+
+Distributed tracing (`server/tracing.go`) is **opt-in and off by default**: `cmd/filedb` builds an OTel SDK `TracerProvider` and chains the tracing interceptors only when `--otlp-endpoint` is set. The provider batches spans to an OTLP/gRPC collector, tags them with a `service.name=filedb` resource, and samples with a **parent-based** sampler over `TraceIDRatioBased(--otlp-sample-ratio)` — so an upstream sampling decision propagated on the trace context is honoured, and the ratio governs only the traces FileDB roots. On graceful shutdown the provider is `Shutdown` (with a bounded timeout) to flush any spans still buffered.
+
+**Interceptor span.** `TracingInterceptors` (unary **and** stream) starts one span per RPC, named after the full method (`/filedb.v1.FileDB/Find`) with span kind *server*, tagged `rpc.method` and — once the call returns — `rpc.grpc.status_code`; a non-OK result additionally marks the span errored and records the error. For streaming RPCs the interceptor wraps the `ServerStream` so its `Context()` carries the span, exactly as the auth interceptor does for the principal. Chained outermost, the span becomes the parent of everything downstream.
+
+**Engine hook.** The rule that keeps the engine embeddable applies here too: **the `engine`/`store`/`query` packages import no OpenTelemetry code** (`make deps-check` enforces it). Instead, the engine exposes timing through the same `engine.CollectionConfig` hook pattern used for metrics — a new `OnScan(ctx, collection, dur)` hook fired by `ScanStream`, alongside the existing `OnCompaction(collection, dur)`. The **server** owns the SDK and turns those callbacks into spans: `ScanTraceHook` starts an `engine.scan` span parented on the scan's context (which, because the span-bearing context threads down from the interceptor, nests it under the RPC span), and `CompactionTraceHook` records a root `engine.compaction` span (compaction is a background task with no request context). The scan hook receives the scan's `context.Context` precisely so its span can attach to the caller's; the compaction hook takes none, so its span stands alone. Both reconstruct their start/end timestamps from the reported duration so the span's extent matches the real work. The metrics `OnCompaction` hook and the tracing one are **composed** in `cmd/filedb` (metrics first, then tracing) so enabling tracing never displaces Prometheus compaction timing.
+
+The net effect: a slow `Find` produces a trace spanning gateway → gRPC (`/filedb.v1.FileDB/Find`) → `engine.scan`, making it obvious whether the cost was in transport, a saturated limiter, or a large collection scan.
 
 ---
 
@@ -692,3 +702,5 @@ FileDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/me
 | `filedb_scan_rows_scanned` | Histogram | `collection` |
 
 Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `filedb_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
+
+For **distributed tracing** (opt-in OpenTelemetry, `--otlp-endpoint`), which complements these pull-based metrics with per-request spans across the gateway → gRPC → engine-scan hops, see [Tracing (OpenTelemetry)](#tracing-opentelemetry) above.

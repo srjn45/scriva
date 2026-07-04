@@ -12,7 +12,7 @@ LDFLAGS      := -s -w
 # module-path fragments they are forbidden from pulling in. Keep in sync with
 # the embeddemo module and the deps-check CI job.
 EMBED_PKGS    := ./engine ./store ./query
-FORBIDDEN_DEPS := grpc|protobuf|prometheus|cobra|grpc-gateway
+FORBIDDEN_DEPS := grpc|protobuf|prometheus|cobra|grpc-gateway|opentelemetry
 
 .PHONY: all build proto openapi test bench fuzz lint deps-check run cli clean release help
 
@@ -67,8 +67,8 @@ vet:
 deps-check:
 	@echo "Checking $(EMBED_PKGS) for forbidden dependencies ($(FORBIDDEN_DEPS))..."
 	@if $(GO) list -deps $(EMBED_PKGS) | grep -E -i '$(FORBIDDEN_DEPS)'; then \
-		echo "ERROR: engine/store/query must not depend on grpc, protobuf, prometheus, cobra, or grpc-gateway."; \
-		echo "The engine is meant to be embeddable; metrics enter only via the OnCompaction hook."; \
+		echo "ERROR: engine/store/query must not depend on grpc, protobuf, prometheus, cobra, grpc-gateway, or opentelemetry."; \
+		echo "The engine is meant to be embeddable; metrics/tracing enter only via CollectionConfig hooks (OnCompaction/OnScan)."; \
 		exit 1; \
 	fi
 	@echo "OK: no forbidden dependencies in the embeddable packages"

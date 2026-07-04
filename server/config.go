@@ -68,6 +68,10 @@ type Config struct {
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"` // per-connection HTTP/2 stream cap (0 = gRPC library default)
 	MaxInflight          int     `yaml:"max_inflight"`           // server-wide concurrent in-flight RPC ceiling (0 = unlimited)
 	RateLimit            float64 `yaml:"rate_limit"`             // per-principal requests/sec (0 = disabled)
+
+	// Tracing (opt-in; OpenTelemetry OTLP export is off unless OTLPEndpoint is set)
+	OTLPEndpoint    string  `yaml:"otlp_endpoint"`     // OTLP/gRPC collector address (empty = tracing disabled)
+	OTLPSampleRatio float64 `yaml:"otlp_sample_ratio"` // fraction of traces sampled at the root (default: 1.0)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -93,6 +97,9 @@ func DefaultConfig() Config {
 		MaxConcurrentStreams: 0,
 		MaxInflight:          0,
 		RateLimit:            0,
+
+		OTLPEndpoint:    "",
+		OTLPSampleRatio: 1.0,
 	}
 }
 
@@ -136,6 +143,9 @@ type fileConfig struct {
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
 	MaxInflight          int     `yaml:"max_inflight"`
 	RateLimit            float64 `yaml:"rate_limit"`
+
+	OTLPEndpoint    string  `yaml:"otlp_endpoint"`
+	OTLPSampleRatio float64 `yaml:"otlp_sample_ratio"`
 }
 
 // LoadConfigFile reads a YAML config file and returns a Config populated with
@@ -174,6 +184,9 @@ func LoadConfigFile(path string) (Config, error) {
 		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
 		MaxInflight:          defaults.MaxInflight,
 		RateLimit:            defaults.RateLimit,
+
+		OTLPEndpoint:    defaults.OTLPEndpoint,
+		OTLPSampleRatio: defaults.OTLPSampleRatio,
 	}
 
 	dec := yaml.NewDecoder(f)
@@ -227,5 +240,8 @@ func LoadConfigFile(path string) (Config, error) {
 		MaxConcurrentStreams: fc.MaxConcurrentStreams,
 		MaxInflight:          fc.MaxInflight,
 		RateLimit:            fc.RateLimit,
+
+		OTLPEndpoint:    fc.OTLPEndpoint,
+		OTLPSampleRatio: fc.OTLPSampleRatio,
 	}, nil
 }

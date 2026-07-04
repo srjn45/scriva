@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -126,6 +127,10 @@ func serveCmd() *cobra.Command {
 						merged.MaxInflight = cfg.MaxInflight
 					case "rate-limit":
 						merged.RateLimit = cfg.RateLimit
+					case "otlp-endpoint":
+						merged.OTLPEndpoint = cfg.OTLPEndpoint
+					case "otlp-sample-ratio":
+						merged.OTLPSampleRatio = cfg.OTLPSampleRatio
 					}
 				})
 				cfg = merged
@@ -158,6 +163,8 @@ func serveCmd() *cobra.Command {
 	f.Uint32Var(&cfg.MaxConcurrentStreams, "max-concurrent-streams", cfg.MaxConcurrentStreams, "Max concurrent HTTP/2 streams per gRPC connection (0 = gRPC library default)")
 	f.IntVar(&cfg.MaxInflight, "max-inflight", cfg.MaxInflight, "Server-wide concurrent in-flight RPC ceiling; excess calls get RESOURCE_EXHAUSTED (0 = unlimited)")
 	f.Float64Var(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "Per-API-key rate limit in requests/sec; over-budget calls get RESOURCE_EXHAUSTED (0 = disabled)")
+	f.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP/gRPC collector address for OpenTelemetry tracing, e.g. localhost:4317 (empty = tracing disabled)")
+	f.Float64Var(&cfg.OTLPSampleRatio, "otlp-sample-ratio", cfg.OTLPSampleRatio, "Fraction of traces to sample when tracing is enabled (0–1)")
 
 	return cmd
 }
@@ -182,9 +189,38 @@ func serve(cfg server.Config, configFile string) error {
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := metrics.New(reg)
 
+	// Optional OpenTelemetry tracing. Off unless --otlp-endpoint is set; when it
+	// is, the server owns the OTel SDK and exports spans to an OTLP collector.
+	var tracerProvider *sdktrace.TracerProvider
+	if cfg.OTLPEndpoint != "" {
+		tp, err := server.NewTracerProvider(context.Background(), cfg.OTLPEndpoint, cfg.OTLPSampleRatio)
+		if err != nil {
+			return fmt.Errorf("set up tracing: %w", err)
+		}
+		tracerProvider = tp
+		logger.Info("tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "sample_ratio", cfg.OTLPSampleRatio)
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tracerProvider.Shutdown(shutCtx)
+		}()
+	}
+
 	// Open the database, attaching the compaction hook.
 	engineCfg := cfg.EngineConfig()
 	engineCfg.OnCompaction = m.ObserveCompaction
+	if tracerProvider != nil {
+		// Compose the metrics compaction hook with a tracing span, and add the
+		// scan span hook. The engine stays dependency-free — it only calls these
+		// hooks; the server owns the OTel SDK that turns them into spans.
+		metricsCompaction := engineCfg.OnCompaction
+		traceCompaction := server.CompactionTraceHook(tracerProvider)
+		engineCfg.OnCompaction = func(collection string, dur time.Duration) {
+			metricsCompaction(collection, dur)
+			traceCompaction(collection, dur)
+		}
+		engineCfg.OnScan = server.ScanTraceHook(tracerProvider)
+	}
 
 	db, err := engine.Open(cfg.DataDir, engineCfg)
 	if err != nil {
@@ -254,18 +290,26 @@ func serve(cfg server.Config, configFile string) error {
 	}
 	logger.Info("auth enabled", "keys", len(keys))
 
-	// Shared interceptors, in order: auth first (resolves the principal onto the
-	// context), then the limiter (reads that principal to rate-limit and sheds
-	// load), then structured request logging (records the outcome — including a
-	// shed request's ResourceExhausted), then metrics. The limiter is chained
-	// only when a limit is configured, so the default (unlimited) path is
-	// unchanged.
+	// Shared interceptors, in order: tracing outermost (so its per-RPC span wraps
+	// the whole handler and its span-bearing context flows down to the engine scan
+	// hook), then auth (resolves the principal onto the context), then the limiter
+	// (reads that principal to rate-limit and sheds load), then structured request
+	// logging (records the outcome — including a shed request's ResourceExhausted),
+	// then metrics. Tracing and the limiter are chained only when configured, so
+	// the default path is unchanged.
 	authUnary, authStream := authn.Interceptors()
 	logUnary, logStream := server.LoggingInterceptors(logger)
 	limiter := server.NewLimiter(cfg.MaxInflight, cfg.RateLimit)
 
-	unaryInts := []grpc.UnaryServerInterceptor{authUnary}
-	streamInts := []grpc.StreamServerInterceptor{authStream}
+	var unaryInts []grpc.UnaryServerInterceptor
+	var streamInts []grpc.StreamServerInterceptor
+	if tracerProvider != nil {
+		traceUnary, traceStream := server.TracingInterceptors(tracerProvider)
+		unaryInts = append(unaryInts, traceUnary)
+		streamInts = append(streamInts, traceStream)
+	}
+	unaryInts = append(unaryInts, authUnary)
+	streamInts = append(streamInts, authStream)
 	if limiter.Enabled() {
 		limUnary, limStream := limiter.Interceptors()
 		unaryInts = append(unaryInts, limUnary)
