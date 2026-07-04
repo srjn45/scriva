@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -348,6 +349,152 @@ func (db *DB) SetAppliedLSN(lsn uint64) error {
 	db.appliedLSN = lsn
 	db.replMu.Unlock()
 	return db.persistReplState()
+}
+
+// ---- Role management & manual failover (R3) --------------------------------
+
+// Role is a node's replication role. A leader assigns LSNs and accepts writes; a
+// follower tails a leader and stays read-only until it is promoted.
+type Role int32
+
+const (
+	// RoleLeader is the default role: the node accepts writes and, when
+	// replication is enabled, ships them to followers.
+	RoleLeader Role = iota
+	// RoleFollower is a read-only node that tails a leader's Replicate feed. It
+	// stays read-only until an operator promotes it (see DB.Promote).
+	RoleFollower
+)
+
+// String returns the operator-facing spelling of the role ("leader"/"follower").
+func (r Role) String() string {
+	switch r {
+	case RoleLeader:
+		return "leader"
+	case RoleFollower:
+		return "follower"
+	default:
+		return fmt.Sprintf("Role(%d)", int32(r))
+	}
+}
+
+// DefaultPromoteMaxLag is the default replication-lag ceiling (in LSNs) a
+// follower may carry and still be promoted without --force. Zero is the safest
+// default: a follower must be fully caught up with every write it knows the
+// leader committed. Operators can raise the ceiling or force the promotion.
+const DefaultPromoteMaxLag uint64 = 0
+
+// ErrReplicaLagExceeded is returned by DB.Promote when a follower's replication
+// lag exceeds the caller's threshold and the promotion was not forced. It guards
+// against silently promoting a stale replica and losing the leader's tail.
+var ErrReplicaLagExceeded = errors.New("replica lag exceeds promotion threshold")
+
+// ErrNotFollower is returned by DB.Promote when the node is not a follower — a
+// leader has nothing to promote (promotion is a one-way transition).
+var ErrNotFollower = errors.New("node is not a follower")
+
+// PromoteResult reports the outcome of a successful promotion.
+type PromoteResult struct {
+	Role Role   // the node's role after promotion (always RoleLeader)
+	LSN  uint64 // the LSN the new leader continues assigning from
+	Lag  uint64 // the replication lag observed at promotion (0 == fully caught up)
+}
+
+// CurrentRole returns the node's current replication role.
+func (db *DB) CurrentRole() Role { return Role(db.role.Load()) }
+
+// IsFollower reports whether the node is currently a read-only follower. The
+// server's read-only guard reads this on every RPC so a Promote lifts it at
+// runtime without a restart.
+func (db *DB) IsFollower() bool { return db.CurrentRole() == RoleFollower }
+
+// NoteLeaderLSN records the highest LSN this follower has learned the leader
+// holds (from the Replicate feed or a ReplicationStatus probe). It only ever
+// advances. The value is the "last-known leader LSN" the promotion lag guard
+// compares against the applied LSN; when the leader is lost it is frozen at the
+// last observed value, which is exactly what a manual-failover check needs.
+func (db *DB) NoteLeaderLSN(lsn uint64) {
+	for {
+		old := db.lastLeaderLSN.Load()
+		if lsn <= old || db.lastLeaderLSN.CompareAndSwap(old, lsn) {
+			return
+		}
+	}
+}
+
+// LastKnownLeaderLSN returns the highest upstream leader LSN this follower has
+// observed. It is 0 on a leader (or a follower that has not yet connected).
+func (db *DB) LastKnownLeaderLSN() uint64 { return db.lastLeaderLSN.Load() }
+
+// ReplicationLag returns how far behind the last-known leader LSN this follower's
+// applied watermark is (0 when caught up or on a leader).
+func (db *DB) ReplicationLag() uint64 {
+	leader := db.lastLeaderLSN.Load()
+	applied := db.AppliedLSN()
+	if leader > applied {
+		return leader - applied
+	}
+	return 0
+}
+
+// SetPromoteHook registers a callback invoked once, from inside Promote, the
+// moment the node is promoted. The server uses it to stop the follower apply
+// loop so the new leader stops replicating from its old upstream. Passing nil
+// clears it. Must be set before a Promote can race it (i.e. at startup).
+func (db *DB) SetPromoteHook(fn func()) {
+	db.roleMu.Lock()
+	db.onPromote = fn
+	db.roleMu.Unlock()
+}
+
+// Promote flips a caught-up follower into a leader. It refuses a node that is not
+// a follower (ErrNotFollower) and, unless force is set, a follower whose lag
+// exceeds maxLag (ErrReplicaLagExceeded) — guarding against silently promoting a
+// stale replica. On success it stops the apply loop (via the registered hook),
+// reseeds the LSN counter above the replicated history so the new leader never
+// reuses an LSN the old leader assigned, and returns the resulting role and LSN.
+// Promotion is one-way; automatic election is out of scope.
+func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
+	db.roleMu.Lock()
+	defer db.roleMu.Unlock()
+
+	if Role(db.role.Load()) != RoleFollower {
+		return PromoteResult{}, ErrNotFollower
+	}
+
+	applied := db.AppliedLSN()
+	leaderLSN := db.lastLeaderLSN.Load()
+	var lag uint64
+	if leaderLSN > applied {
+		lag = leaderLSN - applied
+	}
+	if !force && lag > maxLag {
+		return PromoteResult{}, fmt.Errorf("%w: applied_lsn=%d last_known_leader_lsn=%d lag=%d threshold=%d",
+			ErrReplicaLagExceeded, applied, leaderLSN, lag, maxLag)
+	}
+
+	// Flip to leader. Subsequent writes route through the normal (writable) path;
+	// the read-only guard, which reads db.role on every RPC, now lets them through.
+	db.role.Store(int32(RoleLeader))
+
+	// Continue assigning LSNs strictly above every entry already replicated, so a
+	// promoted leader never reissues an LSN the old leader assigned.
+	resultLSN := applied
+	if db.broker != nil {
+		db.broker.setLSN(applied)
+		if cur := db.broker.currentLSN(); cur > resultLSN {
+			resultLSN = cur
+		}
+	}
+
+	// Stop the follower apply loop so the new leader no longer tails its old
+	// upstream. Best-effort persistence of the (now leader) watermark follows.
+	if db.onPromote != nil {
+		db.onPromote()
+	}
+	_ = db.persistReplState()
+
+	return PromoteResult{Role: RoleLeader, LSN: resultLSN, Lag: lag}, nil
 }
 
 // ApplyReplication applies a replicated entry to the named collection, creating

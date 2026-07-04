@@ -3549,6 +3549,120 @@ func (x *FollowerStatus) GetConnectedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type PromoteRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// force promotes even when the follower's replication lag exceeds the server's
+	// configured threshold. Use only when the leader is unrecoverable and some
+	// divergence is acceptable — a forced promotion of a lagging replica discards
+	// the un-replicated tail of the old leader's writes.
+	Force         bool `protobuf:"varint,1,opt,name=force,proto3" json:"force,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PromoteRequest) Reset() {
+	*x = PromoteRequest{}
+	mi := &file_proto_filedb_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PromoteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PromoteRequest) ProtoMessage() {}
+
+func (x *PromoteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PromoteRequest.ProtoReflect.Descriptor instead.
+func (*PromoteRequest) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *PromoteRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+type PromoteResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The node's role after the call: "leader" on a successful promotion.
+	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// The LSN the promoted leader continues assigning from — its applied watermark
+	// at promotion. New writes are tagged with strictly greater LSNs, so a promoted
+	// leader never reuses an LSN the old leader already assigned.
+	Lsn uint64 `protobuf:"varint,2,opt,name=lsn,proto3" json:"lsn,omitempty"`
+	// The replication lag (last-known leader LSN minus applied LSN) observed at the
+	// moment of promotion. 0 means the follower was fully caught up.
+	Lag           uint64 `protobuf:"varint,3,opt,name=lag,proto3" json:"lag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PromoteResponse) Reset() {
+	*x = PromoteResponse{}
+	mi := &file_proto_filedb_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PromoteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PromoteResponse) ProtoMessage() {}
+
+func (x *PromoteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_filedb_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PromoteResponse.ProtoReflect.Descriptor instead.
+func (*PromoteResponse) Descriptor() ([]byte, []int) {
+	return file_proto_filedb_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *PromoteResponse) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *PromoteResponse) GetLsn() uint64 {
+	if x != nil {
+		return x.Lsn
+	}
+	return 0
+}
+
+func (x *PromoteResponse) GetLag() uint64 {
+	if x != nil {
+		return x.Lag
+	}
+	return 0
+}
+
 var File_proto_filedb_proto protoreflect.FileDescriptor
 
 const file_proto_filedb_proto_rawDesc = "" +
@@ -3812,7 +3926,13 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"followerId\x12\x1b\n" +
 	"\tacked_lsn\x18\x02 \x01(\x04R\backedLsn\x12\x10\n" +
 	"\x03lag\x18\x03 \x01(\x04R\x03lag\x12=\n" +
-	"\fconnected_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vconnectedAt*q\n" +
+	"\fconnected_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vconnectedAt\"&\n" +
+	"\x0ePromoteRequest\x12\x14\n" +
+	"\x05force\x18\x01 \x01(\bR\x05force\"I\n" +
+	"\x0fPromoteResponse\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x10\n" +
+	"\x03lsn\x18\x02 \x01(\x04R\x03lsn\x12\x10\n" +
+	"\x03lag\x18\x03 \x01(\x04R\x03lag*q\n" +
 	"\bFilterOp\x12\x19\n" +
 	"\x15FILTER_OP_UNSPECIFIED\x10\x00\x12\x06\n" +
 	"\x02EQ\x10\x01\x12\a\n" +
@@ -3843,7 +3963,7 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\n" +
 	"REP_UPDATE\x10\x02\x12\x0e\n" +
 	"\n" +
-	"REP_DELETE\x10\x032\xf2\x15\n" +
+	"REP_DELETE\x10\x032\xd8\x16\n" +
 	"\x06FileDB\x12w\n" +
 	"\x10CreateCollection\x12\".filedb.v1.CreateCollectionRequest\x1a#.filedb.v1.CreateCollectionResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/collections\x12u\n" +
 	"\x0eDropCollection\x12 .filedb.v1.DropCollectionRequest\x1a!.filedb.v1.DropCollectionResponse\"\x1e\x82\xd3\xe4\x93\x02\x18*\x16/v1/collections/{name}\x12q\n" +
@@ -3873,7 +3993,8 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\aCompact\x12\x19.filedb.v1.CompactRequest\x1a\x1a.filedb.v1.CompactResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/{collection}/compact\x12B\n" +
 	"\bSnapshot\x12\x1a.filedb.v1.SnapshotRequest\x1a\x18.filedb.v1.SnapshotChunk0\x01\x12H\n" +
 	"\tReplicate\x12\x1b.filedb.v1.ReplicateRequest\x1a\x1c.filedb.v1.ReplicationRecord0\x01\x12~\n" +
-	"\x11ReplicationStatus\x12#.filedb.v1.ReplicationStatusRequest\x1a$.filedb.v1.ReplicationStatusResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/replication/statusB.Z,github.com/srjn45/filedbv2/internal/pb/protob\x06proto3"
+	"\x11ReplicationStatus\x12#.filedb.v1.ReplicationStatusRequest\x1a$.filedb.v1.ReplicationStatusResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/replication/status\x12d\n" +
+	"\aPromote\x12\x19.filedb.v1.PromoteRequest\x1a\x1a.filedb.v1.PromoteResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/replication/promoteB.Z,github.com/srjn45/filedbv2/internal/pb/protob\x06proto3"
 
 var (
 	file_proto_filedb_proto_rawDescOnce sync.Once
@@ -3888,7 +4009,7 @@ func file_proto_filedb_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_filedb_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_proto_filedb_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_proto_filedb_proto_goTypes = []any{
 	(FilterOp)(0),                     // 0: filedb.v1.FilterOp
 	(WatchOp)(0),                      // 1: filedb.v1.WatchOp
@@ -3951,43 +4072,45 @@ var file_proto_filedb_proto_goTypes = []any{
 	(*ReplicationStatusRequest)(nil),  // 58: filedb.v1.ReplicationStatusRequest
 	(*ReplicationStatusResponse)(nil), // 59: filedb.v1.ReplicationStatusResponse
 	(*FollowerStatus)(nil),            // 60: filedb.v1.FollowerStatus
-	(*structpb.Struct)(nil),           // 61: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),     // 62: google.protobuf.Timestamp
-	(*structpb.Value)(nil),            // 63: google.protobuf.Value
+	(*PromoteRequest)(nil),            // 61: filedb.v1.PromoteRequest
+	(*PromoteResponse)(nil),           // 62: filedb.v1.PromoteResponse
+	(*structpb.Struct)(nil),           // 63: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),     // 64: google.protobuf.Timestamp
+	(*structpb.Value)(nil),            // 65: google.protobuf.Value
 }
 var file_proto_filedb_proto_depIdxs = []int32{
-	61, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
-	62, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
-	62, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
+	63, // 0: filedb.v1.Record.data:type_name -> google.protobuf.Struct
+	64, // 1: filedb.v1.Record.date_added:type_name -> google.protobuf.Timestamp
+	64, // 2: filedb.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
 	6,  // 3: filedb.v1.Filter.field:type_name -> filedb.v1.FieldFilter
 	7,  // 4: filedb.v1.Filter.and:type_name -> filedb.v1.AndFilter
 	8,  // 5: filedb.v1.Filter.or:type_name -> filedb.v1.OrFilter
 	0,  // 6: filedb.v1.FieldFilter.op:type_name -> filedb.v1.FilterOp
 	5,  // 7: filedb.v1.AndFilter.filters:type_name -> filedb.v1.Filter
 	5,  // 8: filedb.v1.OrFilter.filters:type_name -> filedb.v1.Filter
-	61, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
-	61, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
+	63, // 9: filedb.v1.InsertRequest.data:type_name -> google.protobuf.Struct
+	63, // 10: filedb.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
 	5,  // 11: filedb.v1.FindRequest.filter:type_name -> filedb.v1.Filter
 	20, // 12: filedb.v1.FindRequest.order_by_fields:type_name -> filedb.v1.OrderBy
 	4,  // 13: filedb.v1.FindResponse.record:type_name -> filedb.v1.Record
-	61, // 14: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
-	61, // 15: filedb.v1.UpsertRequest.data:type_name -> google.protobuf.Struct
+	63, // 14: filedb.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
+	63, // 15: filedb.v1.UpsertRequest.data:type_name -> google.protobuf.Struct
 	4,  // 16: filedb.v1.UpsertResponse.record:type_name -> filedb.v1.Record
-	61, // 17: filedb.v1.UpdateByKeyRequest.data:type_name -> google.protobuf.Struct
-	61, // 18: filedb.v1.UpdateIfRevRequest.data:type_name -> google.protobuf.Struct
+	63, // 17: filedb.v1.UpdateByKeyRequest.data:type_name -> google.protobuf.Struct
+	63, // 18: filedb.v1.UpdateIfRevRequest.data:type_name -> google.protobuf.Struct
 	4,  // 19: filedb.v1.UpdateIfRevResponse.record:type_name -> filedb.v1.Record
 	5,  // 20: filedb.v1.WatchRequest.filter:type_name -> filedb.v1.Filter
 	1,  // 21: filedb.v1.WatchEvent.op:type_name -> filedb.v1.WatchOp
 	4,  // 22: filedb.v1.WatchEvent.record:type_name -> filedb.v1.Record
-	62, // 23: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
+	64, // 23: filedb.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
 	5,  // 24: filedb.v1.AggregateRequest.filter:type_name -> filedb.v1.Filter
 	2,  // 25: filedb.v1.AggregateRequest.aggregations:type_name -> filedb.v1.AggregateOp
-	63, // 26: filedb.v1.AggregateResponse.group_value:type_name -> google.protobuf.Value
+	65, // 26: filedb.v1.AggregateResponse.group_value:type_name -> google.protobuf.Value
 	3,  // 27: filedb.v1.ReplicationRecord.op:type_name -> filedb.v1.ReplicationOp
-	61, // 28: filedb.v1.ReplicationRecord.data:type_name -> google.protobuf.Struct
-	62, // 29: filedb.v1.ReplicationRecord.ts:type_name -> google.protobuf.Timestamp
+	63, // 28: filedb.v1.ReplicationRecord.data:type_name -> google.protobuf.Struct
+	64, // 29: filedb.v1.ReplicationRecord.ts:type_name -> google.protobuf.Timestamp
 	60, // 30: filedb.v1.ReplicationStatusResponse.followers:type_name -> filedb.v1.FollowerStatus
-	62, // 31: filedb.v1.FollowerStatus.connected_at:type_name -> google.protobuf.Timestamp
+	64, // 31: filedb.v1.FollowerStatus.connected_at:type_name -> google.protobuf.Timestamp
 	9,  // 32: filedb.v1.FileDB.CreateCollection:input_type -> filedb.v1.CreateCollectionRequest
 	11, // 33: filedb.v1.FileDB.DropCollection:input_type -> filedb.v1.DropCollectionRequest
 	13, // 34: filedb.v1.FileDB.ListCollections:input_type -> filedb.v1.ListCollectionsRequest
@@ -4015,35 +4138,37 @@ var file_proto_filedb_proto_depIdxs = []int32{
 	54, // 56: filedb.v1.FileDB.Snapshot:input_type -> filedb.v1.SnapshotRequest
 	56, // 57: filedb.v1.FileDB.Replicate:input_type -> filedb.v1.ReplicateRequest
 	58, // 58: filedb.v1.FileDB.ReplicationStatus:input_type -> filedb.v1.ReplicationStatusRequest
-	10, // 59: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
-	12, // 60: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
-	14, // 61: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
-	16, // 62: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
-	18, // 63: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
-	22, // 64: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
-	22, // 65: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
-	24, // 66: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
-	26, // 67: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
-	28, // 68: filedb.v1.FileDB.Upsert:output_type -> filedb.v1.UpsertResponse
-	22, // 69: filedb.v1.FileDB.FindByKey:output_type -> filedb.v1.FindResponse
-	24, // 70: filedb.v1.FileDB.UpdateByKey:output_type -> filedb.v1.UpdateResponse
-	26, // 71: filedb.v1.FileDB.DeleteByKey:output_type -> filedb.v1.DeleteResponse
-	33, // 72: filedb.v1.FileDB.UpdateIfRev:output_type -> filedb.v1.UpdateIfRevResponse
-	35, // 73: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
-	37, // 74: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
-	39, // 75: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
-	41, // 76: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
-	43, // 77: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
-	45, // 78: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
-	47, // 79: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
-	49, // 80: filedb.v1.FileDB.Aggregate:output_type -> filedb.v1.AggregateResponse
-	51, // 81: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
-	53, // 82: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
-	55, // 83: filedb.v1.FileDB.Snapshot:output_type -> filedb.v1.SnapshotChunk
-	57, // 84: filedb.v1.FileDB.Replicate:output_type -> filedb.v1.ReplicationRecord
-	59, // 85: filedb.v1.FileDB.ReplicationStatus:output_type -> filedb.v1.ReplicationStatusResponse
-	59, // [59:86] is the sub-list for method output_type
-	32, // [32:59] is the sub-list for method input_type
+	61, // 59: filedb.v1.FileDB.Promote:input_type -> filedb.v1.PromoteRequest
+	10, // 60: filedb.v1.FileDB.CreateCollection:output_type -> filedb.v1.CreateCollectionResponse
+	12, // 61: filedb.v1.FileDB.DropCollection:output_type -> filedb.v1.DropCollectionResponse
+	14, // 62: filedb.v1.FileDB.ListCollections:output_type -> filedb.v1.ListCollectionsResponse
+	16, // 63: filedb.v1.FileDB.Insert:output_type -> filedb.v1.InsertResponse
+	18, // 64: filedb.v1.FileDB.InsertMany:output_type -> filedb.v1.InsertManyResponse
+	22, // 65: filedb.v1.FileDB.FindById:output_type -> filedb.v1.FindResponse
+	22, // 66: filedb.v1.FileDB.Find:output_type -> filedb.v1.FindResponse
+	24, // 67: filedb.v1.FileDB.Update:output_type -> filedb.v1.UpdateResponse
+	26, // 68: filedb.v1.FileDB.Delete:output_type -> filedb.v1.DeleteResponse
+	28, // 69: filedb.v1.FileDB.Upsert:output_type -> filedb.v1.UpsertResponse
+	22, // 70: filedb.v1.FileDB.FindByKey:output_type -> filedb.v1.FindResponse
+	24, // 71: filedb.v1.FileDB.UpdateByKey:output_type -> filedb.v1.UpdateResponse
+	26, // 72: filedb.v1.FileDB.DeleteByKey:output_type -> filedb.v1.DeleteResponse
+	33, // 73: filedb.v1.FileDB.UpdateIfRev:output_type -> filedb.v1.UpdateIfRevResponse
+	35, // 74: filedb.v1.FileDB.EnsureIndex:output_type -> filedb.v1.EnsureIndexResponse
+	37, // 75: filedb.v1.FileDB.DropIndex:output_type -> filedb.v1.DropIndexResponse
+	39, // 76: filedb.v1.FileDB.ListIndexes:output_type -> filedb.v1.ListIndexesResponse
+	41, // 77: filedb.v1.FileDB.BeginTx:output_type -> filedb.v1.BeginTxResponse
+	43, // 78: filedb.v1.FileDB.CommitTx:output_type -> filedb.v1.CommitTxResponse
+	45, // 79: filedb.v1.FileDB.RollbackTx:output_type -> filedb.v1.RollbackTxResponse
+	47, // 80: filedb.v1.FileDB.Watch:output_type -> filedb.v1.WatchEvent
+	49, // 81: filedb.v1.FileDB.Aggregate:output_type -> filedb.v1.AggregateResponse
+	51, // 82: filedb.v1.FileDB.CollectionStats:output_type -> filedb.v1.CollectionStatsResponse
+	53, // 83: filedb.v1.FileDB.Compact:output_type -> filedb.v1.CompactResponse
+	55, // 84: filedb.v1.FileDB.Snapshot:output_type -> filedb.v1.SnapshotChunk
+	57, // 85: filedb.v1.FileDB.Replicate:output_type -> filedb.v1.ReplicationRecord
+	59, // 86: filedb.v1.FileDB.ReplicationStatus:output_type -> filedb.v1.ReplicationStatusResponse
+	62, // 87: filedb.v1.FileDB.Promote:output_type -> filedb.v1.PromoteResponse
+	60, // [60:88] is the sub-list for method output_type
+	32, // [32:60] is the sub-list for method input_type
 	32, // [32:32] is the sub-list for extension type_name
 	32, // [32:32] is the sub-list for extension extendee
 	0,  // [0:32] is the sub-list for field type_name
@@ -4065,7 +4190,7 @@ func file_proto_filedb_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_filedb_proto_rawDesc), len(file_proto_filedb_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   57,
+			NumMessages:   59,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

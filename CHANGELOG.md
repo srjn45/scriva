@@ -76,6 +76,34 @@ embedding-specific contract.
   - The embeddable `engine` package is unchanged — role/routing lives entirely in
     the server layer; the engine only exposes the existing `DB.AppliedLSN()`.
 
+- **R3 — manual failover & role management.** A new admin **`Promote`** RPC
+  (`POST /v1/replication/promote`) and `filedb-cli promote` command flip a
+  caught-up follower into a leader: it stops replicating from its upstream, lifts
+  the read-only guard, and begins accepting writes — the documented path for
+  recovering from a leader loss without an external coordinator.
+  - **Guard against silent divergence.** Promotion is refused with a typed
+    `FAILED_PRECONDITION` when the follower's replication lag (last-known leader
+    LSN minus applied LSN) exceeds a configurable threshold — `--promote-max-lag`
+    (config: `promote_max_lag`, default 0 = must be fully caught up). Pass
+    `--force` (proto `force`) to override the guard when the leader is
+    unrecoverable and some divergence is acceptable. Promoting a node that is not
+    a follower is refused (nothing to promote). The response reports the new
+    `role`, the LSN the new leader continues from, and the `lag` at promotion.
+  - **The read-only guard is now dynamic.** The R2 follower write-rejection
+    interceptors consult the node's role on every call instead of relying on
+    their mere presence, so a `Promote` lifts them live — no restart. A promoted
+    leader reseeds its LSN counter above the replicated tail, so it never reuses
+    an LSN the old leader assigned.
+  - **`Promote` requires a read-write API key.** Finer-grained admin ACLs (an
+    admin scope) are deferred to S3; until then a read-write key is the admin
+    boundary.
+  - The embeddable `engine` package stays proto-free: the role-flip and lag guard
+    live in `engine` as plain Go (`DB.Promote`, `DB.IsFollower`,
+    `DB.NoteLeaderLSN`, typed `engine.ErrReplicaLagExceeded`/`ErrNotFollower`);
+    the server maps them to proto and enforces auth. Promotion is **one-way** —
+    automatic leader election (consensus) remains out of scope. See
+    [`docs/operations.md`](docs/operations.md) for the manual-failover runbook.
+
 ## [0.7.0] — 2026-07-04
 
 This release rolls up the operability/observability and network-API-parity work

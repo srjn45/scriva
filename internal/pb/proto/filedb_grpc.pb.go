@@ -46,6 +46,7 @@ const (
 	FileDB_Snapshot_FullMethodName          = "/filedb.v1.FileDB/Snapshot"
 	FileDB_Replicate_FullMethodName         = "/filedb.v1.FileDB/Replicate"
 	FileDB_ReplicationStatus_FullMethodName = "/filedb.v1.FileDB/ReplicationStatus"
+	FileDB_Promote_FullMethodName           = "/filedb.v1.FileDB/Promote"
 )
 
 // FileDBClient is the client API for FileDB service.
@@ -114,6 +115,15 @@ type FileDBClient interface {
 	// follower, the last LSN shipped to it and its lag. Used for observability and
 	// to read the leader's LSN watermark before bootstrapping a fresh follower.
 	ReplicationStatus(ctx context.Context, in *ReplicationStatusRequest, opts ...grpc.CallOption) (*ReplicationStatusResponse, error)
+	// Promote flips a caught-up follower into a leader: it stops replicating from
+	// its upstream, lifts the read-only guard, and begins accepting writes.
+	// Promotion is refused with FAILED_PRECONDITION when the node is not a
+	// follower, or when its replication lag (last-known leader LSN minus applied
+	// LSN) exceeds the server's configured threshold — pass force to override that
+	// guard when the leader is unrecoverable and some divergence is acceptable.
+	// This is an admin operation and requires a read-write API key. Promotion is a
+	// one-way transition; automatic leader election is out of scope.
+	Promote(ctx context.Context, in *PromoteRequest, opts ...grpc.CallOption) (*PromoteResponse, error)
 }
 
 type fileDBClient struct {
@@ -439,6 +449,16 @@ func (c *fileDBClient) ReplicationStatus(ctx context.Context, in *ReplicationSta
 	return out, nil
 }
 
+func (c *fileDBClient) Promote(ctx context.Context, in *PromoteRequest, opts ...grpc.CallOption) (*PromoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PromoteResponse)
+	err := c.cc.Invoke(ctx, FileDB_Promote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileDBServer is the server API for FileDB service.
 // All implementations must embed UnimplementedFileDBServer
 // for forward compatibility.
@@ -505,6 +525,15 @@ type FileDBServer interface {
 	// follower, the last LSN shipped to it and its lag. Used for observability and
 	// to read the leader's LSN watermark before bootstrapping a fresh follower.
 	ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error)
+	// Promote flips a caught-up follower into a leader: it stops replicating from
+	// its upstream, lifts the read-only guard, and begins accepting writes.
+	// Promotion is refused with FAILED_PRECONDITION when the node is not a
+	// follower, or when its replication lag (last-known leader LSN minus applied
+	// LSN) exceeds the server's configured threshold — pass force to override that
+	// guard when the leader is unrecoverable and some divergence is acceptable.
+	// This is an admin operation and requires a read-write API key. Promotion is a
+	// one-way transition; automatic leader election is out of scope.
+	Promote(context.Context, *PromoteRequest) (*PromoteResponse, error)
 	mustEmbedUnimplementedFileDBServer()
 }
 
@@ -595,6 +624,9 @@ func (UnimplementedFileDBServer) Replicate(*ReplicateRequest, grpc.ServerStreami
 }
 func (UnimplementedFileDBServer) ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReplicationStatus not implemented")
+}
+func (UnimplementedFileDBServer) Promote(context.Context, *PromoteRequest) (*PromoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Promote not implemented")
 }
 func (UnimplementedFileDBServer) mustEmbedUnimplementedFileDBServer() {}
 func (UnimplementedFileDBServer) testEmbeddedByValue()                {}
@@ -1068,6 +1100,24 @@ func _FileDB_ReplicationStatus_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileDB_Promote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PromoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).Promote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_Promote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).Promote(ctx, req.(*PromoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileDB_ServiceDesc is the grpc.ServiceDesc for FileDB service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1162,6 +1212,10 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReplicationStatus",
 			Handler:    _FileDB_ReplicationStatus_Handler,
+		},
+		{
+			MethodName: "Promote",
+			Handler:    _FileDB_Promote_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -929,6 +929,41 @@ curl -s -H 'x-api-key: dev-key' http://localhost:8080/v1/replication/status
 # {"leaderLsn":"1234","followers":[{"followerId":"host-b","ackedLsn":"1234","lag":"0",...}]}
 ```
 
+### Promoting a follower (manual failover)
+
+When the leader is lost, promote a caught-up follower to take its place. The
+admin **`Promote`** RPC flips the follower into a leader: it stops replicating
+from its upstream, lifts the read-only guard, and starts accepting writes.
+
+```bash
+# On the follower, once it has caught up (lag 0):
+filedb-cli --host localhost:6433 --api-key dev-key promote
+# promoted: role=leader lsn=1234 lag=0
+
+# Or over REST:
+curl -s -H 'x-api-key: dev-key' http://localhost:9080/v1/replication/promote -d '{}'
+# {"role":"leader","lsn":"1234","lag":"0"}
+
+# The former follower now accepts writes:
+curl -s -H 'x-api-key: dev-key' http://localhost:9080/v1/users -d '{"data":{"name":"x"}}'
+```
+
+Promotion **guards against silent divergence**: it is refused with
+`FAILED_PRECONDITION` when the follower's replication lag (last-known leader LSN
+minus applied LSN) exceeds `--promote-max-lag` (default 0 — must be fully caught
+up). If the leader is unrecoverable and you accept losing its un-replicated tail,
+override the guard:
+
+```bash
+filedb-cli --host localhost:6433 --api-key dev-key promote --force
+# or REST: curl ... /v1/replication/promote -d '{"force":true}'
+```
+
+`Promote` requires a **read-write** API key (it is an admin operation; finer admin
+ACLs arrive with S3). Promotion is **one-way** — a promoted node is an ordinary
+leader; automatic leader election (consensus) is out of scope. For the full
+operator runbook, see [operations.md](operations.md).
+
 Flags (all optional):
 
 | Flag | Config key | Meaning |
@@ -936,17 +971,18 @@ Flags (all optional):
 | `--replicate-from <addr>` | `replicate_from` | Run as a follower tailing the leader's gRPC address. Empty = leader. |
 | `--replicate-id <id>` | `follower_id` | Label reported to the leader in `ReplicationStatus` (default: hostname). |
 | `--replication-ring-size <n>` | `replication_ring_size` | Leader's in-memory buffer of recent entries for follower resume (default 8192; 0 disables replication). |
+| `--promote-max-lag <n>` | `promote_max_lag` | Max follower lag (in LSNs) still eligible for `Promote` without `--force` (default 0 = must be fully caught up). |
 
-Notes and current scope (R1–R2):
+Notes and current scope (R1–R3):
 
 - The follower authenticates to the leader with its `--api-key`; replication is a
-  read-level operation, so a read-scoped key suffices.
+  read-level operation, so a read-scoped key suffices for tailing — but `Promote`
+  needs a read-write key.
 - The replication link uses the plain gRPC transport; run it inside a trusted
   network (mutual TLS for the link is a later milestone).
-- A follower is **read-only** (R2): serve reads from it, send writes to the
-  leader. **Promoting** a follower to leader after a leader loss is the next
-  milestone (R3); until then, a leader loss is handled by re-pointing writers at a
-  rebuilt leader. Re-bootstrap a follower (wipe its data dir and restart) if it
+- A follower is **read-only** (R2) until promoted (R3). After a leader loss,
+  promote the most caught-up follower and repoint writers (and any other
+  followers) at it. Re-bootstrap a follower (wipe its data dir and restart) if it
   ever reports it has fallen too far behind.
 
 ---

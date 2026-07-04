@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,19 @@ type DB struct {
 	broker     *replicationBroker
 	replMu     sync.Mutex
 	appliedLSN uint64
+
+	// Role management (R3). role is the node's replication role (leader by
+	// default; follower when opened with CollectionConfig.Follower). It is read
+	// lock-free by the read-only guard on every RPC, so a Promote can lift the
+	// guard at runtime. lastLeaderLSN is a follower's last-known upstream leader
+	// LSN, kept only to compute the promotion lag guard. roleMu serialises a
+	// promotion so the role flip, LSN reseed, and apply-loop stop are atomic; it
+	// never guards the read path. onPromote, when set by the server, stops the
+	// follower apply loop the moment the node is promoted.
+	role          atomic.Int32
+	lastLeaderLSN atomic.Uint64
+	roleMu        sync.Mutex
+	onPromote     func()
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -38,6 +52,11 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		dataDir:     dataDir,
 		defaultCfg:  cfg,
 		collections: make(map[string]*Collection),
+	}
+	// A node opened as a follower starts in the follower role so the read-only
+	// guard rejects writes until an operator promotes it (R3).
+	if cfg.Follower {
+		db.role.Store(int32(RoleFollower))
 	}
 	// Build the replication broker (if enabled) and restore the LSN watermarks
 	// before opening any collection, so collections open with a live broker.

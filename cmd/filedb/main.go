@@ -137,6 +137,8 @@ func serveCmd() *cobra.Command {
 						merged.FollowerID = cfg.FollowerID
 					case "replication-ring-size":
 						merged.ReplicationRingSize = cfg.ReplicationRingSize
+					case "promote-max-lag":
+						merged.PromoteMaxLag = cfg.PromoteMaxLag
 					}
 				})
 				cfg = merged
@@ -174,6 +176,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.ReplicateFrom, "replicate-from", cfg.ReplicateFrom, "Run as a follower tailing the leader at this gRPC address (empty = leader mode)")
 	f.StringVar(&cfg.FollowerID, "replicate-id", cfg.FollowerID, "Follower identity reported to the leader in ReplicationStatus (default: hostname)")
 	f.IntVar(&cfg.ReplicationRingSize, "replication-ring-size", cfg.ReplicationRingSize, "Leader-side buffer of recent committed entries for follower resume (0 = disable replication)")
+	f.Uint64Var(&cfg.PromoteMaxLag, "promote-max-lag", cfg.PromoteMaxLag, "Max follower replication lag (in LSNs) still eligible for Promote without --force (0 = must be fully caught up)")
 
 	return cmd
 }
@@ -366,7 +369,7 @@ func serve(cfg server.Config, configFile string) error {
 	// installed solely when replicating from a leader, so its presence *is* the
 	// read-only role — see server.ReadOnlyInterceptors.
 	if cfg.ReplicateFrom != "" {
-		roUnary, roStream := server.ReadOnlyInterceptors()
+		roUnary, roStream := server.ReadOnlyInterceptors(db)
 		unaryInts = append(unaryInts, roUnary)
 		streamInts = append(streamInts, roStream)
 		logger.Info("read-only replica mode: writes rejected, reads served from applied state")
@@ -400,6 +403,8 @@ func serve(cfg server.Config, configFile string) error {
 	slowQueryOpts := []server.GRPCOption{
 		server.WithScanObserver(m.ObserveScan),
 		server.WithSlowQueryLog(logger, time.Duration(cfg.SlowQueryMs)*time.Millisecond),
+		// R3: the Promote handler enforces this lag ceiling unless the request forces.
+		server.WithPromoteMaxLag(cfg.PromoteMaxLag),
 	}
 	if cfg.SlowQueryMs > 0 {
 		logger.Info("slow-query log enabled", "threshold_ms", cfg.SlowQueryMs)
@@ -473,6 +478,9 @@ func serve(cfg server.Config, configFile string) error {
 	if cfg.ReplicateFrom != "" {
 		fctx, cancelF := context.WithCancel(context.Background())
 		stopFollower = cancelF
+		// R3: a Promote stops the apply loop so the new leader no longer tails its
+		// old upstream. The engine invokes this hook from inside DB.Promote.
+		db.SetPromoteHook(cancelF)
 		followerID := cfg.FollowerID
 		if followerID == "" {
 			if hn, herr := os.Hostname(); herr == nil {

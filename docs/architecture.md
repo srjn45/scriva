@@ -748,16 +748,16 @@ and the read-only observability RPCs (`CollectionStats`, `ListCollections`,
 `ListIndexes`, `Watch`) — directly from its applied state, so read traffic scales
 horizontally: point read clients at any follower and writes at the leader.
 
-Role-aware routing lives entirely in the **server layer**, not the engine. When a
-node is started as a follower (`--replicate-from`), the server installs a single
-pair of gRPC interceptors (`server.ReadOnlyInterceptors`) that refuse every
-mutating RPC with `FAILED_PRECONDITION` and the message *"read-only replica; write
-to the leader"*. The guard is keyed on the generated method-name constants and
-centralised in one place — adding a new write RPC is a one-line addition to its
-`writeMethods` set — and its very presence *is* the read-only role (it is wired
-only in follower mode), so there is no per-call role lookup. The engine stays
-free of any gRPC/protobuf dependency; it only exposes the applied-LSN watermark
-the server already had (`DB.AppliedLSN()`).
+Role-aware routing lives in the **server layer**; the engine owns only the role
+*flag*. When a node is started as a follower (`--replicate-from`), the server
+installs a single pair of gRPC interceptors (`server.ReadOnlyInterceptors`) that
+refuse every mutating RPC with `FAILED_PRECONDITION` and the message *"read-only
+replica; write to the leader"*. The guard is keyed on the generated method-name
+constants and centralised in one place — adding a new write RPC is a one-line
+addition to its `writeMethods` set. The check is **dynamic**: each call consults
+`DB.IsFollower()`, so a promotion (R3) lifts the guard live without a restart.
+The engine stays free of any gRPC/protobuf dependency; it exposes the role flag
+(`DB.IsFollower`) and the applied-LSN watermark (`DB.AppliedLSN`).
 
 Because replication is asynchronous, a follower read may be **stale** by the
 follower's current lag. That bound is *observable*: `ReplicationStatusResponse`
@@ -768,11 +768,44 @@ committed writes the follower has not yet applied. Records themselves never go
 backwards: apply is idempotent by revision, and each applied entry advances the
 persisted watermark monotonically.
 
-> **Scope.** Promoting a follower to leader after a leader loss (R3) is a separate
-> follow-on. A leader restart keeps LSNs monotonic (the last-assigned LSN is
-> persisted) but its in-memory ring starts empty, so a follower that was
-> mid-catch-up may need to re-bootstrap — automatic leader election remains
-> explicitly out of scope.
+### Manual failover & role management (R3)
+
+After a leader loss, an operator recovers write availability by **promoting** a
+caught-up follower. The engine owns a `role` flag (leader by default; follower
+when opened with `CollectionConfig.Follower`, which the server sets in
+`--replicate-from` mode) and exposes `DB.Promote(maxLag, force)` as plain Go —
+still no gRPC/protobuf in the engine. The server's admin `Promote` RPC (POST
+`/v1/replication/promote`) maps onto it; the CLI wraps it as `filedb-cli promote`.
+
+A promotion:
+
+1. **Checks the guard.** It refuses a node that is not a follower
+   (`ErrNotFollower` → `FAILED_PRECONDITION`) and, unless forced, a follower whose
+   **lag** exceeds the configured ceiling (`ErrReplicaLagExceeded` →
+   `FAILED_PRECONDITION`). Lag is the *last-known leader LSN* minus the applied
+   LSN. The follower learns the leader's LSN from the replication feed and from a
+   `ReplicationStatus` probe on each (re)connect (`DB.NoteLeaderLSN`); when the
+   leader is lost, that value is frozen at the last observation — exactly the
+   "how far behind was I when the leader died?" a failover check needs. The
+   ceiling is `--promote-max-lag` (default 0 = must be fully caught up); `--force`
+   overrides it, accepting the loss of the leader's un-replicated tail.
+2. **Flips the role** to leader. Because the read-only guard reads the role on
+   every call, writes start flowing immediately — no restart.
+3. **Reseeds the LSN counter** above the replicated tail (the applied watermark),
+   so the new leader never reissues an LSN the old leader already assigned.
+4. **Stops the apply loop.** The engine invokes a server-registered hook
+   (`DB.SetPromoteHook`) that cancels the follower's tail context, so the new
+   leader no longer replicates from its dead upstream.
+
+Promotion is **one-way**: a promoted node is an ordinary leader. Repointing
+clients and any surviving followers at the new leader is an operator step (see
+[operations.md](operations.md)); **automatic leader election (consensus) remains
+explicitly out of scope**. A leader restart keeps LSNs monotonic (the
+last-assigned LSN is persisted) but its in-memory ring starts empty, so a
+follower mid-catch-up may need to re-bootstrap.
+
+`Promote` requires a **read-write** API key — the admin boundary until per-key
+admin ACLs land in S3.
 
 ---
 

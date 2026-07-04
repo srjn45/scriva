@@ -98,6 +98,39 @@
         ]
       }
     },
+    "/v1/replication/promote": {
+      "post": {
+        "summary": "Promote flips a caught-up follower into a leader: it stops replicating from\nits upstream, lifts the read-only guard, and begins accepting writes.\nPromotion is refused with FAILED_PRECONDITION when the node is not a\nfollower, or when its replication lag (last-known leader LSN minus applied\nLSN) exceeds the server's configured threshold — pass force to override that\nguard when the leader is unrecoverable and some divergence is acceptable.\nThis is an admin operation and requires a read-write API key. Promotion is a\none-way transition; automatic leader election is out of scope.",
+        "operationId": "FileDB_Promote",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PromoteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PromoteRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/replication/status": {
       "get": {
         "summary": "ReplicationStatus reports the leader's current LSN and, for each connected\nfollower, the last LSN shipped to it and its lag. Used for observability and\nto read the leader's LSN watermark before bootstrapping a fresh follower.",
@@ -1358,6 +1391,34 @@
         }
       },
       "description": "OrderBy names one sort key and its direction. A Find may carry several, applied\nin order as a lexicographic (multi-field) sort; ties beyond the last key break\non the record id so the ordering is always total and a keyset cursor is stable."
+    },
+    "v1PromoteRequest": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean",
+          "description": "force promotes even when the follower's replication lag exceeds the server's\nconfigured threshold. Use only when the leader is unrecoverable and some\ndivergence is acceptable — a forced promotion of a lagging replica discards\nthe un-replicated tail of the old leader's writes."
+        }
+      }
+    },
+    "v1PromoteResponse": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "The node's role after the call: \"leader\" on a successful promotion."
+        },
+        "lsn": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The LSN the promoted leader continues assigning from — its applied watermark\nat promotion. New writes are tagged with strictly greater LSNs, so a promoted\nleader never reuses an LSN the old leader already assigned."
+        },
+        "lag": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The replication lag (last-known leader LSN minus applied LSN) observed at the\nmoment of promotion. 0 means the follower was fully caught up."
+        }
+      }
     },
     "v1Record": {
       "type": "object",
