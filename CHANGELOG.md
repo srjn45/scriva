@@ -33,6 +33,28 @@ embedding-specific contract.
 
 ### Added
 
+- **S3 — per-collection ACLs on scoped keys.** An API key can now be **confined
+  to a named set of collections** instead of reaching every collection. It is
+  **opt-in** and fully backward compatible: a key with no allow-list keeps
+  cluster-wide access.
+  - New optional `collections:` list on a `keys:` entry: when present, the key
+    may only act on the listed collections; an RPC targeting any other collection
+    is rejected with **`PermissionDenied`**. Omitted/empty means **all
+    collections** — the historical behaviour.
+  - **Enforcement** happens in the auth interceptor, per RPC, *after* the
+    principal is resolved and recorded (so an ACL denial is still attributed in
+    the S2 audit log). The target collection is read from the request's
+    `GetCollection()` accessor: unary RPCs are checked before the handler runs;
+    collection-scoped **streams** (`Watch`, `Find`, `Aggregate`) are checked on
+    the first client message. RPCs with **no** collection field (e.g.
+    `ListCollections`) are not collection-scoped and remain callable by a
+    restricted key.
+  - **mTLS unchanged:** a certificate-authenticated principal carries no
+    allow-list and reaches all collections (per-certificate ACLs remain out of
+    scope). ACL changes are picked up on config **reload**. No proto/API change.
+  - See [`docs/getting-started.md`](docs/getting-started.md#per-collection-acls)
+    for a YAML example and [`docs/architecture.md`](docs/architecture.md#auth)
+    for how enforcement works.
 - **S2 — audit log.** A durable, append-only record of **who did what**: every
   state-mutating and admin RPC and every rejected authentication attempt. It is
   **off by default** and separate from the request log so it can have its own

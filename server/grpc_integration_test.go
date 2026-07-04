@@ -2215,3 +2215,55 @@ func spanNames(spans tracetest.SpanStubs) []string {
 	}
 	return names
 }
+
+// ---- Per-collection ACLs (S3) ----------------------------------------------
+
+func TestIntegration_CollectionACL_ConfinesScopedKey(t *testing.T) {
+	// An unrestricted admin key provisions both collections; a scoped key is
+	// confined to "allowed" and must be denied on "forbidden".
+	keys := []auth.Key{
+		{Key: "admin", Name: "admin", Scope: auth.ScopeReadWrite},
+		{Key: "scoped", Name: "app", Scope: auth.ScopeReadWrite, Collections: []string{"allowed"}},
+	}
+	conn := newInstrumentedServer(t, nil, keys, nil)
+	c := pb.NewFileDBClient(conn)
+
+	for _, name := range []string{"allowed", "forbidden"} {
+		if _, err := c.CreateCollection(keyCtx("admin"), &pb.CreateCollectionRequest{Name: name}); err != nil {
+			t.Fatalf("CreateCollection %q: %v", name, err)
+		}
+	}
+
+	data, _ := structpb.NewStruct(map[string]any{"name": "apple"})
+
+	// Mutating RPC (Insert): allowed on its collection, denied elsewhere.
+	if _, err := c.Insert(keyCtx("scoped"), &pb.InsertRequest{Collection: "allowed", Data: data}); err != nil {
+		t.Fatalf("scoped Insert on allowed: %v", err)
+	}
+	if _, err := c.Insert(keyCtx("scoped"), &pb.InsertRequest{Collection: "forbidden", Data: data}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("scoped Insert on forbidden: got %v, want PermissionDenied", err)
+	}
+
+	// Read RPC (FindById): allowed on its collection, denied elsewhere.
+	if _, err := c.FindById(keyCtx("scoped"), &pb.FindByIdRequest{Collection: "allowed", Id: 1}); err != nil {
+		t.Fatalf("scoped FindById on allowed: %v", err)
+	}
+	if _, err := c.FindById(keyCtx("scoped"), &pb.FindByIdRequest{Collection: "forbidden", Id: 1}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("scoped FindById on forbidden: got %v, want PermissionDenied", err)
+	}
+
+	// Streaming read (Find): the ACL is enforced on the first message, surfacing
+	// as PermissionDenied on the foreign collection.
+	stream, err := c.Find(keyCtx("scoped"), &pb.FindRequest{Collection: "forbidden"})
+	if err != nil {
+		t.Fatalf("Find open on forbidden: %v", err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("scoped Find on forbidden: got %v, want PermissionDenied", err)
+	}
+
+	// The admin key (no allow-list) reaches both collections unchanged.
+	if _, err := c.Insert(keyCtx("admin"), &pb.InsertRequest{Collection: "forbidden", Data: data}); err != nil {
+		t.Fatalf("admin Insert on forbidden: %v", err)
+	}
+}

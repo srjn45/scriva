@@ -14,6 +14,10 @@ type APIKeyConfig struct {
 	Key   string `yaml:"key"`   // secret presented in the x-api-key header
 	Name  string `yaml:"name"`  // human-readable principal name
 	Scope string `yaml:"scope"` // "read" or "read-write" (default: read)
+	// Collections is an optional per-key collection allow-list (S3). When set,
+	// the key may only act on the named collections and is denied elsewhere with
+	// PermissionDenied. Omitted/empty means all collections (backward compatible).
+	Collections []string `yaml:"collections"`
 }
 
 // Config holds all server configuration, loaded from CLI flags → env vars →
