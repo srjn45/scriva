@@ -9,18 +9,18 @@ use Google\Protobuf\Internal\RepeatedField;
 use Google\Protobuf\Internal\GPBUtil;
 
 /**
- * Generated from protobuf message <code>filedb.v1.FindByIdRequest</code>
+ * Generated from protobuf message <code>filedb.v1.FindByKeyRequest</code>
  */
-class FindByIdRequest extends \Google\Protobuf\Internal\Message
+class FindByKeyRequest extends \Google\Protobuf\Internal\Message
 {
     /**
      * Generated from protobuf field <code>string collection = 1 [json_name = "collection"];</code>
      */
     protected $collection = '';
     /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
+     * Generated from protobuf field <code>string key = 2 [json_name = "key"];</code>
      */
-    protected $id = 0;
+    protected $key = '';
     /**
      * Optional field projection: when non-empty, only these top-level fields are
      * returned in the record's data. id, key and rev are always included. Empty
@@ -37,7 +37,7 @@ class FindByIdRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $collection
-     *     @type int|string $id
+     *     @type string $key
      *     @type array<string>|\Google\Protobuf\Internal\RepeatedField $fields
      *           Optional field projection: when non-empty, only these top-level fields are
      *           returned in the record's data. id, key and rev are always included. Empty
@@ -72,23 +72,23 @@ class FindByIdRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
-     * @return int|string
+     * Generated from protobuf field <code>string key = 2 [json_name = "key"];</code>
+     * @return string
      */
-    public function getId()
+    public function getKey()
     {
-        return $this->id;
+        return $this->key;
     }
 
     /**
-     * Generated from protobuf field <code>uint64 id = 2 [json_name = "id"];</code>
-     * @param int|string $var
+     * Generated from protobuf field <code>string key = 2 [json_name = "key"];</code>
+     * @param string $var
      * @return $this
      */
-    public function setId($var)
+    public function setKey($var)
     {
-        GPBUtil::checkUint64($var);
-        $this->id = $var;
+        GPBUtil::checkString($var, True);
+        $this->key = $var;
 
         return $this;
     }

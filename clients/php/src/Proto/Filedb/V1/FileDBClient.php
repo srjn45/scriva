@@ -150,6 +150,95 @@ class FileDBClient extends \Grpc\BaseStub {
     }
 
     /**
+     * --- Keyed CRUD, Upsert & compare-and-swap (N1) ---
+     *
+     * These map straight onto the embedded engine's keyed operations, giving
+     * network clients natural (caller-supplied) string keys, upsert, and
+     * optimistic-concurrency updates keyed on a per-record revision (`rev`).
+     *
+     * Upsert inserts data under key if no live record carries it, or replaces the
+     * existing record's data if one does — atomically. Returns the resulting
+     * record with its (incremented on replace) revision. This is the keyed-insert
+     * path: there is no separate InsertWithKey RPC.
+     * @param \Filedb\V1\UpsertRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function Upsert(\Filedb\V1\UpsertRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/filedb.v1.FileDB/Upsert',
+        $argument,
+        ['\Filedb\V1\UpsertResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * FindByKey returns the record carrying the caller-supplied string key.
+     * A missing key yields NOT_FOUND.
+     * @param \Filedb\V1\FindByKeyRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function FindByKey(\Filedb\V1\FindByKeyRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/filedb.v1.FileDB/FindByKey',
+        $argument,
+        ['\Filedb\V1\FindResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * UpdateByKey overwrites the record carrying key, preserving the key itself.
+     * A missing key yields NOT_FOUND.
+     * @param \Filedb\V1\UpdateByKeyRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function UpdateByKey(\Filedb\V1\UpdateByKeyRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/filedb.v1.FileDB/UpdateByKey',
+        $argument,
+        ['\Filedb\V1\UpdateResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+     * @param \Filedb\V1\DeleteByKeyRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function DeleteByKey(\Filedb\V1\DeleteByKeyRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/filedb.v1.FileDB/DeleteByKey',
+        $argument,
+        ['\Filedb\V1\DeleteResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * UpdateIfRev conditionally updates the record carrying key: the write is
+     * applied only if the record's current revision equals expected_rev. A stale
+     * revision (or a missing key) is a clean no-op reported as swapped=false, not
+     * an error.
+     * @param \Filedb\V1\UpdateIfRevRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function UpdateIfRev(\Filedb\V1\UpdateIfRevRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/filedb.v1.FileDB/UpdateIfRev',
+        $argument,
+        ['\Filedb\V1\UpdateIfRevResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
      * --- Secondary indexes ---
      *
      * @param \Filedb\V1\EnsureIndexRequest $argument input argument
@@ -250,6 +339,27 @@ class FileDBClient extends \Grpc\BaseStub {
         return $this->_serverStreamRequest('/filedb.v1.FileDB/Watch',
         $argument,
         ['\Filedb\V1\WatchEvent', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * --- Aggregations (N4) ---
+     *
+     * Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+     * live records matching the same Filter as Find, optionally grouped by a field.
+     * It server-streams one message per group; a plain (ungrouped) aggregation
+     * streams a single message. Aggregation runs entirely in the engine — the
+     * collection is never materialised on the client.
+     * @param \Filedb\V1\AggregateRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\ServerStreamingCall
+     */
+    public function Aggregate(\Filedb\V1\AggregateRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_serverStreamRequest('/filedb.v1.FileDB/Aggregate',
+        $argument,
+        ['\Filedb\V1\AggregateResponse', 'decode'],
         $metadata, $options);
     }
 

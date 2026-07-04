@@ -17,6 +17,14 @@ class FindResponse extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>.filedb.v1.Record record = 1 [json_name = "record"];</code>
      */
     protected $record = null;
+    /**
+     * Next-page cursor (N3). Set on the final streamed message when more rows remain
+     * under the requested ordering — feed it back as FindRequest.page_token to fetch
+     * the next page. Empty on every message means the last page was reached.
+     *
+     * Generated from protobuf field <code>string page_token = 2 [json_name = "pageToken"];</code>
+     */
+    protected $page_token = '';
 
     /**
      * Constructor.
@@ -25,6 +33,10 @@ class FindResponse extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Filedb\V1\Record $record
+     *     @type string $page_token
+     *           Next-page cursor (N3). Set on the final streamed message when more rows remain
+     *           under the requested ordering — feed it back as FindRequest.page_token to fetch
+     *           the next page. Empty on every message means the last page was reached.
      * }
      */
     public function __construct($data = NULL) {
@@ -60,6 +72,36 @@ class FindResponse extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkMessage($var, \Filedb\V1\Record::class);
         $this->record = $var;
+
+        return $this;
+    }
+
+    /**
+     * Next-page cursor (N3). Set on the final streamed message when more rows remain
+     * under the requested ordering — feed it back as FindRequest.page_token to fetch
+     * the next page. Empty on every message means the last page was reached.
+     *
+     * Generated from protobuf field <code>string page_token = 2 [json_name = "pageToken"];</code>
+     * @return string
+     */
+    public function getPageToken()
+    {
+        return $this->page_token;
+    }
+
+    /**
+     * Next-page cursor (N3). Set on the final streamed message when more rows remain
+     * under the requested ordering — feed it back as FindRequest.page_token to fetch
+     * the next page. Empty on every message means the last page was reached.
+     *
+     * Generated from protobuf field <code>string page_token = 2 [json_name = "pageToken"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setPageToken($var)
+    {
+        GPBUtil::checkString($var, True);
+        $this->page_token = $var;
 
         return $this;
     }

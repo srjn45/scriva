@@ -109,8 +109,11 @@ array $records = $db->find(
     filter: ['field' => 'age', 'op' => 'gte', 'value' => '18'],
     limit: 0,           // 0 = no limit
     offset: 0,
-    orderBy: 'age',
+    orderBy: 'age',     // deprecated single-field sort (see orderByFields below)
     descending: false,
+    fields: [],         // field projection (N2) — [] returns full records
+    orderByFields: null, // multi-field sort (N3) — see "Ordering & pagination"
+    pageToken: '',      // keyset cursor (N3) — see "Ordering & pagination"
 );
 
 // Update — returns the updated ID
@@ -118,6 +121,110 @@ int $id = $db->update('col', $id, ['field' => 'new value']);
 
 // Delete — returns true if the record existed
 bool $deleted = $db->delete('col', $id);
+```
+
+#### Keyed CRUD, upsert & compare-and-swap (N1)
+
+Records can carry a caller-supplied string **key** and a monotonic **rev**ision.
+These map onto the engine's keyed operations — natural primary keys, upsert, and
+optimistic-concurrency updates.
+
+```php
+// Insert under an explicit key. A key already held by a live record throws
+// FileDBv2\AlreadyExistsException. (Keyed inserts ignore ttlSeconds.)
+int $id = $db->insert('col', ['name' => 'Alice'], key: 'user:alice');
+
+// Upsert = insert-or-replace, atomically. Returns the resulting record array
+// (with 'key' and 'rev'); rev increments on every replace.
+array $rec = $db->upsert('col', 'user:alice', ['name' => 'Alice', 'age' => 30]);
+
+// Fetch / update / delete by key. A missing key throws FileDBv2\NotFoundException.
+array $rec  = $db->findByKey('col', 'user:alice');
+array $res  = $db->updateByKey('col', 'user:alice', ['name' => 'Alice', 'age' => 31]);
+//   $res = ['id' => '1', 'key' => 'user:alice', 'rev' => 3, 'date_modified' => '...']
+bool  $ok   = $db->deleteByKey('col', 'user:alice');
+
+// Compare-and-swap: applies the write only if the current rev matches. A stale
+// rev (or missing key) is a clean no-op — swapped=false, never an error.
+$cas = $db->updateIfRev('col', 'user:alice', expectedRev: 2, data: ['age' => 32]);
+// $cas = ['swapped' => true|false, 'record' => [...]|null]
+if ($cas['swapped']) {
+    echo "new rev: {$cas['record']['rev']}\n";
+}
+```
+
+#### Field projection (N2)
+
+`find()`, `findById()` and `findByKey()` accept a `fields` argument. When
+non-empty, only those top-level fields are returned in each record's `data`;
+`id`, `key` and `rev` are always included. An unknown field is silently omitted.
+
+```php
+array $slim = $db->findById('col', $id, fields: ['name', 'email']);
+array $rows = $db->find('col', fields: ['name']);
+```
+
+#### Ordering & pagination (N3)
+
+Pass `orderByFields` for a multi-field, per-field-directional sort (it supersedes
+the deprecated scalar `orderBy`/`descending`). The record id is always the final
+tiebreaker, so the sort is total and pagination is stable.
+
+```php
+$rows = $db->find('col', orderByFields: [
+    ['field' => 'age',  'desc' => true],
+    ['field' => 'name', 'desc' => false],
+]);
+```
+
+For keyset (cursor) pagination use `findPage()`, which returns both the records
+and the opaque next-page token. Feed the token back as `pageToken` with the same
+filter, ordering and limit to fetch the next page; an empty token means the last
+page was reached.
+
+```php
+$page = $db->findPage('col', limit: 100, orderByFields: [['field' => 'age']]);
+foreach ($page['records'] as $r) { /* ... */ }
+while ($page['page_token'] !== '') {
+    $page = $db->findPage(
+        'col',
+        limit: 100,
+        orderByFields: [['field' => 'age']],
+        pageToken: $page['page_token'],
+    );
+    // process $page['records'] ...
+}
+```
+
+#### Aggregations (N4)
+
+`aggregate()` computes a count plus optional numeric aggregations
+(`sum`/`avg`/`min`/`max`) over the records matching a filter, optionally grouped
+by a field. It honours the same filter format as `find()`.
+
+```php
+// Count matching records (whole collection when no filter is given).
+int $n = $db->count('col');
+int $m = $db->count('col', ['field' => 'role', 'op' => 'eq', 'value' => 'admin']);
+
+// Group by a field, computing numeric aggregates over another field.
+$groups = $db->groupBy('col', 'role', 'age', ['sum', 'avg', 'min', 'max']);
+foreach ($groups as $g) {
+    // $g = [
+    //   'group_value' => 'admin',  // null for the whole-set / missing-field group
+    //   'count'       => 3,
+    //   'numeric'     => true,      // false => sum/avg/min/max keys are absent
+    //   'sum' => 90.0, 'avg' => 30.0, 'min' => 25.0, 'max' => 35.0,
+    // ]
+}
+
+// The low-level entry point; groupBy/count are thin wrappers over it.
+$all = $db->aggregate('col',
+    filter: ['field' => 'age', 'op' => 'gte', 'value' => '18'],
+    groupBy: 'role',
+    field: 'age',
+    aggregations: ['avg'],
+);
 ```
 
 #### Per-record TTL
@@ -145,10 +252,15 @@ Record array shape:
 [
     'id'            => '1',                      // uint64 returned as string
     'data'          => ['name' => 'Alice', ...], // the document
+    'key'           => 'user:alice',            // caller-supplied key, present only for keyed records
+    'rev'           => 1,                        // monotonic per-record revision (N1)
     'date_added'    => '2026-06-29T12:00:00+00:00',  // ISO-8601, present when set
     'date_modified' => '2026-06-29T12:01:00+00:00',
 ]
 ```
+
+`key` is omitted for records inserted without a key; `rev` starts at 1 and
+increments on every write. Feed `rev` to `updateIfRev()` for compare-and-swap.
 
 ### Secondary indexes
 
@@ -223,6 +335,33 @@ foreach ($db->snapshot() as $chunk) {
     // $chunk is a string of bytes
 }
 ```
+
+---
+
+## Error handling
+
+Failed RPCs throw `FileDBv2\FileDBException` (which extends `\RuntimeException`,
+so existing `catch (\RuntimeException)` blocks keep working). Two gRPC status
+codes get their own subclass for idiomatic keyed-CRUD handling:
+
+| Exception | gRPC status | Raised by |
+|---|---|---|
+| `FileDBv2\NotFoundException`      | `NOT_FOUND`      | `findByKey`, `updateByKey`, `deleteByKey` on a missing key |
+| `FileDBv2\AlreadyExistsException` | `ALREADY_EXISTS` | `insert(..., key: ...)` when the key is already taken |
+| `FileDBv2\FileDBException`        | any other        | all other RPC failures |
+
+```php
+use FileDBv2\NotFoundException;
+
+try {
+    $rec = $db->findByKey('col', 'user:missing');
+} catch (NotFoundException $e) {
+    // handle the missing key
+}
+```
+
+Note `updateIfRev()` does **not** throw on a stale revision or missing key — it
+returns `['swapped' => false, 'record' => null]`.
 
 ---
 

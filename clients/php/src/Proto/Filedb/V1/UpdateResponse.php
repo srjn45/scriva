@@ -21,6 +21,17 @@ class UpdateResponse extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>string date_modified = 2 [json_name = "dateModified"];</code>
      */
     protected $date_modified = '';
+    /**
+     * Caller-supplied string key (empty for a keyless update) and the record's
+     * revision after the write.
+     *
+     * Generated from protobuf field <code>string key = 3 [json_name = "key"];</code>
+     */
+    protected $key = '';
+    /**
+     * Generated from protobuf field <code>uint64 rev = 4 [json_name = "rev"];</code>
+     */
+    protected $rev = 0;
 
     /**
      * Constructor.
@@ -30,6 +41,10 @@ class UpdateResponse extends \Google\Protobuf\Internal\Message
      *
      *     @type int|string $id
      *     @type string $date_modified
+     *     @type string $key
+     *           Caller-supplied string key (empty for a keyless update) and the record's
+     *           revision after the write.
+     *     @type int|string $rev
      * }
      */
     public function __construct($data = NULL) {
@@ -77,6 +92,56 @@ class UpdateResponse extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkString($var, True);
         $this->date_modified = $var;
+
+        return $this;
+    }
+
+    /**
+     * Caller-supplied string key (empty for a keyless update) and the record's
+     * revision after the write.
+     *
+     * Generated from protobuf field <code>string key = 3 [json_name = "key"];</code>
+     * @return string
+     */
+    public function getKey()
+    {
+        return $this->key;
+    }
+
+    /**
+     * Caller-supplied string key (empty for a keyless update) and the record's
+     * revision after the write.
+     *
+     * Generated from protobuf field <code>string key = 3 [json_name = "key"];</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setKey($var)
+    {
+        GPBUtil::checkString($var, True);
+        $this->key = $var;
+
+        return $this;
+    }
+
+    /**
+     * Generated from protobuf field <code>uint64 rev = 4 [json_name = "rev"];</code>
+     * @return int|string
+     */
+    public function getRev()
+    {
+        return $this->rev;
+    }
+
+    /**
+     * Generated from protobuf field <code>uint64 rev = 4 [json_name = "rev"];</code>
+     * @param int|string $var
+     * @return $this
+     */
+    public function setRev($var)
+    {
+        GPBUtil::checkUint64($var);
+        $this->rev = $var;
 
         return $this;
     }
