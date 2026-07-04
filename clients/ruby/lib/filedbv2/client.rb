@@ -1,9 +1,21 @@
+require "time"
 require "grpc"
 require "google/protobuf/well_known_types"
 require "filedbv2/proto/filedb_pb"
 require "filedbv2/proto/filedb_services_pb"
 
 module FileDBv2
+  # Base class for FileDB client errors mapped from engine gRPC status codes.
+  class Error < StandardError; end
+
+  # Raised when a keyed lookup/update/delete referenced a key that no live
+  # record holds (gRPC NOT_FOUND).
+  class NotFoundError < Error; end
+
+  # Raised when a keyed insert used a key already held by a live record
+  # (gRPC ALREADY_EXISTS).
+  class AlreadyExistsError < Error; end
+
   # Synchronous gRPC client for FileDB v2.
   #
   # Example:
@@ -25,6 +37,15 @@ module FileDBv2
       "lte"      => :LTE,
       "contains" => :CONTAINS,
       "regex"    => :REGEX,
+    }.freeze
+
+    # Documented short aggregation names → proto AggregateOp enum symbols.
+    AGG_MAP = {
+      "count" => :AGG_COUNT,
+      "sum"   => :AGG_SUM,
+      "avg"   => :AGG_AVG,
+      "min"   => :AGG_MIN,
+      "max"   => :AGG_MAX,
     }.freeze
 
     WATCH_OP_NAMES = {
@@ -109,14 +130,22 @@ module FileDBv2
     #
     # +ttl_seconds+ > 0 expires the record that long after insertion, overriding
     # any collection default; 0 applies the collection default (if any).
-    def insert(collection, data, ttl_seconds: 0)
-      req  = Filedb::V1::InsertRequest.new(
-        collection:  collection,
-        data:        hash_to_struct(data),
-        ttl_seconds: ttl_seconds,
-      )
-      resp = @stub.insert(req, metadata: metadata)
-      resp.id
+    #
+    # +key+ sets an optional caller-supplied string primary key (keyed create).
+    # When set, the record is inserted under this key and a key already held by
+    # a live record raises AlreadyExistsError. A keyed insert does not
+    # participate in transactions or per-record TTL.
+    def insert(collection, data, ttl_seconds: 0, key: "")
+      translate_errors do
+        req  = Filedb::V1::InsertRequest.new(
+          collection:  collection,
+          data:        hash_to_struct(data),
+          ttl_seconds: ttl_seconds,
+          key:         key,
+        )
+        resp = @stub.insert(req, metadata: metadata)
+        resp.id
+      end
     end
 
     # Insert multiple records. Returns an array of assigned IDs.
@@ -132,8 +161,16 @@ module FileDBv2
     end
 
     # Fetch a single record by ID. Returns a Hash.
-    def find_by_id(collection, id)
-      req  = Filedb::V1::FindByIdRequest.new(collection: collection, id: id)
+    #
+    # +fields+ is an optional projection: when non-empty, only those top-level
+    # fields are returned in +data+ (id, key and rev are always included).
+    # nil/empty returns the full record.
+    def find_by_id(collection, id, fields: nil)
+      req  = Filedb::V1::FindByIdRequest.new(
+        collection: collection,
+        id:         id,
+        fields:     fields ? fields.map(&:to_s) : [],
+      )
       resp = @stub.find_by_id(req, metadata: metadata)
       record_to_hash(resp.record)
     end
@@ -145,16 +182,17 @@ module FileDBv2
     # @param filter     [Hash, nil] filter hash (see filter_to_proto)
     # @param limit      [Integer]   0 = no limit
     # @param offset     [Integer]
-    # @param order_by   [String]    field name to sort by
-    # @param descending [Boolean]
-    def find(collection, filter: nil, limit: 0, offset: 0, order_by: "", descending: false)
-      req = Filedb::V1::FindRequest.new(
-        collection: collection,
-        filter:     filter_to_proto(filter),
-        limit:      limit,
-        offset:     offset,
-        order_by:   order_by,
-        descending: descending,
+    # @param order_by   [String, Array] a single field name (deprecated scalar
+    #                    sort, paired with +descending+) or an Array for a
+    #                    multi-field sort — each item a field-name String, a
+    #                    [field, desc] pair, or a {field:, desc:} Hash.
+    # @param descending [Boolean]   only honoured for the scalar +order_by+ form
+    # @param fields     [Array, nil] optional projection (see #find_by_id)
+    # @param page_token [String]    keyset cursor from a previous #find_page
+    def find(collection, filter: nil, limit: 0, offset: 0, order_by: "",
+             descending: false, fields: nil, page_token: "")
+      req = build_find_request(
+        collection, filter, limit, offset, order_by, descending, fields, page_token
       )
       stream = @stub.find(req, metadata: metadata)
       if block_given?
@@ -163,6 +201,27 @@ module FileDBv2
       else
         stream.map { |resp| record_to_hash(resp.record) }
       end
+    end
+
+    # Query one keyset page, returning [records, next_page_token].
+    #
+    # Pass an ordering (+order_by+) and a +limit+, then feed the returned
+    # next-page token back as +page_token+ on the next call to walk the
+    # collection page by page in O(page) time. An empty next-page token means
+    # the last page was reached. Keep the same filter, ordering and limit on
+    # every page.
+    def find_page(collection, filter: nil, limit: 0, offset: 0, order_by: "",
+                  descending: false, fields: nil, page_token: "")
+      req = build_find_request(
+        collection, filter, limit, offset, order_by, descending, fields, page_token
+      )
+      records    = []
+      next_token = ""
+      @stub.find(req, metadata: metadata).each do |resp|
+        records << record_to_hash(resp.record)
+        next_token = resp.page_token unless resp.page_token.empty?
+      end
+      [records, next_token]
     end
 
     # Update a record. +ttl_seconds+ > 0 resets the record's expiry deadline to
@@ -183,6 +242,84 @@ module FileDBv2
       req  = Filedb::V1::DeleteRequest.new(collection: collection, id: id)
       resp = @stub.delete(req, metadata: metadata)
       resp.ok
+    end
+
+    # -- keyed CRUD, upsert & compare-and-swap (N1) --------------------------
+
+    # Insert +data+ under +key+, or replace the existing keyed record —
+    # atomically. If no live record carries +key+ it is inserted; otherwise the
+    # existing record's data is replaced and its +rev+ incremented. Returns the
+    # resulting record Hash (including "key" and "rev").
+    def upsert(collection, key, data)
+      req  = Filedb::V1::UpsertRequest.new(
+        collection: collection,
+        key:        key,
+        data:       hash_to_struct(data),
+      )
+      resp = @stub.upsert(req, metadata: metadata)
+      record_to_hash(resp.record)
+    end
+
+    # Fetch the record carrying +key+. Raises NotFoundError if none.
+    # +fields+ projects +data+ to those top-level fields (id/key/rev always
+    # returned).
+    def find_by_key(collection, key, fields: nil)
+      translate_errors do
+        req  = Filedb::V1::FindByKeyRequest.new(
+          collection: collection,
+          key:        key,
+          fields:     fields ? fields.map(&:to_s) : [],
+        )
+        resp = @stub.find_by_key(req, metadata: metadata)
+        record_to_hash(resp.record)
+      end
+    end
+
+    # Overwrite the record carrying +key+, preserving the key itself. Raises
+    # NotFoundError if no live record carries +key+. Returns a Hash with "id",
+    # "key", "rev" (after the write) and "date_modified".
+    def update_by_key(collection, key, data)
+      translate_errors do
+        req  = Filedb::V1::UpdateByKeyRequest.new(
+          collection: collection,
+          key:        key,
+          data:       hash_to_struct(data),
+        )
+        resp = @stub.update_by_key(req, metadata: metadata)
+        out = { "id" => resp.id }
+        out["key"]           = resp.key           unless resp.key.empty?
+        out["rev"]           = resp.rev           unless resp.rev.zero?
+        out["date_modified"] = resp.date_modified unless resp.date_modified.empty?
+        out
+      end
+    end
+
+    # Delete the record carrying +key+. Returns true on success. Raises
+    # NotFoundError if no live record carries +key+.
+    def delete_by_key(collection, key)
+      translate_errors do
+        req  = Filedb::V1::DeleteByKeyRequest.new(collection: collection, key: key)
+        resp = @stub.delete_by_key(req, metadata: metadata)
+        resp.ok
+      end
+    end
+
+    # Compare-and-swap update on +key+, conditional on +expected_rev+. The write
+    # is applied only if the record's current +rev+ equals +expected_rev+. A
+    # stale revision (or a missing key) is a clean no-op — never an error.
+    # Returns { "swapped" => Boolean, "record" => Hash | nil }; "record" is the
+    # resulting record only when "swapped" is true.
+    def update_if_rev(collection, key, expected_rev, data)
+      req  = Filedb::V1::UpdateIfRevRequest.new(
+        collection:   collection,
+        key:          key,
+        expected_rev: expected_rev,
+        data:         hash_to_struct(data),
+      )
+      resp = @stub.update_if_rev(req, metadata: metadata)
+      out = { "swapped" => resp.swapped, "record" => nil }
+      out["record"] = record_to_hash(resp.record) if resp.swapped && resp.has_record?
+      out
     end
 
     # -- secondary indexes ---------------------------------------------------
@@ -249,7 +386,7 @@ module FileDBv2
             collection: event.collection,
             record:     record_to_hash(event.record),
           }
-          out[:ts] = event.ts.to_time.utc.iso8601(9) if event.has_field?(:ts)
+          out[:ts] = event.ts.to_time.utc.iso8601(9) if event.has_ts?
           yielder << out
         end
       end
@@ -259,6 +396,72 @@ module FileDBv2
       else
         enum
       end
+    end
+
+    # -- aggregations (N4) ---------------------------------------------------
+
+    # Compute count + numeric aggregations over the filtered live records.
+    #
+    # The Aggregate RPC is server-streaming — one message per group; this
+    # collects them into an Array. Each result Hash carries "group" (the
+    # group-by value, nil for the whole-set group), "count", "numeric", and —
+    # when the group had at least one numeric +field+ value — "sum"/"avg"/
+    # "min"/"max".
+    #
+    # @param aggregations [Array, nil] which numeric aggregations to compute —
+    #        any of "count", "sum", "avg", "min", "max". count is always
+    #        returned; sum/avg/min/max require +field+.
+    # @param field    [String] numeric field for sum/avg/min/max.
+    # @param group_by [String] optional group-by field — one result per value.
+    # @param filter   [Hash, nil] the same plain-hash filter as #find.
+    def aggregate(collection, aggregations: nil, field: "", group_by: "", filter: nil)
+      agg_ops = (aggregations || []).map do |name|
+        key = name.to_s.downcase
+        AGG_MAP[key] or raise ArgumentError,
+          "unknown aggregation #{name.inspect}; expected one of #{AGG_MAP.keys.sort.join(", ")}"
+      end
+
+      req = Filedb::V1::AggregateRequest.new(
+        collection:   collection,
+        filter:       filter_to_proto(filter),
+        group_by:     group_by,
+        field:        field,
+        aggregations: agg_ops,
+      )
+      @stub.aggregate(req, metadata: metadata).map do |resp|
+        g = {
+          "group"   => resp.has_group_value? ? resp.group_value.to_ruby : nil,
+          "count"   => resp.count,
+          "numeric" => resp.numeric,
+        }
+        if resp.numeric
+          g["sum"] = resp.sum
+          g["avg"] = resp.avg
+          g["min"] = resp.min
+          g["max"] = resp.max
+        end
+        g
+      end
+    end
+
+    # Count the live records matching +filter+ (or all records).
+    def count(collection, filter: nil)
+      groups = aggregate(collection, filter: filter)
+      groups.empty? ? 0 : groups.first["count"]
+    end
+
+    # Group live records by +field+ and aggregate each group. Convenience
+    # wrapper over #aggregate. +field+ is the group-by field; +metric+ is the
+    # numeric field for sum/avg/min/max (pass those in +aggregations+). Returns
+    # one Hash per distinct group value; see #aggregate for the Hash shape.
+    def group_by(collection, field, aggregations: nil, metric: "", filter: nil)
+      aggregate(
+        collection,
+        aggregations: aggregations,
+        field:        metric,
+        group_by:     field,
+        filter:       filter,
+      )
     end
 
     # -- stats ---------------------------------------------------------------
@@ -319,6 +522,16 @@ module FileDBv2
       { "x-api-key" => @api_key }
     end
 
+    # Map gRPC NOT_FOUND / ALREADY_EXISTS onto typed exceptions; other status
+    # codes propagate as the original GRPC::BadStatus.
+    def translate_errors
+      yield
+    rescue GRPC::NotFound => e
+      raise NotFoundError, e.details
+    rescue GRPC::AlreadyExists => e
+      raise AlreadyExistsError, e.details
+    end
+
     def load_pem(tls_ca_cert)
       return tls_ca_cert if tls_ca_cert.include?("BEGIN CERTIFICATE")
       File.read(tls_ca_cert)
@@ -333,16 +546,69 @@ module FileDBv2
       hash.transform_keys(&:to_s)
     end
 
-    # Convert a proto Record into a plain Ruby Hash.
+    # Convert a proto Record into a plain Ruby Hash. The caller-supplied "key"
+    # (when set) and the per-record "rev" (present on every live record,
+    # starting at 1) are surfaced alongside "id", "data" and the timestamps.
     def record_to_hash(record)
       return {} if record.nil?
       out = {
         "id"   => record.id,
-        "data" => record.data ? record.data.to_h : {},
+        "data" => record.has_data? ? record.data.to_h : {},
       }
-      out["date_added"]    = record.date_added.to_time.utc.iso8601(9)    if record.has_field?(:date_added)
-      out["date_modified"] = record.date_modified.to_time.utc.iso8601(9) if record.has_field?(:date_modified)
+      out["key"]           = record.key                                 unless record.key.empty?
+      out["rev"]           = record.rev                                 unless record.rev.zero?
+      out["date_added"]    = record.date_added.to_time.utc.iso8601(9)    if record.has_date_added?
+      out["date_modified"] = record.date_modified.to_time.utc.iso8601(9) if record.has_date_modified?
       out
+    end
+
+    # Build a FindRequest shared by #find and #find_page, wiring projection,
+    # keyset pagination and either the multi-field or the deprecated scalar sort.
+    def build_find_request(collection, filter, limit, offset, order_by, descending, fields, page_token)
+      req = Filedb::V1::FindRequest.new(
+        collection: collection,
+        filter:     filter_to_proto(filter),
+        limit:      limit,
+        offset:     offset,
+        fields:     fields ? fields.map(&:to_s) : [],
+        page_token: page_token,
+      )
+      specs = order_by_to_proto(order_by)
+      if specs
+        specs.each { |o| req.order_by_fields.push(o) }
+      elsif order_by.is_a?(String) && !order_by.empty?
+        # Deprecated single-field path — honoured only when order_by_fields is
+        # empty (server-side).
+        req.order_by   = order_by
+        req.descending = descending
+      end
+      req
+    end
+
+    # Convert a multi-field +order_by+ argument to an Array of OrderBy specs.
+    # Returns nil when +order_by+ is empty or a plain String (the deprecated
+    # single-field path, handled by the caller). Otherwise accepts an Array
+    # whose items are field-name Strings, [field, desc] pairs, or
+    # {field:, desc:} Hashes.
+    def order_by_to_proto(order_by)
+      return nil if order_by.nil? || order_by.is_a?(String)
+      order_by.map do |item|
+        case item
+        when String
+          Filedb::V1::OrderBy.new(field: item, desc: false)
+        when Hash
+          h    = item.transform_keys(&:to_s)
+          desc = h.fetch("desc", h.fetch("descending", false))
+          Filedb::V1::OrderBy.new(field: h["field"].to_s, desc: !!desc)
+        when Array
+          desc = item.length > 1 ? !!item[1] : false
+          Filedb::V1::OrderBy.new(field: item[0].to_s, desc: desc)
+        else
+          raise ArgumentError,
+            "order_by items must be a field-name String, a [field, desc] pair, " \
+            "or a {field:, desc:} Hash"
+        end
+      end
     end
 
     # Convert a plain Hash filter into a proto Filter message.

@@ -15,7 +15,7 @@ gem install filedbv2
 Or add to your `Gemfile`:
 
 ```ruby
-gem "filedbv2", "~> 0.1"
+gem "filedbv2", "~> 0.7"
 ```
 
 ---
@@ -129,6 +129,95 @@ db.update("users", id, { name: "Alice", age: 31 })  # => id
 # Delete
 db.delete("users", id)  # => true
 ```
+
+Records carry `"key"` and `"rev"` when the server set them (see
+[Keyed CRUD](#keyed-crud-upsert--compare-and-swap)); `"rev"` is the monotonic
+per-record revision, starting at 1 and bumped on every write.
+
+### Keyed CRUD, upsert & compare-and-swap
+
+Every record has an optional caller-supplied string **key** and a monotonic
+**rev**. These let you address records by your own identifier and do
+optimistic-concurrency updates.
+
+```ruby
+# upsert: insert under a key, or atomically replace an existing keyed record
+# (bumping its rev). Returns the resulting record Hash.
+rec = db.upsert("users", "user:alice", { name: "Alice", age: 30 })
+# => { "id" => 1, "data" => {...}, "key" => "user:alice", "rev" => 1, ... }
+
+# Keyed create via insert(key:) — a key already held by a live record raises
+# FileDBv2::AlreadyExistsError.
+db.insert("users", { name: "Bob" }, key: "user:bob")
+
+# Fetch / overwrite / delete by key. A missing key raises FileDBv2::NotFoundError.
+db.find_by_key("users", "user:alice")                        # => record Hash
+db.update_by_key("users", "user:alice", { name: "Alice", age: 31 })
+# => { "id" => 1, "key" => "user:alice", "rev" => 2, "date_modified" => "..." }
+db.delete_by_key("users", "user:bob")                        # => true
+
+# Compare-and-swap: the write applies only if the record's current rev matches
+# expected_rev. A stale rev (or a missing key) is a clean no-op — never an error.
+res = db.update_if_rev("users", "user:alice", 2, { name: "Alice", age: 32 })
+# => { "swapped" => true,  "record" => { ... "rev" => 3 } }   when rev matched
+# => { "swapped" => false, "record" => nil }                  when rev was stale
+```
+
+Typed errors (`FileDBv2::NotFoundError`, `FileDBv2::AlreadyExistsError`) both
+subclass `FileDBv2::Error`; other gRPC failures propagate as `GRPC::BadStatus`.
+
+### Field projection
+
+`find`, `find_by_id` and `find_by_key` accept a `fields:` list. When non-empty,
+only those top-level fields are returned in each record's `data`; `id`, `key`
+and `rev` are always included.
+
+```ruby
+db.find_by_id("users", id, fields: ["name", "email"])
+db.find_by_key("users", "user:alice", fields: ["name"])
+db.find("users", filter: { field: "role", op: "eq", value: "admin" }, fields: ["name"])
+```
+
+### Keyset pagination & multi-field sort
+
+`order_by:` also accepts an **Array** for a multi-field, per-field-directional
+sort — each item a field name, a `[field, desc]` pair, or a `{ field:, desc: }`
+Hash. `find_page` returns `[records, next_page_token]`; feed the token back as
+`page_token:` to walk the collection page by page in O(page) time. An empty
+token means the last page was reached — keep the same filter, ordering and limit
+on every page.
+
+```ruby
+ordering = [{ field: "dept", desc: false }, ["age", true]]  # dept ↑, then age ↓
+
+page1, token = db.find_page("users", order_by: ordering, limit: 50)
+page2, token = db.find_page("users", order_by: ordering, limit: 50, page_token: token) unless token.empty?
+```
+
+### Aggregations
+
+Compute count and numeric aggregations (`sum`/`avg`/`min`/`max`) entirely in the
+engine — the collection is never materialised on the client. All three honour
+the same filter as `find`.
+
+```ruby
+# Count matching (or all) live records
+db.count("orders")                                                  # => 128
+db.count("orders", filter: { field: "status", op: "eq", value: "paid" })
+
+# Group by a field, aggregating a numeric metric per group
+db.group_by("orders", "region", aggregations: ["sum", "avg", "min", "max"], metric: "total")
+# => [ { "group" => "us", "count" => 40, "numeric" => true,
+#        "sum" => 9000.0, "avg" => 225.0, "min" => 5.0, "max" => 999.0 }, ... ]
+
+# Or the general form: optional group_by, optional numeric field
+db.aggregate("orders", aggregations: ["sum"], field: "total")
+# => [ { "group" => nil, "count" => 128, "numeric" => true, "sum" => 30000.0, ... } ]
+```
+
+Each result Hash carries `"group"` (the group-by value, `nil` for the whole-set
+group), `"count"`, `"numeric"`, and — when the group had at least one numeric
+`field` value — `"sum"`, `"avg"`, `"min"`, `"max"`.
 
 #### Per-record TTL
 
@@ -278,5 +367,5 @@ bundle exec ruby examples/test_watch.rb
 
 ```bash
 gem build filedbv2.gemspec
-gem push filedbv2-0.1.0.gem
+gem push filedbv2-0.7.0.gem
 ```
