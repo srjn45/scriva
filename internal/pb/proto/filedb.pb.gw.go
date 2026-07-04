@@ -212,6 +212,8 @@ func local_request_FileDB_InsertMany_0(ctx context.Context, marshaler runtime.Ma
 	return msg, metadata, err
 }
 
+var filter_FileDB_FindById_0 = &utilities.DoubleArray{Encoding: map[string]int{"collection": 0, "id": 1}, Base: []int{1, 1, 2, 0, 0}, Check: []int{0, 1, 1, 2, 3}}
+
 func request_FileDB_FindById_0(ctx context.Context, marshaler runtime.Marshaler, client FileDBClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq FindByIdRequest
@@ -236,6 +238,12 @@ func request_FileDB_FindById_0(ctx context.Context, marshaler runtime.Marshaler,
 	protoReq.Id, err = runtime.Uint64(val)
 	if err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_FileDB_FindById_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	msg, err := client.FindById(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
 	return msg, metadata, err
@@ -262,6 +270,12 @@ func local_request_FileDB_FindById_0(ctx context.Context, marshaler runtime.Mars
 	protoReq.Id, err = runtime.Uint64(val)
 	if err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_FileDB_FindById_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	msg, err := server.FindById(ctx, &protoReq)
 	return msg, metadata, err
@@ -460,6 +474,8 @@ func local_request_FileDB_Upsert_0(ctx context.Context, marshaler runtime.Marsha
 	return msg, metadata, err
 }
 
+var filter_FileDB_FindByKey_0 = &utilities.DoubleArray{Encoding: map[string]int{"collection": 0, "key": 1}, Base: []int{1, 1, 2, 0, 0}, Check: []int{0, 1, 1, 2, 3}}
+
 func request_FileDB_FindByKey_0(ctx context.Context, marshaler runtime.Marshaler, client FileDBClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq FindByKeyRequest
@@ -484,6 +500,12 @@ func request_FileDB_FindByKey_0(ctx context.Context, marshaler runtime.Marshaler
 	protoReq.Key, err = runtime.String(val)
 	if err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "key", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_FileDB_FindByKey_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	msg, err := client.FindByKey(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
 	return msg, metadata, err
@@ -510,6 +532,12 @@ func local_request_FileDB_FindByKey_0(ctx context.Context, marshaler runtime.Mar
 	protoReq.Key, err = runtime.String(val)
 	if err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "key", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_FileDB_FindByKey_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	msg, err := server.FindByKey(ctx, &protoReq)
 	return msg, metadata, err

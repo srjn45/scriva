@@ -126,6 +126,17 @@ pre-existing clients are unaffected.
   - New CLI commands: `upsert`, `find-by-key`, `update-by-key`, `delete-by-key`,
     `update-if-rev`, plus an `insert --key` flag for keyed create. The 7-language
     SDK parity sweep for these operations is a separate follow-on wave.
+- **Field projection on reads (N2).** `Find`, `FindById`, and `FindByKey` gained
+  an optional repeated **`fields`** projection: when non-empty, only those
+  top-level fields are returned in each record's data, so wide documents transmit
+  only what the caller asked for. `id`, `key`, and `rev` are **always** included;
+  an empty `fields` returns the full record (backward compatible); an unknown or
+  absent field is silently omitted (not an error). The engine applies the
+  projection in `ScanStream` (via a new exported `engine.ProjectData` helper)
+  **after** filtering and ordering, so an `order_by` field need not be projected
+  and the embeddable engine keeps its zero transport dependencies. New CLI flag
+  `--fields` (comma-separated) on `find`, `get`, and `find-by-key`. Additive
+  field numbers only; the SDK parity sweep is a separate follow-on wave.
 
 ## [0.3.0] — 2026-07-03
 

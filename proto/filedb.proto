@@ -300,6 +300,10 @@ message InsertManyResponse {
 message FindByIdRequest {
   string collection = 1;
   uint64 id         = 2;
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in the record's data. id, key and rev are always included. Empty
+  // (the default) returns the full record. An unknown field is silently omitted.
+  repeated string fields = 3;
 }
 
 message FindRequest {
@@ -309,6 +313,10 @@ message FindRequest {
   uint32  offset     = 4;
   string  order_by   = 5; // field name
   bool    descending = 6;
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in each record's data. id, key and rev are always included. Empty
+  // (the default) returns full records. An unknown field is silently omitted.
+  repeated string fields = 7;
 }
 
 message FindResponse {
@@ -356,6 +364,10 @@ message UpsertResponse {
 message FindByKeyRequest {
   string collection = 1;
   string key        = 2;
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in the record's data. id, key and rev are always included. Empty
+  // (the default) returns the full record. An unknown field is silently omitted.
+  repeated string fields = 3;
 }
 
 message UpdateByKeyRequest {

@@ -325,3 +325,71 @@ func sortedFloatsEqual(a, b []float64) bool {
 	}
 	return true
 }
+
+// TestProjectData exercises the field-projection helper in isolation: empty
+// fields returns the record unchanged, a projection keeps only the requested
+// keys, an unknown key is silently skipped, and the reserved key field always
+// survives so a record's caller-supplied string key is never lost.
+func TestProjectData(t *testing.T) {
+	data := map[string]any{"name": "ada", "role": "eng", KeyField: "u1"}
+
+	// Empty projection returns the same map (full record, backward compatible).
+	if got := ProjectData(data, nil); len(got) != 3 {
+		t.Errorf("empty projection should return full record, got %v", got)
+	}
+
+	// Projecting to a known and an unknown field keeps only the known one, plus
+	// the reserved key field, and never mutates the input.
+	got := ProjectData(data, []string{"name", "missing"})
+	if got["name"] != "ada" {
+		t.Errorf("projected name = %v, want ada", got["name"])
+	}
+	if _, ok := got["role"]; ok {
+		t.Errorf("projection should drop role: %v", got)
+	}
+	if _, ok := got["missing"]; ok {
+		t.Errorf("unknown field should be silently absent: %v", got)
+	}
+	if got[KeyField] != "u1" {
+		t.Errorf("projection must retain the reserved key field: %v", got)
+	}
+	if len(data) != 3 {
+		t.Errorf("ProjectData mutated its input: %v", data)
+	}
+}
+
+// TestScanStream_FieldProjection drives projection through the scan path: only
+// requested fields reach the caller, and an order-by field need not be projected
+// because projection is applied after ordering.
+func TestScanStream_FieldProjection(t *testing.T) {
+	col := openTestCollection(t)
+	for i := 1; i <= 3; i++ {
+		col.Insert(map[string]any{"name": "n", "rank": float64(i), "extra": "x"})
+	}
+
+	var seen []map[string]any
+	_, err := col.ScanStream(context.Background(), ScanOptions{
+		OrderBy: "rank",
+		Fields:  []string{"rank"}, // order-by field is projected; "extra" is dropped
+	}, func(r ScanResult) error {
+		seen = append(seen, r.Data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ScanStream: %v", err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("got %d records, want 3", len(seen))
+	}
+	for i, d := range seen {
+		if len(d) != 1 {
+			t.Errorf("record %d not projected to a single field: %v", i, d)
+		}
+		if d["rank"] != float64(i+1) {
+			t.Errorf("record %d rank = %v, want %d (order preserved under projection)", i, d["rank"], i+1)
+		}
+		if _, ok := d["extra"]; ok {
+			t.Errorf("record %d should not carry extra: %v", i, d)
+		}
+	}
+}

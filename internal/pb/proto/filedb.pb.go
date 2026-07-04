@@ -1011,9 +1011,13 @@ func (x *InsertManyResponse) GetIds() []uint64 {
 }
 
 type FindByIdRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Id         uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional field projection: when non-empty, only these top-level fields are
+	// returned in the record's data. id, key and rev are always included. Empty
+	// (the default) returns the full record. An unknown field is silently omitted.
+	Fields        []string `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1062,14 +1066,25 @@ func (x *FindByIdRequest) GetId() uint64 {
 	return 0
 }
 
+func (x *FindByIdRequest) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
 type FindRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Filter        *Filter                `protobuf:"bytes,2,opt,name=filter,proto3" json:"filter,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"` // 0 = no limit
-	Offset        uint32                 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
-	OrderBy       string                 `protobuf:"bytes,5,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"` // field name
-	Descending    bool                   `protobuf:"varint,6,opt,name=descending,proto3" json:"descending,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Filter     *Filter                `protobuf:"bytes,2,opt,name=filter,proto3" json:"filter,omitempty"`
+	Limit      uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"` // 0 = no limit
+	Offset     uint32                 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	OrderBy    string                 `protobuf:"bytes,5,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"` // field name
+	Descending bool                   `protobuf:"varint,6,opt,name=descending,proto3" json:"descending,omitempty"`
+	// Optional field projection: when non-empty, only these top-level fields are
+	// returned in each record's data. id, key and rev are always included. Empty
+	// (the default) returns full records. An unknown field is silently omitted.
+	Fields        []string `protobuf:"bytes,7,rep,name=fields,proto3" json:"fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1144,6 +1159,13 @@ func (x *FindRequest) GetDescending() bool {
 		return x.Descending
 	}
 	return false
+}
+
+func (x *FindRequest) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
 }
 
 type FindResponse struct {
@@ -1533,9 +1555,13 @@ func (x *UpsertResponse) GetRecord() *Record {
 }
 
 type FindByKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Collection string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Key        string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	// Optional field projection: when non-empty, only these top-level fields are
+	// returned in the record's data. id, key and rev are always included. Empty
+	// (the default) returns the full record. An unknown field is silently omitted.
+	Fields        []string `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1582,6 +1608,13 @@ func (x *FindByKeyRequest) GetKey() string {
 		return x.Key
 	}
 	return ""
+}
+
+func (x *FindByKeyRequest) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
 }
 
 type UpdateByKeyRequest struct {
@@ -2841,12 +2874,13 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\vttl_seconds\x18\x03 \x01(\x03R\n" +
 	"ttlSeconds\"&\n" +
 	"\x12InsertManyResponse\x12\x10\n" +
-	"\x03ids\x18\x01 \x03(\x04R\x03ids\"A\n" +
+	"\x03ids\x18\x01 \x03(\x04R\x03ids\"Y\n" +
 	"\x0fFindByIdRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\x04R\x02id\"\xc1\x01\n" +
+	"\x02id\x18\x02 \x01(\x04R\x02id\x12\x16\n" +
+	"\x06fields\x18\x03 \x03(\tR\x06fields\"\xd9\x01\n" +
 	"\vFindRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -2857,7 +2891,8 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\border_by\x18\x05 \x01(\tR\aorderBy\x12\x1e\n" +
 	"\n" +
 	"descending\x18\x06 \x01(\bR\n" +
-	"descending\"9\n" +
+	"descending\x12\x16\n" +
+	"\x06fields\x18\a \x03(\tR\x06fields\"9\n" +
 	"\fFindResponse\x12)\n" +
 	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"\x8d\x01\n" +
 	"\rUpdateRequest\x12\x1e\n" +
@@ -2887,12 +2922,13 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
 	"\x04data\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x04data\";\n" +
 	"\x0eUpsertResponse\x12)\n" +
-	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"D\n" +
+	"\x06record\x18\x01 \x01(\v2\x11.filedb.v1.RecordR\x06record\"\\\n" +
 	"\x10FindByKeyRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\"s\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x16\n" +
+	"\x06fields\x18\x03 \x03(\tR\x06fields\"s\n" +
 	"\x12UpdateByKeyRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +

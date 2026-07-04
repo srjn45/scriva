@@ -121,6 +121,24 @@ pages are deterministic and a bounded top-K agrees with a full sort. Without
 between segments and records, so a client that cancels a long `Find` (or
 disconnects) stops server-side work promptly instead of scanning to completion.
 
+**Field projection.** `FindRequest.fields` (and `FindByIdRequest` /
+`FindByKeyRequest`) carry an optional projection: a list of top-level field
+names to return. It is passed to the engine as `ScanOptions.Fields`, and
+`ScanStream` applies it via the exported `engine.ProjectData` helper **after**
+filtering and ordering and just before each record is yielded to the server —
+so it narrows only what crosses the wire, never what the filter or `order_by`
+see (an `order_by` field need not be projected). The point-lookup handlers
+(`FindById` / `FindByKey`) call the same helper on the fetched record. The rules
+live in one place, `engine.ProjectData`:
+
+- An **empty** projection returns the record's data unchanged (full record —
+  backward compatible), never copying the map.
+- A non-empty projection builds a fresh map holding only the requested keys that
+  exist; an unknown key is silently skipped, and the input map is never mutated.
+- The reserved `_key` field is always retained so a record's caller-supplied
+  string `key` survives projection. `id` and `rev` live outside the data map, so
+  they are inherently unaffected — `id`, `key`, and `rev` are always returned.
+
 ### Slow-query log & scan stats
 
 `ScanStream` returns a plain `engine.ScanStats` value alongside its error,
