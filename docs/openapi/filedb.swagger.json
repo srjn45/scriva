@@ -806,7 +806,7 @@
         },
         "orderBy": {
           "type": "string",
-          "title": "field name"
+          "description": "Deprecated single-field sort. Superseded by order_by_fields (N3): honoured\nonly when order_by_fields is empty, and slated for removal after one release.\nMigrate `order_by:\"f\", descending:d` to `order_by_fields:[{field:\"f\", desc:d}]`.\n\nfield name"
         },
         "descending": {
           "type": "boolean"
@@ -817,6 +817,18 @@
             "type": "string"
           },
           "description": "Optional field projection: when non-empty, only these top-level fields are\nreturned in each record's data. id, key and rev are always included. Empty\n(the default) returns full records. An unknown field is silently omitted."
+        },
+        "pageToken": {
+          "type": "string",
+          "description": "Opaque keyset (cursor) pagination token (N3). Empty (the default) requests\nthe first page; otherwise it must be a page_token returned by a previous Find\nand the scan seeks past the rows already returned instead of counting past\nthem (O(page), not O(offset)). Only meaningful with an ordering\n(order_by_fields or the deprecated order_by); pass the same ordering, filter,\nand limit on every page. Combine with offset=0 for keyset paging."
+        },
+        "orderByFields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1OrderBy"
+          },
+          "description": "Multi-field, per-field-directional sort (N3). When non-empty it supersedes\nthe deprecated scalar order_by/descending. The record id is always the final\ntiebreaker, so the sort is total and pagination is stable."
         }
       }
     },
@@ -1096,6 +1108,10 @@
       "properties": {
         "record": {
           "$ref": "#/definitions/v1Record"
+        },
+        "pageToken": {
+          "type": "string",
+          "description": "Next-page cursor (N3). Set on the final streamed message when more rows remain\nunder the requested ordering — feed it back as FindRequest.page_token to fetch\nthe next page. Empty on every message means the last page was reached."
         }
       }
     },
@@ -1164,6 +1180,19 @@
           }
         }
       }
+    },
+    "v1OrderBy": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "desc": {
+          "type": "boolean",
+          "title": "false = ascending, true = descending"
+        }
+      },
+      "description": "OrderBy names one sort key and its direction. A Find may carry several, applied\nin order as a lexicographic (multi-field) sort; ties beyond the last key break\non the record id so the ordering is always total and a keyset cursor is stable."
     },
     "v1Record": {
       "type": "object",

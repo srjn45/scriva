@@ -306,21 +306,47 @@ message FindByIdRequest {
   repeated string fields = 3;
 }
 
+// OrderBy names one sort key and its direction. A Find may carry several, applied
+// in order as a lexicographic (multi-field) sort; ties beyond the last key break
+// on the record id so the ordering is always total and a keyset cursor is stable.
+message OrderBy {
+  string field = 1;
+  bool   desc  = 2; // false = ascending, true = descending
+}
+
 message FindRequest {
   string  collection = 1;
   Filter  filter     = 2;
   uint32  limit      = 3; // 0 = no limit
   uint32  offset     = 4;
-  string  order_by   = 5; // field name
-  bool    descending = 6;
+  // Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+  // only when order_by_fields is empty, and slated for removal after one release.
+  // Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
+  string  order_by   = 5 [deprecated = true]; // field name
+  bool    descending = 6 [deprecated = true];
   // Optional field projection: when non-empty, only these top-level fields are
   // returned in each record's data. id, key and rev are always included. Empty
   // (the default) returns full records. An unknown field is silently omitted.
   repeated string fields = 7;
+  // Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+  // the first page; otherwise it must be a page_token returned by a previous Find
+  // and the scan seeks past the rows already returned instead of counting past
+  // them (O(page), not O(offset)). Only meaningful with an ordering
+  // (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+  // and limit on every page. Combine with offset=0 for keyset paging.
+  string page_token = 8;
+  // Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+  // the deprecated scalar order_by/descending. The record id is always the final
+  // tiebreaker, so the sort is total and pagination is stable.
+  repeated OrderBy order_by_fields = 9;
 }
 
 message FindResponse {
   Record record = 1;
+  // Next-page cursor (N3). Set on the final streamed message when more rows remain
+  // under the requested ordering — feed it back as FindRequest.page_token to fetch
+  // the next page. Empty on every message means the last page was reached.
+  string page_token = 2;
 }
 
 message UpdateRequest {

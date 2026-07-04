@@ -3,6 +3,8 @@ package engine
 import (
 	"container/heap"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,13 +22,35 @@ type ScanResult struct {
 	Ts   time.Time
 }
 
+// SortField names one sort key of a multi-field ordering and its direction. A
+// scan applies a slice of these lexicographically (first field dominant); the
+// record id is always the implicit final tiebreaker so the ordering is total.
+type SortField struct {
+	Field string
+	Desc  bool // false = ascending, true = descending
+}
+
 // ScanOptions parameterises a streaming scan.
 type ScanOptions struct {
-	Filter     query.Filter // nil = match all
-	Limit      int          // 0 = no limit
-	Offset     int          // number of leading matches to skip
-	OrderBy    string       // "" = natural (insertion) order
-	Descending bool         // reverse the ordering (only meaningful with OrderBy)
+	Filter query.Filter // nil = match all
+	Limit  int          // 0 = no limit
+	Offset int          // number of leading matches to skip
+	// OrderBy/Descending are the legacy single-field sort. Sort supersedes them
+	// when non-empty; otherwise a non-empty OrderBy is promoted to a one-element
+	// Sort. Empty both = natural (insertion) order.
+	OrderBy    string
+	Descending bool
+	// Sort is the multi-field, per-field-directional ordering (N3). When
+	// non-empty it takes precedence over OrderBy/Descending. The record id breaks
+	// any remaining tie, so the ordering is total and a keyset cursor is stable.
+	Sort []SortField
+	// PageToken is an opaque keyset cursor (N3). Empty (the default) starts at the
+	// first page; otherwise it must be a token returned by a previous scan of the
+	// same collection under the same ordering, and the scan seeks strictly past
+	// the row it encodes instead of counting past it (O(page), not O(offset)).
+	// A page token requires an ordering (Sort or OrderBy); a malformed token
+	// yields ErrInvalidPageToken.
+	PageToken string
 	// Fields narrows each emitted record's Data to the named top-level keys
 	// (field projection). Empty (the default) emits the full record. The
 	// reserved key field is always retained so a record's string key survives,
@@ -34,6 +58,11 @@ type ScanOptions struct {
 	// after filtering and ordering, so an order-by field need not be projected.
 	Fields []string
 }
+
+// ErrInvalidPageToken is returned by ScanStream when ScanOptions.PageToken is not
+// a token this engine produced (bad base64, bad payload, or a key count that does
+// not match the requested ordering). The server maps it to InvalidArgument.
+var ErrInvalidPageToken = errors.New("engine: invalid page token")
 
 // ScanStats reports the cost of a completed scan: how many live records were
 // examined, how many were emitted to the caller, and whether a secondary index
@@ -45,6 +74,11 @@ type ScanStats struct {
 	RowsScanned  int  // live records examined against the filter
 	RowsReturned int  // records emitted to yield
 	IndexUsed    bool // a secondary index produced the candidate set
+	// NextPageToken is the opaque keyset cursor for the following page (N3). It is
+	// set only for an ordered, limited scan that left more matching rows beyond the
+	// returned page; feed it back as ScanOptions.PageToken to continue. Empty means
+	// the last page was reached (or the scan was unordered/unlimited).
+	NextPageToken string
 }
 
 // errStopScan is an internal sentinel used to terminate a scan early once a
@@ -99,11 +133,21 @@ func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield fun
 		return nil
 	}
 
+	// Resolve the effective ordering: an explicit multi-field Sort wins; otherwise
+	// a non-empty legacy OrderBy is promoted to a single-field Sort. A page token
+	// implies an ordering even when none was named (id-only, the always-present
+	// tiebreak), so keyset seeking still has a total order to seek within.
+	sortFields := opts.Sort
+	if len(sortFields) == 0 && opts.OrderBy != "" {
+		sortFields = []SortField{{Field: opts.OrderBy, Desc: opts.Descending}}
+	}
+	ordered := len(sortFields) > 0 || opts.PageToken != ""
+
 	var err error
-	if opts.OrderBy == "" {
+	if !ordered {
 		err = c.scanUnordered(ctx, f, opts, stats, counting)
 	} else {
-		err = c.scanOrdered(ctx, f, opts, stats, counting)
+		err = c.scanOrdered(ctx, f, opts, sortFields, stats, counting)
 	}
 	return *stats, err
 }
@@ -132,28 +176,52 @@ func (c *Collection) scanUnordered(ctx context.Context, f query.Filter, opts Sca
 	return err
 }
 
-// scanOrdered buffers matches, sorts them by the requested field, then emits the
-// requested page. With a positive limit only a bounded top-K buffer is kept.
-func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanOptions, stats *ScanStats, yield func(ScanResult) error) error {
-	less := orderLess(opts.OrderBy, opts.Descending)
+// scanOrdered buffers matches, sorts them lexicographically by sortFields (id as
+// the final tiebreak), then emits the requested page. With a positive limit only
+// a bounded top-K buffer is kept. When opts.PageToken is set the scan first drops
+// every row at or before the cursor under the ordering, so a follow-up page seeks
+// past the rows already returned instead of counting past them; and when the
+// page leaves more matching rows behind it sets stats.NextPageToken to the cursor
+// that resumes after the last emitted row.
+func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanOptions, sortFields []SortField, stats *ScanStats, yield func(ScanResult) error) error {
+	less := sortLess(sortFields)
 
+	// A page token restricts the scan to rows strictly after the encoded cursor.
+	// Because the ordering is total (id breaks every remaining tie), "strictly
+	// after" is unambiguous and never re-emits or skips a boundary row.
+	afterCursor, err := cursorAfter(opts.PageToken, sortFields, less)
+	if err != nil {
+		return err
+	}
+
+	matched := 0 // rows passing the filter and the cursor — the pageable universe
 	var page []ScanResult
+	collect := func(r ScanResult) error {
+		if afterCursor != nil && !afterCursor(r) {
+			return nil
+		}
+		matched++
+		page = append(page, r)
+		return nil
+	}
 	if opts.Limit > 0 {
 		// Keep only the smallest K = Offset+Limit results under the ordering.
 		k := opts.Offset + opts.Limit
 		th := &topK{less: less, cap: k}
-		if err := c.forEachMatch(ctx, f, stats, func(r ScanResult) error {
+		collect = func(r ScanResult) error {
+			if afterCursor != nil && !afterCursor(r) {
+				return nil
+			}
+			matched++
 			th.push(r)
 			return nil
-		}); err != nil {
+		}
+		if err := c.forEachMatch(ctx, f, stats, collect); err != nil {
 			return err
 		}
 		page = th.sorted()
 	} else {
-		if err := c.forEachMatch(ctx, f, stats, func(r ScanResult) error {
-			page = append(page, r)
-			return nil
-		}); err != nil {
+		if err := c.forEachMatch(ctx, f, stats, collect); err != nil {
 			return err
 		}
 		sort.SliceStable(page, func(i, j int) bool { return less(page[i], page[j]) })
@@ -172,6 +240,23 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 		if err := yield(r); err != nil {
 			return err
 		}
+	}
+
+	// More rows remain beyond this page iff the limit truncated the pageable
+	// universe (offset + limit < matched). Encode the last emitted row's sort-key
+	// tuple + id as the resume cursor. Read the keys from the pre-projection Data
+	// so a token survives even when the sort field was not among Fields.
+	if opts.Limit > 0 && len(page) > 0 && matched > opts.Offset+opts.Limit {
+		last := page[len(page)-1]
+		keys := make([]any, len(sortFields))
+		for i, sf := range sortFields {
+			keys[i] = last.Data[sf.Field]
+		}
+		tok, err := encodeCursor(keys, last.ID)
+		if err != nil {
+			return err
+		}
+		stats.NextPageToken = tok
 	}
 	return nil
 }
@@ -313,24 +398,88 @@ func ProjectData(data map[string]any, fields []string) map[string]any {
 	return out
 }
 
-// orderLess returns a total ordering over ScanResults by the given field. The
-// primary comparison is query.Compare — the exact same type-aware comparison
-// the filter operators (gt/gte/lt/lte) use, so a sort and a query never
-// disagree: numbers order numerically (2 < 10, not the lexical "10" < "2") and
-// strings lexically. The result is reversed when desc is set. Ties break on
-// ascending id so results are deterministic and a bounded top-K agrees with a
-// full sort.
-func orderLess(field string, desc bool) func(a, b ScanResult) bool {
+// sortLess returns a total ordering over ScanResults for a multi-field sort. Each
+// field is compared with query.Compare — the exact same type-aware comparison the
+// filter operators (gt/gte/lt/lte) use, so a sort and a query never disagree:
+// numbers order numerically (2 < 10, not the lexical "10" < "2") and strings
+// lexically. Fields are applied lexicographically (the first is dominant), each
+// reversed when its Desc is set. Any remaining tie — including the zero-field case
+// — breaks on ascending id, so the ordering is total: results are deterministic, a
+// bounded top-K agrees with a full sort, and a keyset cursor is unambiguous.
+func sortLess(fields []SortField) func(a, b ScanResult) bool {
 	return func(a, b ScanResult) bool {
-		c := query.Compare(a.Data[field], b.Data[field])
-		if desc {
-			c = -c
-		}
-		if c != 0 {
-			return c < 0
+		for _, sf := range fields {
+			c := query.Compare(a.Data[sf.Field], b.Data[sf.Field])
+			if sf.Desc {
+				c = -c
+			}
+			if c != 0 {
+				return c < 0
+			}
 		}
 		return a.ID < b.ID
 	}
+}
+
+// pageCursor is the decoded form of a keyset page token: the sort-key tuple and
+// id of the last row emitted on the previous page. Keys are stored in sort-field
+// order; JSON round-trips numbers as float64, which query.Compare treats
+// identically to the numeric types decoded from a segment.
+type pageCursor struct {
+	Keys []any  `json:"k"`
+	ID   uint64 `json:"i"`
+}
+
+// encodeCursor packs a sort-key tuple and id into an opaque, URL-safe token. The
+// encoding is a base64 of compact JSON: self-describing enough to survive numbers
+// and strings, and free of any grpc/proto dependency so the engine stays
+// embeddable. Callers treat the result as opaque bytes.
+func encodeCursor(keys []any, id uint64) (string, error) {
+	b, err := json.Marshal(pageCursor{Keys: keys, ID: id})
+	if err != nil {
+		return "", fmt.Errorf("engine: encode page token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// decodeCursor reverses encodeCursor. Any malformed token — bad base64 or bad
+// payload — is reported as ErrInvalidPageToken so the server can return a stable
+// InvalidArgument regardless of the underlying cause.
+func decodeCursor(tok string) (pageCursor, error) {
+	var c pageCursor
+	b, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		return c, fmt.Errorf("%w: %s", ErrInvalidPageToken, err.Error())
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return c, fmt.Errorf("%w: %s", ErrInvalidPageToken, err.Error())
+	}
+	return c, nil
+}
+
+// cursorAfter builds the "strictly after the cursor" predicate for a keyset page.
+// An empty token yields a nil predicate (no seek — the first page). Otherwise it
+// decodes the token, rebuilds a synthetic ScanResult carrying the cursor's
+// sort-key values under their field names plus its id, and returns a predicate
+// that is true for exactly the rows that sort strictly after it under less — so
+// the boundary row itself (same id) is excluded and no row is dropped or dupled.
+// A key count that disagrees with the ordering is ErrInvalidPageToken.
+func cursorAfter(token string, sortFields []SortField, less func(a, b ScanResult) bool) (func(ScanResult) bool, error) {
+	if token == "" {
+		return nil, nil
+	}
+	cur, err := decodeCursor(token)
+	if err != nil {
+		return nil, err
+	}
+	if len(cur.Keys) != len(sortFields) {
+		return nil, fmt.Errorf("%w: key count %d does not match order (%d fields)", ErrInvalidPageToken, len(cur.Keys), len(sortFields))
+	}
+	boundary := ScanResult{ID: cur.ID, Data: make(map[string]any, len(sortFields))}
+	for i, sf := range sortFields {
+		boundary.Data[sf.Field] = cur.Keys[i]
+	}
+	return func(r ScanResult) bool { return less(boundary, r) }, nil
 }
 
 // topK keeps the smallest cap results under less, discarding larger ones as it

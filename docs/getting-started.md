@@ -584,19 +584,64 @@ Key points:
 
 ### Ordering & pagination
 
-`Find` accepts `order_by`, `descending`, `limit`, and `offset`. These are pushed
-into the storage engine and applied *as it reads*, so a limited query never
-loads the whole collection into memory:
+`Find` accepts a multi-field `order_by_fields` ordering, `limit`, `offset`, and a
+`page_token` keyset cursor. These are pushed into the storage engine and applied
+*as it reads*, so a limited query never loads the whole collection into memory:
 
-- **`limit` / `offset` without `order_by`** — results stream in insertion (id)
+- **`limit` / `offset` without an ordering** — results stream in insertion (id)
   order and the scan stops after `offset + limit` matches. `Find … limit 10`
   over a huge collection reads about ten rows, not all of them.
-- **`order_by`** — results are sorted by that field using the same type-aware
-  comparison as the `gt`/`lt` filter operators: numerically when both values are
-  numbers (so `2` sorts before `10`, not the lexical `"10"` before `"2"`),
-  otherwise by their string form. Set `descending` to reverse. Ties break on
-  ascending `id` so pages are stable. With a `limit`, only a bounded
-  top-`(offset+limit)` buffer is kept rather than sorting every row.
+- **`order_by_fields`** — a list of `{field, desc}` sort keys applied
+  lexicographically (the first is dominant), each with its own direction. Each
+  comparison uses the same type-aware ordering as the `gt`/`lt` filter operators:
+  numerically when both values are numbers (so `2` sorts before `10`, not the
+  lexical `"10"` before `"2"`), otherwise by their string form. The record `id`
+  is always the final tiebreaker, so the ordering is **total** — pages are stable
+  and a cursor is unambiguous. With a `limit`, only a bounded top-`(offset+limit)`
+  buffer is kept rather than sorting every row.
+
+On the CLI, pass `--order-by field[:asc|:desc]` once per sort key:
+
+```bash
+# team ascending, then score descending, then id (implicit)
+filedb-cli find roster --order-by team --order-by score:desc
+```
+
+#### Keyset (cursor) pagination
+
+Deep pagination with `offset` is O(offset) — the engine still has to walk past
+every skipped row. **Keyset pagination** instead threads an opaque `page_token`
+that encodes the `(sort-key tuple, id)` of the last row you saw, so the next page
+*seeks past* it in O(page). To page a large result set:
+
+1. Issue the first `Find` with an ordering and a `limit`, no `page_token`.
+2. The response carries a **`page_token`** on its final message when more rows
+   remain. Feed it back as the next request's `page_token` (keep the same
+   ordering, filter, and limit; use `offset = 0`).
+3. Repeat until a page comes back with an **empty** `page_token` — that was the
+   last page.
+
+```bash
+# First page
+filedb-cli find feed --order-by created_at:desc --limit 50
+# … prints 50 records, then:
+# next-page-token: eyJrIjpbMTcwMDAwMDAwMF0sImkiOjQyfQ
+
+# Next page — paste the token back
+filedb-cli find feed --order-by created_at:desc --limit 50 \
+  --page-token eyJrIjpbMTcwMDAwMDAwMF0sImkiOjQyfQ
+```
+
+Because the cursor rides the same total order the sort uses, concatenated pages
+cover **every matching row exactly once — no duplicates, no gaps — even if rows
+are inserted between page fetches**. A cursor requires an ordering (`order_by_fields`
+or the deprecated scalar `order_by`); a malformed token is rejected with
+`InvalidArgument`.
+
+> **Deprecation (v0.7.0).** The scalar `order_by` / `descending` fields are
+> deprecated in favour of `order_by_fields`. They still work when
+> `order_by_fields` is empty, and will be removed after one release. Migrate
+> `order_by:"f", descending:d` → `order_by_fields:[{field:"f", desc:d}]`.
 
 Cancelling the request (client disconnect or context cancellation) stops the
 scan promptly instead of running to completion.
