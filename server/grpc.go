@@ -129,6 +129,23 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 
+	// Keyed Create (N1): a caller-supplied key routes to the engine's
+	// InsertWithKey, which rejects a duplicate key with ALREADY_EXISTS. Keyed
+	// insert does not participate in transactions or per-record TTL.
+	if req.Key != "" {
+		if txIDFromContext(ctx) != "" {
+			return nil, status.Error(codes.InvalidArgument, "keyed insert is not supported inside a transaction")
+		}
+		if req.TtlSeconds > 0 {
+			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported with a keyed insert")
+		}
+		id, ts, err := col.InsertWithKey(req.Key, req.Data.AsMap())
+		if err != nil {
+			return nil, keyedErr(err)
+		}
+		return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Key: req.Key, Rev: 1}, nil
+	}
+
 	if txID := txIDFromContext(ctx); txID != "" {
 		if req.TtlSeconds > 0 {
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
@@ -150,7 +167,8 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "insert: %v", err)
 	}
-	return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339)}, nil
+	// A fresh, keyless insert always starts at revision 1 and carries no key.
+	return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Rev: 1}, nil
 }
 
 func (s *GRPCServer) InsertMany(_ context.Context, req *pb.InsertManyRequest) (*pb.InsertManyResponse, error) {
@@ -178,11 +196,11 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
 	}
-	data, ts, err := col.FindByID(req.Id)
+	r, err := col.Get(req.Id)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
-	rec, err := toProtoRecord(req.Id, data, ts)
+	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, r.Data, r.Ts)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
@@ -212,7 +230,7 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 		Descending: req.Descending,
 	}
 	stats, err := col.ScanStream(stream.Context(), opts, func(r engine.ScanResult) error {
-		rec, err := toProtoRecord(r.ID, r.Data, r.Ts)
+		rec, err := toProtoRecord(r.ID, keyOf(r.Data), r.Rev, r.Data, r.Ts)
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
 		}
@@ -313,7 +331,12 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
-	return &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}, nil
+	resp := &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}
+	// Surface the record's key and post-write revision best-effort.
+	if r, gerr := col.Get(req.Id); gerr == nil {
+		resp.Key, resp.Rev = r.Key, r.Rev
+	}
+	return resp, nil
 }
 
 func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
@@ -338,6 +361,102 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 	return &pb.DeleteResponse{Ok: true}, nil
+}
+
+// ---- Keyed CRUD, Upsert & compare-and-swap (N1) ---------------------------
+
+// Upsert inserts data under req.Key if no live record carries it, or replaces
+// the existing record's data if one does — atomically in the engine. It returns
+// the resulting record with its (incremented on replace) revision.
+func (s *GRPCServer) Upsert(_ context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
+	if req.Key == "" {
+		return nil, status.Error(codes.InvalidArgument, "key required")
+	}
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	rec, err := col.Upsert(req.Key, req.Data.AsMap())
+	if err != nil {
+		return nil, keyedErr(err)
+	}
+	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, rec.Data, rec.Ts)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &pb.UpsertResponse{Record: prec}, nil
+}
+
+// FindByKey returns the record carrying req.Key. A missing key is NOT_FOUND.
+func (s *GRPCServer) FindByKey(_ context.Context, req *pb.FindByKeyRequest) (*pb.FindResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
+	}
+	rec, err := col.GetByKey(req.Key)
+	if err != nil {
+		return nil, keyedErr(err)
+	}
+	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, rec.Data, rec.Ts)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return &pb.FindResponse{Record: prec}, nil
+}
+
+// UpdateByKey overwrites the record carrying req.Key, preserving the key. A
+// missing key is NOT_FOUND.
+func (s *GRPCServer) UpdateByKey(_ context.Context, req *pb.UpdateByKeyRequest) (*pb.UpdateResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	ts, err := col.UpdateByKey(req.Key, req.Data.AsMap())
+	if err != nil {
+		return nil, keyedErr(err)
+	}
+	resp := &pb.UpdateResponse{DateModified: ts.Format(time.RFC3339), Key: req.Key}
+	// Surface the record's id and post-write revision best-effort.
+	if r, gerr := col.GetByKey(req.Key); gerr == nil {
+		resp.Id, resp.Rev = r.ID, r.Rev
+	}
+	return resp, nil
+}
+
+// DeleteByKey removes the record carrying req.Key. A missing key is NOT_FOUND.
+func (s *GRPCServer) DeleteByKey(_ context.Context, req *pb.DeleteByKeyRequest) (*pb.DeleteResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	if err := col.DeleteByKey(req.Key); err != nil {
+		return nil, keyedErr(err)
+	}
+	return &pb.DeleteResponse{Ok: true}, nil
+}
+
+// UpdateIfRev conditionally updates the record carrying req.Key only if its
+// current revision equals req.ExpectedRev. A stale revision (or a missing key)
+// is a clean no-op reported as swapped=false — never an error. When the swap
+// applies, the resulting record (with its bumped revision) is returned.
+func (s *GRPCServer) UpdateIfRev(_ context.Context, req *pb.UpdateIfRevRequest) (*pb.UpdateIfRevResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	swapped, err := col.UpdateIfRev(req.Key, req.ExpectedRev, req.Data.AsMap())
+	if err != nil {
+		return nil, keyedErr(err)
+	}
+	resp := &pb.UpdateIfRevResponse{Swapped: swapped}
+	if swapped {
+		if r, gerr := col.GetByKey(req.Key); gerr == nil {
+			if prec, perr := toProtoRecord(r.ID, r.Key, r.Rev, r.Data, r.Ts); perr == nil {
+				resp.Record = prec
+			}
+		}
+	}
+	return resp, nil
 }
 
 // ---- Secondary indexes ----------------------------------------------------
@@ -423,7 +542,9 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.FileDB_WatchServer) e
 			case store.OpDelete:
 				op = pb.WatchOp_DELETED
 			}
-			rec, _ := toProtoRecord(ev.ID, ev.Data, ev.Ts)
+			// Watch events do not carry a revision; key is recovered from the
+			// record's reserved _key field when present.
+			rec, _ := toProtoRecord(ev.ID, keyOf(ev.Data), 0, ev.Data, ev.Ts)
 			if err := stream.Send(&pb.WatchEvent{
 				Op:         op,
 				Collection: req.Collection,
@@ -547,7 +668,7 @@ func ttlDeadline(ttlSeconds int64) time.Time {
 	return time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second)
 }
 
-func toProtoRecord(id uint64, data map[string]any, ts time.Time) (*pb.Record, error) {
+func toProtoRecord(id uint64, key string, rev uint64, data map[string]any, ts time.Time) (*pb.Record, error) {
 	s, err := structpb.NewStruct(data)
 	if err != nil {
 		return nil, fmt.Errorf("toProtoRecord: %w", err)
@@ -557,7 +678,34 @@ func toProtoRecord(id uint64, data map[string]any, ts time.Time) (*pb.Record, er
 		Data:         s,
 		DateAdded:    timestamppb.New(ts),
 		DateModified: timestamppb.New(ts),
+		Key:          key,
+		Rev:          rev,
 	}, nil
+}
+
+// keyOf extracts a record's caller-supplied string key from its data map, where
+// the engine stores it under the reserved _key field. It returns "" for records
+// inserted without a key.
+func keyOf(data map[string]any) string {
+	k, _ := data[engine.KeyField].(string)
+	return k
+}
+
+// keyedErr maps the typed engine errors surfaced by the keyed operations onto
+// gRPC status codes: a missing key is NOT_FOUND, a duplicate key is
+// ALREADY_EXISTS, and an attempt to set the reserved _key field via data is
+// INVALID_ARGUMENT. Anything else is Internal.
+func keyedErr(err error) error {
+	switch {
+	case errors.Is(err, engine.ErrKeyNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, engine.ErrDuplicateKey):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, engine.ErrReservedField):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return status.Error(codes.Internal, err.Error())
+	}
 }
 
 func protoFilterToQuery(f *pb.Filter) (query.Filter, error) {

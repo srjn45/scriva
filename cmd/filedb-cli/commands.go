@@ -97,6 +97,7 @@ func dropCollectionCmd(flags *cliFlags) *cobra.Command {
 func insertCmd(flags *cliFlags) *cobra.Command {
 	var txID string
 	var ttl time.Duration
+	var key string
 	cmd := &cobra.Command{
 		Use:   "insert <collection> <json>",
 		Short: "Insert a record",
@@ -120,20 +121,25 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 				Collection: args[0],
 				Data:       data,
 				TtlSeconds: int64(ttl / time.Second),
+				Key:        key,
 			})
 			if err != nil {
 				return err
 			}
-			if txID != "" {
+			switch {
+			case txID != "":
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "staged insert id:%d (tx:%s)\n", resp.Id, txID)
-			} else {
+			case resp.Key != "":
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d key:%s (%s)\n", resp.Id, resp.Key, resp.DateAdded)
+			default:
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d (%s)\n", resp.Id, resp.DateAdded)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
-	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Per-record TTL (e.g. 30m; 0 = collection default). Not allowed with --tx-id")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Per-record TTL (e.g. 30m; 0 = collection default). Not allowed with --tx-id or --key")
+	cmd.Flags().StringVar(&key, "key", "", "Caller-supplied string primary key (keyed Create; duplicate key is rejected)")
 	return cmd
 }
 
@@ -303,6 +309,151 @@ func deleteCmd(flags *cliFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
 	return cmd
+}
+
+// ---- Keyed CRUD, Upsert & compare-and-swap --------------------------------
+
+func upsertCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "upsert <collection> <key> <json>",
+		Short: "Insert or replace a record by its string key",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			data, err := parseJSONArg(args[2])
+			if err != nil {
+				return err
+			}
+			resp, err := client.Upsert(ctxWithAuth(flags), &pb.UpsertRequest{
+				Collection: args[0], Key: args[1], Data: data,
+			})
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upserted key:%s (id:%d rev:%d)\n",
+				resp.Record.Key, resp.Record.Id, resp.Record.Rev)
+			return nil
+		},
+	}
+}
+
+func findByKeyCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "find-by-key <collection> <key>",
+		Short: "Get a record by its string key",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := client.FindByKey(ctxWithAuth(flags), &pb.FindByKeyRequest{
+				Collection: args[0], Key: args[1],
+			})
+			if err != nil {
+				return err
+			}
+			printRecord(cmd, resp.Record)
+			return nil
+		},
+	}
+}
+
+func updateByKeyCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "update-by-key <collection> <key> <json>",
+		Short: "Update a record by its string key",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			data, err := parseJSONArg(args[2])
+			if err != nil {
+				return err
+			}
+			resp, err := client.UpdateByKey(ctxWithAuth(flags), &pb.UpdateByKeyRequest{
+				Collection: args[0], Key: args[1], Data: data,
+			})
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "updated key:%s (id:%d rev:%d)\n",
+				resp.Key, resp.Id, resp.Rev)
+			return nil
+		},
+	}
+}
+
+func deleteByKeyCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete-by-key <collection> <key>",
+		Short: "Delete a record by its string key",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			if _, err := client.DeleteByKey(ctxWithAuth(flags), &pb.DeleteByKeyRequest{
+				Collection: args[0], Key: args[1],
+			}); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted key:%s\n", args[1])
+			return nil
+		},
+	}
+}
+
+func updateIfRevCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "update-if-rev <collection> <key> <expected-rev> <json>",
+		Short: "Compare-and-swap: update a record by key only if its revision matches",
+		Args:  cobra.ExactArgs(4),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			rev, err := strconv.ParseUint(args[2], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid expected-rev %q: %w", args[2], err)
+			}
+			data, err := parseJSONArg(args[3])
+			if err != nil {
+				return err
+			}
+			resp, err := client.UpdateIfRev(ctxWithAuth(flags), &pb.UpdateIfRevRequest{
+				Collection: args[0], Key: args[1], ExpectedRev: rev, Data: data,
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Swapped {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "swapped key:%s (rev:%d)\n",
+					resp.Record.Key, resp.Record.Rev)
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"no-op: revision mismatch or key not found (key:%s)\n", args[1])
+			}
+			return nil
+		},
+	}
 }
 
 // ---- Stats ----------------------------------------------------------------
@@ -696,5 +847,9 @@ func printRecord(cmd *cobra.Command, r *pb.Record) {
 		return
 	}
 	b, _ := json.Marshal(r.Data.AsMap())
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "id:%-6d  %s\n", r.Id, string(b))
+	if r.Key != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "id:%-6d key:%s rev:%d  %s\n", r.Id, r.Key, r.Rev, string(b))
+		return
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "id:%-6d rev:%d  %s\n", r.Id, r.Rev, string(b))
 }

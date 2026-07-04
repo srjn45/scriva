@@ -77,6 +77,58 @@ service FileDB {
     };
   }
 
+  // --- Keyed CRUD, Upsert & compare-and-swap (N1) ---
+  //
+  // These map straight onto the embedded engine's keyed operations, giving
+  // network clients natural (caller-supplied) string keys, upsert, and
+  // optimistic-concurrency updates keyed on a per-record revision (`rev`).
+
+  // Upsert inserts data under key if no live record carries it, or replaces the
+  // existing record's data if one does — atomically. Returns the resulting
+  // record with its (incremented on replace) revision. This is the keyed-insert
+  // path: there is no separate InsertWithKey RPC.
+  rpc Upsert(UpsertRequest) returns (UpsertResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/records:upsert"
+      body: "*"
+    };
+  }
+
+  // FindByKey returns the record carrying the caller-supplied string key.
+  // A missing key yields NOT_FOUND.
+  rpc FindByKey(FindByKeyRequest) returns (FindResponse) {
+    option (google.api.http) = {
+      get: "/v1/{collection}/keys/{key}"
+    };
+  }
+
+  // UpdateByKey overwrites the record carrying key, preserving the key itself.
+  // A missing key yields NOT_FOUND.
+  rpc UpdateByKey(UpdateByKeyRequest) returns (UpdateResponse) {
+    option (google.api.http) = {
+      put: "/v1/{collection}/keys/{key}"
+      body: "*"
+    };
+  }
+
+  // DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+  rpc DeleteByKey(DeleteByKeyRequest) returns (DeleteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/{collection}/keys/{key}"
+    };
+  }
+
+  // UpdateIfRev conditionally updates the record carrying key: the write is
+  // applied only if the record's current revision equals expected_rev. A stale
+  // revision (or a missing key) is a clean no-op reported as swapped=false, not
+  // an error.
+  rpc UpdateIfRev(UpdateIfRevRequest) returns (UpdateIfRevResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/keys/{key}:cas"
+      body: "*"
+    };
+  }
+
   // --- Secondary indexes ---
 
   rpc EnsureIndex(EnsureIndexRequest) returns (EnsureIndexResponse) {
@@ -147,6 +199,11 @@ message Record {
   google.protobuf.Struct    data          = 2;
   google.protobuf.Timestamp date_added    = 3;
   google.protobuf.Timestamp date_modified = 4;
+  // Caller-supplied string primary key, empty for records inserted without one.
+  string                    key           = 5;
+  // Monotonic per-record revision, bumped on every write. Fresh records start
+  // at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+  uint64                    rev           = 6;
 }
 
 // A composable filter node.
@@ -213,10 +270,20 @@ message InsertRequest {
   // after insertion, overriding any collection default. 0 (the default)
   // applies the collection's default TTL, if any.
   int64 ttl_seconds = 3;
+  // Optional caller-supplied string primary key (keyed Create). When set, the
+  // record is inserted under this key and a key already held by a live record
+  // is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+  // server-assigned-id behaviour. A keyed insert does not participate in
+  // transactions or per-record TTL.
+  string key = 4;
 }
 message InsertResponse {
   uint64 id         = 1;
   string date_added = 2;
+  // Caller-supplied string key (empty for a keyless insert) and the record's
+  // revision. A fresh insert always starts at rev 1.
+  string key        = 3;
+  uint64 rev        = 4;
 }
 
 message InsertManyRequest {
@@ -260,6 +327,10 @@ message UpdateRequest {
 message UpdateResponse {
   uint64 id            = 1;
   string date_modified = 2;
+  // Caller-supplied string key (empty for a keyless update) and the record's
+  // revision after the write.
+  string key           = 3;
+  uint64 rev           = 4;
 }
 
 message DeleteRequest {
@@ -267,6 +338,50 @@ message DeleteRequest {
   uint64 id         = 2;
 }
 message DeleteResponse { bool ok = 1; }
+
+// ---------------------------------------------------------------------------
+// Keyed CRUD, Upsert & compare-and-swap (N1)
+// ---------------------------------------------------------------------------
+
+message UpsertRequest {
+  string                 collection = 1;
+  string                 key        = 2;
+  google.protobuf.Struct data       = 3;
+}
+message UpsertResponse {
+  // The resulting record, including its key and (incremented on replace) rev.
+  Record record = 1;
+}
+
+message FindByKeyRequest {
+  string collection = 1;
+  string key        = 2;
+}
+
+message UpdateByKeyRequest {
+  string                 collection = 1;
+  string                 key        = 2;
+  google.protobuf.Struct data       = 3;
+}
+
+message DeleteByKeyRequest {
+  string collection = 1;
+  string key        = 2;
+}
+
+message UpdateIfRevRequest {
+  string                 collection   = 1;
+  string                 key          = 2;
+  uint64                 expected_rev = 3;
+  google.protobuf.Struct data         = 4;
+}
+message UpdateIfRevResponse {
+  // swapped is true when expected_rev matched and the update applied; false —
+  // never an error — when the revision was stale or no live record carries key.
+  bool   swapped = 1;
+  // The resulting record when swapped is true; unset otherwise.
+  Record record  = 2;
+}
 
 // ---------------------------------------------------------------------------
 // Secondary indexes

@@ -62,6 +62,7 @@ Key properties:
 - **Secondary indexes** — per-field indexes for O(1) equality lookups and O(matches) range queries (`gt`/`lt`/…); automatically maintained and persisted
 - **Streaming queries** — `Find` pushes `limit`/`offset`/`order_by` into the engine and streams results as it reads; a limited query is bounded by the page size, not the collection size, and honours client cancellation
 - **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
+- **Keyed CRUD, upsert & CAS over the wire** — caller-supplied string keys, insert-or-replace `upsert`, natural-key find/update/delete, and revision-checked compare-and-swap (`update-if-rev`) are now exposed over gRPC/REST (not just the embedded engine); every record carries a `key` and a monotonic `rev`, with duplicate/missing keys mapped to `AlreadyExists`/`NotFound`
 - **TTL / expiring records** — per-record deadlines (`--ttl` / `ttl_seconds` on Insert & Update), a per-collection default (`create-collection --default-ttl`, persisted), and a server-wide default (`--default-ttl`); expired records are hidden from reads immediately and reclaimed by compaction
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
 - **OpenAPI spec** — `docs/openapi/filedb.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)

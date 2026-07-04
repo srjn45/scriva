@@ -98,6 +98,35 @@ every limit, tracing, and the slow-query log are off by default.
   server-layer hook pattern as compaction — the engine never imports metrics
   (enforced by `make deps-check`).
 
+**Network/engine API parity (v0.7.0).** The wire API is catching up to the
+embedded engine: the richest engine operations — natural string keys, upsert, and
+optimistic-concurrency updates — are now reachable from any gRPC/REST client, not
+just an in-process Go program. Additive only: new field numbers and new RPCs, so
+pre-existing clients are unaffected.
+
+### Added
+
+- **Keyed CRUD, Upsert, CAS & Rev over the wire (N1).** The keyed operations the
+  embedded engine has had since v0.2.0 are now exposed over gRPC/REST, mapping
+  straight onto the engine methods:
+  - New RPCs **`Upsert`** (insert-or-replace by key), **`FindByKey`**,
+    **`UpdateByKey`**, **`DeleteByKey`**, and **`UpdateIfRev`** (compare-and-swap
+    on a record's revision). A **keyed insert** is expressed by setting the new
+    optional `key` field on the existing `Insert` request (`POST
+    /v1/{collection}/records` with a `key`, `.../records:upsert`,
+    `.../keys/{key}`, and `.../keys/{key}:cas` on REST) — empty `key` preserves
+    the unchanged server-assigned-id behaviour.
+  - Every record-bearing response now carries **`key`** and **`rev`**: `Record`
+    gained fields 5/6 and `InsertResponse`/`UpdateResponse` the same pair (all
+    additive field numbers).
+  - Typed engine errors map to stable gRPC codes: `engine.ErrDuplicateKey` →
+    `AlreadyExists`, `engine.ErrKeyNotFound` → `NotFound`, and setting the
+    reserved `_key` field via `data` → `InvalidArgument`. `UpdateIfRev` treats a
+    stale revision or missing key as a clean `swapped=false` no-op, not an error.
+  - New CLI commands: `upsert`, `find-by-key`, `update-by-key`, `delete-by-key`,
+    `update-if-rev`, plus an `insert --key` flag for keyed create. The 7-language
+    SDK parity sweep for these operations is a separate follow-on wave.
+
 ## [0.3.0] — 2026-07-03
 
 **Client parity release.** Per-record TTL is now exposed over the wire, and all

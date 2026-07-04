@@ -396,6 +396,72 @@ cat users_backup.ndjson | filedb-cli import users
 
 ---
 
+## Keyed records, upsert & optimistic concurrency
+
+Alongside server-assigned `uint64` ids, records can carry a **caller-supplied
+string key** (a natural key such as an email or SKU) and a monotonic **revision
+(`rev`)** that increments on every write. These unlock natural-key CRUD, upsert,
+and compare-and-swap (optimistic-concurrency) updates directly over the wire —
+the same operations the embedded engine has always had.
+
+- **Keyed insert** — `insert --key`: creates a record under a string key; a key
+  already held by a live record is rejected with `AlreadyExists`.
+- **`upsert`** — insert under a key, or replace the existing record if the key is
+  already present. Returns the resulting record with its (incremented on replace)
+  `rev`.
+- **`find-by-key` / `update-by-key` / `delete-by-key`** — natural-key CRUD; a
+  missing key returns `NotFound`.
+- **`update-if-rev`** — compare-and-swap: applies the update only if the record's
+  current `rev` matches the one you pass. A stale `rev` (or a missing key) is a
+  clean no-op — reported as *not swapped*, never an error — so a client can retry.
+
+Every record-bearing response (`insert`, `get`/`find`, `find-by-key`, `upsert`,
+`update-by-key`, `update-if-rev`) now includes `key` and `rev`.
+
+```bash
+# Keyed insert (duplicate key → AlreadyExists)
+filedb-cli insert users --key alice '{"name":"Alice","age":30}'
+
+# Upsert: insert-or-replace by key, returns the new rev
+filedb-cli upsert users alice '{"name":"Alice","age":31}'
+
+# Read / update / delete by key
+filedb-cli find-by-key users alice
+filedb-cli update-by-key users alice '{"name":"Alice","age":32}'
+filedb-cli delete-by-key users alice
+
+# Compare-and-swap: only applies if the record is still at rev 2
+filedb-cli update-if-rev users alice 2 '{"name":"Alice","age":33}'
+```
+
+Over REST:
+
+```bash
+# Keyed insert
+curl -X POST http://localhost:8080/v1/users/records \
+  -H "x-api-key: my-secret-key" -H "Content-Type: application/json" \
+  -d '{"data":{"name":"Alice"},"key":"alice"}'
+
+# Upsert (custom verb)
+curl -X POST "http://localhost:8080/v1/users/records:upsert" \
+  -H "x-api-key: my-secret-key" -H "Content-Type: application/json" \
+  -d '{"key":"alice","data":{"name":"Alice","age":31}}'
+
+# Find / update / delete by key
+curl http://localhost:8080/v1/users/keys/alice -H "x-api-key: my-secret-key"
+curl -X PUT http://localhost:8080/v1/users/keys/alice \
+  -H "x-api-key: my-secret-key" -H "Content-Type: application/json" \
+  -d '{"data":{"name":"Alice","age":32}}'
+curl -X DELETE http://localhost:8080/v1/users/keys/alice -H "x-api-key: my-secret-key"
+
+# Compare-and-swap
+curl -X POST "http://localhost:8080/v1/users/keys/alice:cas" \
+  -H "x-api-key: my-secret-key" -H "Content-Type: application/json" \
+  -d '{"expected_rev":2,"data":{"name":"Alice","age":33}}'
+```
+
+---
+
 ## Use via REST API
 
 ```bash
