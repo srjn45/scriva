@@ -36,11 +36,11 @@ async function main(): Promise<void> {
   const record = await db.findById('test_js', id1);
   console.log('Record:', record);
 
-  // --- Find with filter ---
-  console.log('\n=== Find (filter: role=admin) ===');
+  // --- Find with filter + multi-field sort (N3) ---
+  console.log('\n=== Find (filter: role=admin, order by name) ===');
   const admins = await db.findAll('test_js', {
     filter: { field: 'role', op: 'eq', value: 'admin' },
-    orderBy: 'name',
+    orderBy: [{ field: 'name' }],
   });
   console.log('Admins:', admins.map(r => `${r.id}: ${JSON.stringify(r.data)}`));
 
@@ -60,6 +60,65 @@ async function main(): Promise<void> {
   console.log('\n=== Find (streaming, limit 2) ===');
   for await (const r of db.find('test_js', { limit: 2 })) {
     console.log(' -', r.id, r.data);
+  }
+
+  // --- Projection (N2): only return selected fields ---
+  console.log('\n=== Find (projection: name only) ===');
+  const projected = await db.findAll('test_js', {
+    fields: ['name'],
+    orderBy: [{ field: 'name' }],
+  });
+  console.log('Projected (id/key/rev always included):', projected.map(r => r.data));
+
+  // --- Keyset pagination (N3): page through by cursor ---
+  console.log('\n=== Find (keyset pagination, page size 2) ===');
+  let token = '';
+  let page = 0;
+  do {
+    const p = await db.findPage('test_js', {
+      orderBy: [{ field: 'age' }],
+      limit: 2,
+      pageToken: token,
+    });
+    console.log(` page ${++page}:`, p.records.map(r => `${r.data.name}(${r.data.age})`));
+    token = p.pageToken;
+  } while (token);
+
+  // --- Keyed CRUD / Upsert / CAS (N1) ---
+  console.log('\n=== Keyed CRUD (N1) ===');
+  const up1 = await db.upsert('test_js', 'user:alice', { name: 'Alice', tier: 'free' });
+  console.log('Upsert insert:', up1.key, 'rev', up1.rev, up1.data);
+  const up2 = await db.upsert('test_js', 'user:alice', { name: 'Alice', tier: 'pro' });
+  console.log('Upsert replace:', up2.key, 'rev', up2.rev, up2.data);
+
+  const byKey = await db.findByKey('test_js', 'user:alice');
+  console.log('FindByKey:', byKey?.data, 'rev', byKey?.rev);
+  console.log('FindByKey (missing → null):', await db.findByKey('test_js', 'user:nobody'));
+
+  const w = await db.updateByKey('test_js', 'user:alice', { name: 'Alice', tier: 'enterprise' });
+  console.log('UpdateByKey → rev', w.rev);
+
+  // Compare-and-swap: succeeds with the current rev, no-ops with a stale one.
+  const cur = await db.findByKey('test_js', 'user:alice');
+  const ok = await db.updateIfRev('test_js', 'user:alice', cur!.rev, { name: 'Alice', tier: 'vip' });
+  console.log('CAS with current rev → swapped:', ok.swapped, 'newRev', ok.record?.rev);
+  const stale = await db.updateIfRev('test_js', 'user:alice', cur!.rev, { name: 'Alice', tier: 'x' });
+  console.log('CAS with stale rev → swapped:', stale.swapped);
+
+  console.log('DeleteByKey:', await db.deleteByKey('test_js', 'user:alice'));
+  console.log('DeleteByKey (missing → false):', await db.deleteByKey('test_js', 'user:nobody'));
+
+  // --- Aggregations (N4) ---
+  console.log('\n=== Aggregations (N4) ===');
+  console.log('Total count:', await db.count('test_js'));
+  console.log('Count (role=user):', await db.count('test_js', { field: 'role', op: 'eq', value: 'user' }));
+  const byRole = await db.groupBy('test_js', 'role', {
+    field: 'age',
+    aggregations: ['sum', 'avg', 'min', 'max'],
+  });
+  for (const g of byRole) {
+    console.log(` group ${JSON.stringify(g.group)}: count=${g.count}` +
+      (g.numeric ? ` sum=${g.sum} avg=${g.avg} min=${g.min} max=${g.max}` : ''));
   }
 
   // --- Update ---

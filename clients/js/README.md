@@ -44,11 +44,11 @@ await db.createCollection('users');
 const id = await db.insert('users', { name: 'Alice', age: 30, role: 'admin' });
 
 const record = await db.findById('users', id);
-console.log(record); // { id: '1', data: { name: 'Alice', age: 30, role: 'admin' }, ... }
+console.log(record); // { id: '1', key: '', rev: '1', data: { name: 'Alice', age: 30, role: 'admin' }, ... }
 
 const admins = await db.findAll('users', {
   filter: { field: 'role', op: 'eq', value: 'admin' },
-  orderBy: 'name',
+  orderBy: [{ field: 'name' }],
 });
 
 await db.update('users', id, { name: 'Alice', age: 31, role: 'superadmin' });
@@ -114,8 +114,12 @@ const ids: string[] = await db.insertMany('col', [
 // Find by ID
 const record: DBRecord = await db.findById('col', id);
 
+// Find by ID with a field projection (N2) — only these fields land in `data`;
+// id, key and rev are always included.
+const partial: DBRecord = await db.findById('col', id, { fields: ['name'] });
+
 // Streaming find — use `for await`
-for await (const record of db.find('col', { filter, limit, offset, orderBy, descending })) {
+for await (const record of db.find('col', { filter, limit, offset, orderBy })) {
   console.log(record);
 }
 
@@ -127,6 +131,38 @@ const updatedId: string = await db.update('col', id, { field: 'new value' });
 
 // Delete — returns true if record existed
 const deleted: boolean = await db.delete('col', id);
+```
+
+`FindOptions` accepts:
+
+| Option        | Type              | Notes |
+|---------------|-------------------|-------|
+| `filter`      | `FilterInput`     | See [Filter syntax](#filter-syntax). |
+| `limit`       | `number`          | Max results, `0` = no limit. |
+| `offset`      | `number`          | Skip N leading rows (prefer `pageToken` for large offsets). |
+| `orderBy`     | `OrderByInput[]`  | Multi-field sort (N3): `[{ field, desc? }, …]`, applied in order. |
+| `fields`      | `string[]`        | Field projection (N2): only these top-level fields are returned in `data`. |
+| `pageToken`   | `string`          | Keyset cursor (N3) — see [Pagination](#pagination). |
+| `orderByField`, `descending` | `string`, `boolean` | **Deprecated** single-field sort; honoured only when `orderBy` is empty. |
+
+#### Pagination (keyset cursor, N3)
+
+`findPage` returns one page plus an opaque cursor for the next. Pass an ordering
+and a limit, then feed the returned `pageToken` back on the next call — keep the
+ordering, filter and limit identical across pages. An empty `pageToken` means the
+last page was reached.
+
+```typescript
+let token = '';
+do {
+  const page = await db.findPage('col', {
+    orderBy: [{ field: 'age' }],
+    limit: 100,
+    pageToken: token,
+  });
+  for (const r of page.records) console.log(r.id);
+  token = page.pageToken;
+} while (token);
 ```
 
 Each write takes an optional trailing `ttlSeconds` argument. When greater than
@@ -146,9 +182,88 @@ await db.update('col', id, { field: 'v' }, 30);          // reset expiry to 30s
 ```typescript
 interface DBRecord {
   id: string;                       // uint64 returned as string
+  key: string;                      // caller-supplied string key ('' if none)
+  rev: string;                      // per-record revision, '1' on insert, bumped per write
   data: Record<string, unknown>;
   date_added?: string;
   date_modified?: string;
+}
+```
+
+---
+
+### Keyed CRUD, Upsert & compare-and-swap (N1)
+
+Records can carry a caller-supplied string **key** and expose a monotonic
+**rev**ision for optimistic concurrency.
+
+```typescript
+// Keyed insert — set a key on a plain insert. A key already held by a live
+// record is rejected with a gRPC ALREADY_EXISTS error.
+const id = await db.insert('col', { name: 'Alice' }, 0, 'user:alice');
+
+// Upsert — insert under a key, or atomically replace if it already exists.
+// Returns the resulting record (rev starts at '1', bumped on each replace).
+const rec: DBRecord = await db.upsert('col', 'user:alice', { name: 'Alice', tier: 'pro' });
+
+// Find by key — resolves to null when the key is absent (NOT_FOUND → null).
+const found: DBRecord | null = await db.findByKey('col', 'user:alice');
+const partial = await db.findByKey('col', 'user:alice', { fields: ['name'] });
+
+// Update by key — overwrites the record, preserving the key. Returns the write
+// acknowledgement with the new rev. Throws a gRPC NOT_FOUND if the key is absent.
+const w: WriteResult = await db.updateByKey('col', 'user:alice', { name: 'Alice', tier: 'vip' });
+console.log(w.rev);
+
+// Delete by key — true if a record was removed, false when absent (NOT_FOUND → false).
+const gone: boolean = await db.deleteByKey('col', 'user:alice');
+
+// Compare-and-swap — apply only if the record's current rev matches. A stale
+// rev (or a missing key) is a clean no-op: { swapped: false, record: null }.
+const cur = await db.findByKey('col', 'user:alice');
+const res: CasResult = await db.updateIfRev('col', 'user:alice', cur!.rev, { name: 'Alice', tier: 'vip' });
+if (!res.swapped) console.log('lost the race — retry');
+```
+
+---
+
+### Aggregations (N4)
+
+Compute `count` and numeric aggregations (`sum`/`avg`/`min`/`max`) in the engine,
+honouring the same filter as `find`, optionally grouped by a field.
+
+```typescript
+// Count matching records.
+const total: number = await db.count('col');
+const admins: number = await db.count('col', { field: 'role', op: 'eq', value: 'admin' });
+
+// Group-by with numeric aggregations. Returns one AggregateResult per group,
+// in ascending group order.
+const byRole: AggregateResult[] = await db.groupBy('col', 'role', {
+  field: 'age',
+  aggregations: ['sum', 'avg', 'min', 'max'],
+});
+for (const g of byRole) {
+  console.log(g.group, g.count, g.numeric ? { sum: g.sum, avg: g.avg, min: g.min, max: g.max } : {});
+}
+
+// Full form — filter + group + aggregations.
+const results = await db.aggregate('col', {
+  filter: { field: 'active', op: 'eq', value: 'true' },
+  groupBy: 'status',
+  field: 'total',
+  aggregations: ['sum'],
+});
+```
+
+`AggregateResult` shape:
+
+```typescript
+interface AggregateResult {
+  group: unknown;    // group-by value (type-preserved); null for the ungrouped result
+  count: string;     // records in the group (uint64 as string)
+  numeric: boolean;  // true when the numeric aggregates below are meaningful
+  sum?: number; avg?: number; min?: number; max?: number;
 }
 ```
 
@@ -182,7 +297,9 @@ const ok: boolean   = await db.rollbackTx(txId);
 ```typescript
 for await (const event of db.watch('col')) {
   console.log(event.op, event.record.id, event.record.data);
-  // event.op: 'INSERTED' | 'UPDATED' | 'DELETED'
+  // event.op: 'INSERTED' | 'UPDATED' | 'DELETED' | 'OVERFLOW'
+  // OVERFLOW means the server dropped events because this subscriber fell behind
+  // (no record is set) — resync by re-reading the collection.
 }
 ```
 
