@@ -104,6 +104,36 @@ embedding-specific contract.
     automatic leader election (consensus) remains out of scope. See
     [`docs/operations.md`](docs/operations.md) for the manual-failover runbook.
 
+### Fixed
+
+- **Compaction / shutdown crash consistency** (#68) — four stacked defects that
+  could make a collection reopen empty (or, in one window, silently lose sealed
+  data) even though the segments held every live record:
+  - **`Close()` now serializes with an in-flight compaction pass** (via
+    `compactMu`) instead of persisting the final index while the pass is
+    mid-swap; a pass that was still blocked on the lock when Close finished
+    aborts instead of mutating the layout afterwards.
+  - **Open self-heals a dangling index.** A checksum-valid `index.json` whose
+    entries reference segment files that no longer exist — or offsets past a
+    segment's end — is treated as stale and rebuilt from the segments (the
+    documented source of truth), along with the secondary indexes. Directories
+    already corrupted by earlier builds heal on first open.
+  - **The compaction swap is crash-atomic.** The pass now records a durable
+    swap manifest (`compact.manifest`) before touching any segment file,
+    renames temps over their final names first, deletes only old segments whose
+    names were not reused, and retires the manifest after the post-swap index
+    persist. A leftover manifest at open rolls the swap forward idempotently
+    and forces an index rebuild; the old remove-then-rename order could strand
+    the only copy of the sealed data in `.compact_*` temp files an open never
+    discovers. Swap manifests are excluded from snapshots for the same reason
+    `index.json` is.
+  - **Segment rotation no longer reuses a live segment's name.** The new
+    active segment is numbered one past the highest segment on disk instead of
+    by segment count; after a compaction renumbered the sealed set, the old
+    count-based name could collide with the just-sealed segment, and the next
+    pass would then delete that file out from under the active writer.
+  - On-disk format: unchanged (the manifest is transient); no migration needed.
+
 ## [0.7.0] — 2026-07-04
 
 This release rolls up the operability/observability and network-API-parity work
