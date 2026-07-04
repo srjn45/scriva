@@ -105,6 +105,76 @@ puts "Inserted #{ttl_id} with a 3600s TTL"
 db.update(COLL, ttl_id, { name: "Ephemeral", role: "temp", touched: true })
 puts "Updated the TTL record (deadline preserved)"
 
+# ── keyed CRUD, upsert & compare-and-swap (N1) ─────────────────────────────────
+KEYED = "test_ruby_keyed"
+db.drop_collection(KEYED) rescue nil
+db.create_collection(KEYED)
+
+# upsert inserts under a caller-supplied key, or replaces + bumps rev if it exists
+r = db.upsert(KEYED, "user:alice", { name: "Alice", age: 30 })
+puts "upsert (insert): key=#{r["key"]} rev=#{r["rev"]}"
+r = db.upsert(KEYED, "user:alice", { name: "Alice", age: 31 })
+puts "upsert (replace): rev=#{r["rev"]}"
+
+# keyed insert — a duplicate key raises AlreadyExistsError
+db.insert(KEYED, { name: "Bob" }, key: "user:bob")
+begin
+  db.insert(KEYED, { name: "Bob again" }, key: "user:bob")
+rescue FileDBv2::AlreadyExistsError => e
+  puts "keyed insert dup rejected: #{e.class}"
+end
+
+# fetch / update / delete by key; a missing key raises NotFoundError
+fetched = db.find_by_key(KEYED, "user:alice")
+puts "find_by_key(user:alice): #{fetched["data"].inspect} rev=#{fetched["rev"]}"
+upd = db.update_by_key(KEYED, "user:alice", { name: "Alice", age: 32 })
+puts "update_by_key: id=#{upd["id"]} rev=#{upd["rev"]}"
+begin
+  db.find_by_key(KEYED, "user:ghost")
+rescue FileDBv2::NotFoundError => e
+  puts "find_by_key(missing) raised: #{e.class}"
+end
+
+# compare-and-swap: the write applies only if rev matches (stale = clean no-op)
+current = db.find_by_key(KEYED, "user:alice")
+stale = db.update_if_rev(KEYED, "user:alice", 1, { name: "Nope", age: 0 })
+puts "update_if_rev(stale rev): swapped=#{stale["swapped"]}"
+ok = db.update_if_rev(KEYED, "user:alice", current["rev"], { name: "Alice", age: 33 })
+puts "update_if_rev(current rev): swapped=#{ok["swapped"]} rev=#{ok["record"]["rev"]}"
+puts "delete_by_key(user:bob): #{db.delete_by_key(KEYED, "user:bob")}"
+
+# ── field projection (N2) ──────────────────────────────────────────────────────
+slim = db.find_by_key(KEYED, "user:alice", fields: ["name"])
+puts "projected find_by_key: #{slim["data"].inspect}"   # only requested top-level fields
+
+# ── keyset pagination + multi-field order_by (N3) ──────────────────────────────
+PAGED = "test_ruby_paged"
+db.drop_collection(PAGED) rescue nil
+db.create_collection(PAGED)
+db.insert_many(PAGED, [
+  { name: "Carol", age: 25, dept: "eng"   },
+  { name: "Dave",  age: 35, dept: "eng"   },
+  { name: "Eve",   age: 28, dept: "sales" },
+  { name: "Frank", age: 45, dept: "sales" },
+])
+
+# multi-field sort: dept ascending, then age descending within each dept
+ordering = [{ field: "dept", desc: false }, ["age", true]]
+page, token = db.find_page(PAGED, order_by: ordering, limit: 2)
+puts "page 1 (#{page.size}): #{page.map { |r| r["data"]["name"] }.inspect} next_token?=#{!token.empty?}"
+page2, _ = db.find_page(PAGED, order_by: ordering, limit: 2, page_token: token)
+puts "page 2 (#{page2.size}): #{page2.map { |r| r["data"]["name"] }.inspect}"
+
+# ── aggregations: count / group_by / numeric (N4) ──────────────────────────────
+puts "count(all): #{db.count(PAGED)}"
+puts "count(dept=eng): #{db.count(PAGED, filter: { field: "dept", op: "eq", value: "eng" })}"
+db.group_by(PAGED, "dept", aggregations: ["sum", "avg", "min", "max"], metric: "age").each do |g|
+  puts "  group #{g["group"].inspect}: count=#{g["count"]} sum=#{g["sum"]} avg=#{g["avg"]} min=#{g["min"]} max=#{g["max"]}"
+end
+
+db.drop_collection(KEYED)
+db.drop_collection(PAGED)
+
 # ── snapshot (whole-database backup) ───────────────────────────────────────────
 require "tmpdir"
 backup = File.join(Dir.tmpdir, "filedb_ruby_snapshot.tar.gz")
