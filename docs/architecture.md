@@ -403,6 +403,38 @@ without materialising the collection:
   collection that has never taken a keyed write has no `_key` index and reports
   `false` for every key.
 
+### Aggregations (count / group-by / numeric)
+
+`Aggregate` (in `engine/aggregate.go`) computes a `count` and the numeric
+aggregations `sum`/`avg`/`min`/`max` over the records matching a filter, optionally
+grouped by a field, and **streams one group at a time** — the collection is never
+materialised on either side of the wire.
+
+- **Same scan, same index use.** Records are visited through the exact
+  `forEachMatch` path `Count`/`Scan` use, so an aggregation over a filter a
+  secondary index can serve (an `eq` or a range on an indexed field) walks only the
+  indexed candidate set; anything else streams live segments, skipping stale
+  versions via the primary index. The filter is therefore honoured identically to
+  `Find` — non-matching records simply never reach an accumulator.
+- **Bounded by groups, not rows.** Each matching record is folded into its group's
+  running accumulator (`count`, running `sum`, `min`/`max`, and a numeric-value
+  count) and then discarded; only the per-group accumulators are retained, so peak
+  memory scales with the number of **distinct group values**, not the collection
+  size. Groups are emitted in ascending key order using the same type-aware
+  `query.Compare` the sort and filter use, so the stream is deterministic.
+- **Numeric rules match the filter.** A field value contributes to
+  `sum`/`avg`/`min`/`max` only when it is numeric under `query.AsNumber` — the same
+  numeric-vs-string rule the `gt`/`lt` operators apply — and `avg` divides `sum` by
+  that numeric count (SQL `AVG`: absent/non-numeric values are ignored, not zero).
+  A record whose field is missing or non-numeric still counts toward `count`.
+- **Whole-set count is free.** An ungrouped count with no numeric field short-
+  circuits to `Count`, so it is answered straight from the primary/secondary index
+  without reading a segment.
+- **Embeddable.** `Aggregate` takes an `AggregateSpec` and emits plain
+  `GroupResult` structs; the server maps those onto the streamed `AggregateResponse`
+  messages (the group key becomes a type-preserving `google.protobuf.Value`). The
+  engine imports no grpc/proto, keeping `make deps-check` green.
+
 ### TTL / expiring records
 
 A record can carry an expiry **deadline**, after which it is invisible to reads

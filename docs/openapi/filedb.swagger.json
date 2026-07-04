@@ -98,6 +98,54 @@
         ]
       }
     },
+    "/v1/{collection}/aggregate": {
+      "post": {
+        "summary": "Aggregate computes count and numeric aggregations (sum/avg/min/max) over the\nlive records matching the same Filter as Find, optionally grouped by a field.\nIt server-streams one message per group; a plain (ungrouped) aggregation\nstreams a single message. Aggregation runs entirely in the engine — the\ncollection is never materialised on the client.",
+        "operationId": "FileDB_Aggregate",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/v1AggregateResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of v1AggregateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/FileDBAggregateBody"
+            }
+          }
+        ],
+        "tags": [
+          "FileDB"
+        ]
+      }
+    },
     "/v1/{collection}/compact": {
       "post": {
         "summary": "Compact runs a forced, synchronous compaction pass on a collection and\nreturns only after it completes.",
@@ -778,6 +826,30 @@
     }
   },
   "definitions": {
+    "FileDBAggregateBody": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "$ref": "#/definitions/v1Filter",
+          "description": "The same composable filter as Find. Aggregation honours it: only matching\nlive records contribute. Empty (nil) aggregates the whole collection."
+        },
+        "groupBy": {
+          "type": "string",
+          "description": "Optional group-by field. When set, one response is streamed per distinct value\nof this field; records are bucketed by that value. Empty (the default)\naggregates the whole filtered set into a single group whose group_value is\nnull."
+        },
+        "field": {
+          "type": "string",
+          "description": "Numeric field for SUM/AVG/MIN/MAX. Required when any of those aggregations is\nrequested; ignored for a pure count. Only records whose `field` is numeric\ncontribute to the numeric aggregates (AVG divides by that numeric count)."
+        },
+        "aggregations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1AggregateOp"
+          },
+          "description": "Which aggregations to compute. COUNT is always returned even if omitted; an\nempty list yields count-only. SUM/AVG/MIN/MAX require `field`."
+        }
+      }
+    },
     "FileDBCompactBody": {
       "type": "object"
     },
@@ -953,6 +1025,54 @@
           }
         }
       }
+    },
+    "v1AggregateOp": {
+      "type": "string",
+      "enum": [
+        "AGGREGATE_OP_UNSPECIFIED",
+        "AGG_COUNT",
+        "AGG_SUM",
+        "AGG_AVG",
+        "AGG_MIN",
+        "AGG_MAX"
+      ],
+      "default": "AGGREGATE_OP_UNSPECIFIED",
+      "description": "AggregateOp names a numeric aggregation to compute per group over the request's\nnumeric `field`. COUNT (the per-group record count) is always returned and need\nnot be listed. Any of SUM/AVG/MIN/MAX requires `field` to be set.\n\n - AGG_COUNT: per-group record count (always returned)\n - AGG_SUM: sum of numeric field values\n - AGG_AVG: mean of numeric field values\n - AGG_MIN: smallest numeric field value\n - AGG_MAX: largest numeric field value"
+    },
+    "v1AggregateResponse": {
+      "type": "object",
+      "properties": {
+        "groupValue": {
+          "description": "The group_by field's value for this group, type-preserved (number, string,\nbool). Null for the whole-set group and for records missing the group field."
+        },
+        "count": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Records in this group (post-filter). Always populated."
+        },
+        "sum": {
+          "type": "number",
+          "format": "double",
+          "description": "Numeric aggregates over `field` across this group's records that carried a\nnumeric value. Meaningful only when `numeric` is true."
+        },
+        "avg": {
+          "type": "number",
+          "format": "double"
+        },
+        "min": {
+          "type": "number",
+          "format": "double"
+        },
+        "max": {
+          "type": "number",
+          "format": "double"
+        },
+        "numeric": {
+          "type": "boolean",
+          "description": "numeric is true when at least one record in the group carried a numeric\n`field`; when false the sum/avg/min/max above are zero and meaningless (e.g.\na count-only aggregation, or a group where the field was absent/non-numeric)."
+        }
+      },
+      "description": "AggregateResponse is one group's result. For a grouped request there is one per\ndistinct group_by value, streamed in ascending group order; for an ungrouped\nrequest there is exactly one, carrying a null group_value."
     },
     "v1AndFilter": {
       "type": "object",

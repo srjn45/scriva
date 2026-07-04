@@ -358,7 +358,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] N1 — keyed CRUD, Upsert, CAS & Rev over the wire
 - [x] N2 — field projection on Find/FindById
 - [x] N3 — keyset (cursor) pagination + multi-field order_by
-- [ ] N4 — aggregations (count / group-by / numeric)
+- [x] N4 — aggregations (count / group-by / numeric)
 
 **v0.8.0 — Replication & HA**
 - [ ] R1 — leader→follower segment/log replication

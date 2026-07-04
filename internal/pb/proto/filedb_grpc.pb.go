@@ -40,6 +40,7 @@ const (
 	FileDB_CommitTx_FullMethodName         = "/filedb.v1.FileDB/CommitTx"
 	FileDB_RollbackTx_FullMethodName       = "/filedb.v1.FileDB/RollbackTx"
 	FileDB_Watch_FullMethodName            = "/filedb.v1.FileDB/Watch"
+	FileDB_Aggregate_FullMethodName        = "/filedb.v1.FileDB/Aggregate"
 	FileDB_CollectionStats_FullMethodName  = "/filedb.v1.FileDB/CollectionStats"
 	FileDB_Compact_FullMethodName          = "/filedb.v1.FileDB/Compact"
 	FileDB_Snapshot_FullMethodName         = "/filedb.v1.FileDB/Snapshot"
@@ -84,6 +85,12 @@ type FileDBClient interface {
 	CommitTx(ctx context.Context, in *CommitTxRequest, opts ...grpc.CallOption) (*CommitTxResponse, error)
 	RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error)
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error)
+	// Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+	// live records matching the same Filter as Find, optionally grouped by a field.
+	// It server-streams one message per group; a plain (ungrouped) aggregation
+	// streams a single message. Aggregation runs entirely in the engine — the
+	// collection is never materialised on the client.
+	Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AggregateResponse], error)
 	CollectionStats(ctx context.Context, in *CollectionStatsRequest, opts ...grpc.CallOption) (*CollectionStatsResponse, error)
 	// Compact runs a forced, synchronous compaction pass on a collection and
 	// returns only after it completes.
@@ -330,6 +337,25 @@ func (c *fileDBClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileDB_WatchClient = grpc.ServerStreamingClient[WatchEvent]
 
+func (c *fileDBClient) Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AggregateResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[2], FileDB_Aggregate_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AggregateRequest, AggregateResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_AggregateClient = grpc.ServerStreamingClient[AggregateResponse]
+
 func (c *fileDBClient) CollectionStats(ctx context.Context, in *CollectionStatsRequest, opts ...grpc.CallOption) (*CollectionStatsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CollectionStatsResponse)
@@ -352,7 +378,7 @@ func (c *fileDBClient) Compact(ctx context.Context, in *CompactRequest, opts ...
 
 func (c *fileDBClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[2], FileDB_Snapshot_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[3], FileDB_Snapshot_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +434,12 @@ type FileDBServer interface {
 	CommitTx(context.Context, *CommitTxRequest) (*CommitTxResponse, error)
 	RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error)
 	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error
+	// Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+	// live records matching the same Filter as Find, optionally grouped by a field.
+	// It server-streams one message per group; a plain (ungrouped) aggregation
+	// streams a single message. Aggregation runs entirely in the engine — the
+	// collection is never materialised on the client.
+	Aggregate(*AggregateRequest, grpc.ServerStreamingServer[AggregateResponse]) error
 	CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error)
 	// Compact runs a forced, synchronous compaction pass on a collection and
 	// returns only after it completes.
@@ -488,6 +520,9 @@ func (UnimplementedFileDBServer) RollbackTx(context.Context, *RollbackTxRequest)
 }
 func (UnimplementedFileDBServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error {
 	return status.Error(codes.Unimplemented, "method Watch not implemented")
+}
+func (UnimplementedFileDBServer) Aggregate(*AggregateRequest, grpc.ServerStreamingServer[AggregateResponse]) error {
+	return status.Error(codes.Unimplemented, "method Aggregate not implemented")
 }
 func (UnimplementedFileDBServer) CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CollectionStats not implemented")
@@ -883,6 +918,17 @@ func _FileDB_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileDB_WatchServer = grpc.ServerStreamingServer[WatchEvent]
 
+func _FileDB_Aggregate_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AggregateRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(FileDBServer).Aggregate(m, &grpc.GenericServerStream[AggregateRequest, AggregateResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_AggregateServer = grpc.ServerStreamingServer[AggregateResponse]
+
 func _FileDB_CollectionStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CollectionStatsRequest)
 	if err := dec(in); err != nil {
@@ -1031,6 +1077,11 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Watch",
 			Handler:       _FileDB_Watch_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Aggregate",
+			Handler:       _FileDB_Aggregate_Handler,
 			ServerStreams: true,
 		},
 		{

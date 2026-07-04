@@ -520,6 +520,122 @@ func updateIfRevCmd(flags *cliFlags) *cobra.Command {
 	}
 }
 
+// ---- Aggregations ---------------------------------------------------------
+
+// aggBySpec maps the comma-separated --aggs names onto proto AggregateOps.
+var aggBySpec = map[string]pb.AggregateOp{
+	"count": pb.AggregateOp_AGG_COUNT,
+	"sum":   pb.AggregateOp_AGG_SUM,
+	"avg":   pb.AggregateOp_AGG_AVG,
+	"min":   pb.AggregateOp_AGG_MIN,
+	"max":   pb.AggregateOp_AGG_MAX,
+}
+
+func aggregateCmd(flags *cliFlags) *cobra.Command {
+	var (
+		groupBy string
+		field   string
+		aggs    []string
+	)
+	cmd := &cobra.Command{
+		Use:   "aggregate <collection> [filter-json]",
+		Short: "Count / group-by / numeric aggregation over a collection",
+		Long: "Aggregate live records: a plain count, or per-group count plus numeric\n" +
+			"sum/avg/min/max. Pass --group-by to bucket by a field, --field to name the\n" +
+			"numeric field, and --aggs count,sum,avg,min,max to choose the aggregations\n" +
+			"(default: count). An optional filter-json restricts which records contribute.",
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ops, err := parseAggs(aggs)
+			if err != nil {
+				return err
+			}
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			req := &pb.AggregateRequest{
+				Collection:   args[0],
+				GroupBy:      groupBy,
+				Field:        field,
+				Aggregations: ops,
+			}
+			if len(args) == 2 {
+				req.Filter, err = parseFilterArg(args[1])
+				if err != nil {
+					return fmt.Errorf("filter: %w", err)
+				}
+			}
+
+			stream, err := client.Aggregate(ctxWithAuth(flags), req)
+			if err != nil {
+				return err
+			}
+			for {
+				resp, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					return err
+				}
+				printAggregate(cmd, resp, groupBy, aggs)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&groupBy, "group-by", "", "Field to group by (empty = single whole-set group)")
+	cmd.Flags().StringVar(&field, "field", "", "Numeric field for sum/avg/min/max")
+	cmd.Flags().StringSliceVar(&aggs, "aggs", nil, "Comma-separated aggregations: count,sum,avg,min,max (default count)")
+	return cmd
+}
+
+// parseAggs turns the --aggs names into proto AggregateOps. An empty list yields
+// count-only; an unknown name is an error.
+func parseAggs(names []string) ([]pb.AggregateOp, error) {
+	out := make([]pb.AggregateOp, 0, len(names))
+	for _, n := range names {
+		op, ok := aggBySpec[strings.ToLower(strings.TrimSpace(n))]
+		if !ok {
+			return nil, fmt.Errorf("unknown aggregation %q (want count, sum, avg, min or max)", n)
+		}
+		out = append(out, op)
+	}
+	return out, nil
+}
+
+// printAggregate renders one streamed group. The group label is shown only for a
+// grouped request; numeric aggregates are shown only for the ones requested and
+// only when the group had a numeric value.
+func printAggregate(cmd *cobra.Command, resp *pb.AggregateResponse, groupBy string, aggs []string) {
+	var b strings.Builder
+	if groupBy != "" {
+		fmt.Fprintf(&b, "%s=%v ", groupBy, resp.GroupValue.AsInterface())
+	}
+	fmt.Fprintf(&b, "count:%d", resp.Count)
+	want := make(map[string]bool, len(aggs))
+	for _, a := range aggs {
+		want[strings.ToLower(strings.TrimSpace(a))] = true
+	}
+	if resp.Numeric {
+		if want["sum"] {
+			fmt.Fprintf(&b, " sum:%g", resp.Sum)
+		}
+		if want["avg"] {
+			fmt.Fprintf(&b, " avg:%g", resp.Avg)
+		}
+		if want["min"] {
+			fmt.Fprintf(&b, " min:%g", resp.Min)
+		}
+		if want["max"] {
+			fmt.Fprintf(&b, " max:%g", resp.Max)
+		}
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), b.String())
+}
+
 // ---- Stats ----------------------------------------------------------------
 
 func statsCmd(flags *cliFlags) *cobra.Command {

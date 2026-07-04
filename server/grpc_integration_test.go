@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -709,6 +710,191 @@ func TestIntegration_Find_CancelStops(t *testing.T) {
 }
 
 // ---- CollectionStats --------------------------------------------------------
+
+// ---- Aggregations (N4) ------------------------------------------------------
+
+// collectAggregate drains an Aggregate stream into a slice of responses.
+func collectAggregate(t *testing.T, stream pb.FileDB_AggregateClient) []*pb.AggregateResponse {
+	t.Helper()
+	var out []*pb.AggregateResponse
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Aggregate recv: %v", err)
+		}
+		out = append(out, resp)
+	}
+	return out
+}
+
+// TestIntegration_Aggregate_CountMatchesFind checks that an ungrouped count equals
+// the number of records the equivalent Find returns, both unfiltered and filtered.
+func TestIntegration_Aggregate_CountMatchesFind(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "orders"})
+
+	statuses := []string{"open", "closed", "open", "open", "closed"}
+	for _, s := range statuses {
+		d, _ := structpb.NewStruct(map[string]any{"status": s})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "orders", Data: d})
+	}
+
+	// Unfiltered count == len(Find(all)).
+	fstream, _ := c.Find(ctx(), &pb.FindRequest{Collection: "orders"})
+	findAll := collectFind(t, fstream)
+	astream, err := c.Aggregate(ctx(), &pb.AggregateRequest{Collection: "orders"})
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	groups := collectAggregate(t, astream)
+	if len(groups) != 1 {
+		t.Fatalf("ungrouped aggregate emitted %d groups, want 1", len(groups))
+	}
+	if groups[0].Count != uint64(len(findAll)) {
+		t.Errorf("count = %d, want len(Find) = %d", groups[0].Count, len(findAll))
+	}
+
+	// Filtered count == len(Find(filter)).
+	filter := &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
+		Field: "status", Op: pb.FilterOp_EQ, Value: `"open"`,
+	}}}
+	ff, _ := c.Find(ctx(), &pb.FindRequest{Collection: "orders", Filter: filter})
+	findOpen := collectFind(t, ff)
+	af, _ := c.Aggregate(ctx(), &pb.AggregateRequest{Collection: "orders", Filter: filter})
+	fgroups := collectAggregate(t, af)
+	if fgroups[0].Count != uint64(len(findOpen)) {
+		t.Errorf("filtered count = %d, want len(Find) = %d", fgroups[0].Count, len(findOpen))
+	}
+}
+
+// TestIntegration_Aggregate_GroupByNumeric drives group-by with numeric
+// aggregations end-to-end and checks each group's count/sum/avg/min/max against a
+// manual reduction over the same data.
+func TestIntegration_Aggregate_GroupByNumeric(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "sales"})
+
+	type row struct {
+		region string
+		amount float64
+	}
+	rows := []row{
+		{"us", 10}, {"eu", 5}, {"us", 30}, {"eu", 25}, {"us", 20}, {"apac", 7},
+	}
+	type acc struct {
+		count         uint64
+		sum, min, max float64
+	}
+	want := map[string]*acc{}
+	for _, r := range rows {
+		d, _ := structpb.NewStruct(map[string]any{"region": r.region, "amount": r.amount})
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "sales", Data: d})
+		a := want[r.region]
+		if a == nil {
+			a = &acc{min: math.Inf(1), max: math.Inf(-1)}
+			want[r.region] = a
+		}
+		a.count++
+		a.sum += r.amount
+		a.min, a.max = math.Min(a.min, r.amount), math.Max(a.max, r.amount)
+	}
+
+	stream, err := c.Aggregate(ctx(), &pb.AggregateRequest{
+		Collection:   "sales",
+		GroupBy:      "region",
+		Field:        "amount",
+		Aggregations: []pb.AggregateOp{pb.AggregateOp_AGG_SUM, pb.AggregateOp_AGG_AVG, pb.AggregateOp_AGG_MIN, pb.AggregateOp_AGG_MAX},
+	})
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	groups := collectAggregate(t, stream)
+	if len(groups) != len(want) {
+		t.Fatalf("emitted %d groups, want %d", len(groups), len(want))
+	}
+	for _, g := range groups {
+		region := g.GroupValue.GetStringValue()
+		a, ok := want[region]
+		if !ok {
+			t.Fatalf("unexpected group %q", region)
+		}
+		wantAvg := a.sum / float64(a.count)
+		if g.Count != a.count || g.Sum != a.sum || g.Min != a.min || g.Max != a.max || g.Avg != wantAvg {
+			t.Errorf("group %q: got count=%d sum=%g avg=%g min=%g max=%g; want count=%d sum=%g avg=%g min=%g max=%g",
+				region, g.Count, g.Sum, g.Avg, g.Min, g.Max, a.count, a.sum, wantAvg, a.min, a.max)
+		}
+		if !g.Numeric {
+			t.Errorf("group %q: expected numeric=true", region)
+		}
+	}
+}
+
+// TestIntegration_Aggregate_FilterHonored verifies aggregating a filtered subset
+// excludes non-matching records from the grouped totals.
+func TestIntegration_Aggregate_FilterHonored(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "txns"})
+
+	recs := []map[string]any{
+		{"region": "us", "status": "open", "amount": float64(10)},
+		{"region": "us", "status": "closed", "amount": float64(1000)},
+		{"region": "eu", "status": "open", "amount": float64(20)},
+		{"region": "eu", "status": "closed", "amount": float64(9000)},
+	}
+	for _, r := range recs {
+		d, _ := structpb.NewStruct(r)
+		c.Insert(ctx(), &pb.InsertRequest{Collection: "txns", Data: d})
+	}
+
+	filter := &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
+		Field: "status", Op: pb.FilterOp_EQ, Value: `"open"`,
+	}}}
+	stream, err := c.Aggregate(ctx(), &pb.AggregateRequest{
+		Collection:   "txns",
+		Filter:       filter,
+		GroupBy:      "region",
+		Field:        "amount",
+		Aggregations: []pb.AggregateOp{pb.AggregateOp_AGG_SUM},
+	})
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	groups := collectAggregate(t, stream)
+	byRegion := map[string]*pb.AggregateResponse{}
+	for _, g := range groups {
+		byRegion[g.GroupValue.GetStringValue()] = g
+	}
+	if g := byRegion["us"]; g == nil || g.Count != 1 || g.Sum != 10 {
+		t.Errorf("us group = %+v, want count 1 sum 10 (closed excluded)", g)
+	}
+	if g := byRegion["eu"]; g == nil || g.Count != 1 || g.Sum != 20 {
+		t.Errorf("eu group = %+v, want count 1 sum 20 (closed excluded)", g)
+	}
+}
+
+// TestIntegration_Aggregate_FieldRequired checks that requesting a numeric
+// aggregation without naming a field is rejected with InvalidArgument.
+func TestIntegration_Aggregate_FieldRequired(t *testing.T) {
+	c := newTestServer(t)
+	c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "novel"})
+	d, _ := structpb.NewStruct(map[string]any{"x": float64(1)})
+	c.Insert(ctx(), &pb.InsertRequest{Collection: "novel", Data: d})
+
+	stream, err := c.Aggregate(ctx(), &pb.AggregateRequest{
+		Collection:   "novel",
+		Aggregations: []pb.AggregateOp{pb.AggregateOp_AGG_SUM},
+	})
+	if err != nil {
+		t.Fatalf("Aggregate call: %v", err)
+	}
+	_, err = stream.Recv()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("sum without field: got %v, want InvalidArgument", err)
+	}
+}
 
 func TestIntegration_CollectionStats(t *testing.T) {
 	c := newTestServer(t)
