@@ -16,6 +16,8 @@ string apiKey = Environment.GetEnvironmentVariable("FILEDB_API_KEY") ?? "dev-key
 await using var db = new FileDB(host, port, apiKey);
 
 await RunBasicExampleAsync(db);
+await RunKeyedExampleAsync(db);
+await RunAggregateExampleAsync(db);
 await RunWatchExampleAsync(db);
 
 // ---------------------------------------------------------------------------
@@ -55,11 +57,15 @@ static async Task RunBasicExampleAsync(FileDB db)
     var record = await db.FindByIdAsync(col, id1);
     Console.WriteLine($"FindById({id1}): {FormatRecord(record)}");
 
+    // ---- FindById with field projection (N2) ----
+    var projected = await db.FindByIdAsync(col, id1, fields: new[] { "name" });
+    Console.WriteLine($"FindById({id1}) fields=[name]: {FormatRecord(projected)}");
+
     // ---- Find (streaming) with field filter ----
     Console.WriteLine("\n=== Find (role = user) ===");
     await foreach (var r in db.FindAsync(col,
-        filter:    new() { ["field"] = "role", ["op"] = "eq", ["value"] = "user" },
-        orderBy:   "name"))
+        filter:  new() { ["field"] = "role", ["op"] = "eq", ["value"] = "user" },
+        orderBy: new[] { Order.Ascending("name") }))
     {
         Console.WriteLine($"  {FormatRecord(r)}");
     }
@@ -76,6 +82,19 @@ static async Task RunBasicExampleAsync(FileDB db)
             },
         });
     foreach (var r in filtered) Console.WriteLine($"  {FormatRecord(r)}");
+
+    // ---- Multi-field ordering + keyset pagination (N3) ----
+    Console.WriteLine("\n=== Keyset pagination (order by role, age; 2 per page) ===");
+    var order = new[] { Order.Ascending("role"), Order.Descending("age") };
+    string token = "";
+    int pageNo = 1;
+    do
+    {
+        Page page = await db.FindPageAsync(col, limit: 2, orderBy: order, pageToken: token);
+        Console.WriteLine($"  page {pageNo++}:");
+        foreach (var r in page.Records) Console.WriteLine($"    {FormatRecord(r)}");
+        token = page.NextPageToken;
+    } while (!string.IsNullOrEmpty(token));
 
     // ---- Update ----
     Console.WriteLine("\n=== Update ===");
@@ -133,6 +152,107 @@ static async Task RunBasicExampleAsync(FileDB db)
     Console.WriteLine($"Collections after drop: [{string.Join(", ", remaining)}]");
 }
 
+// Keyed CRUD, upsert & compare-and-swap (N1).
+static async Task RunKeyedExampleAsync(FileDB db)
+{
+    const string col = "keyed_csharp";
+    await db.CreateCollectionAsync(col);
+
+    Console.WriteLine("\n=== Keyed CRUD / Upsert / CAS (N1) ===");
+
+    // Keyed insert — the caller supplies the primary key.
+    ulong id = await db.InsertKeyedAsync(col, "user:alice",
+        new() { ["name"] = "Alice", ["age"] = 30 });
+    Console.WriteLine($"InsertKeyed(user:alice) -> id {id}");
+
+    // A duplicate keyed insert raises AlreadyExistsException.
+    try
+    {
+        await db.InsertKeyedAsync(col, "user:alice", new() { ["name"] = "Impostor" });
+    }
+    catch (AlreadyExistsException)
+    {
+        Console.WriteLine("Duplicate keyed insert correctly rejected (AlreadyExists)");
+    }
+
+    // FindByKey — with optional projection (N2).
+    var byKey = await db.FindByKeyAsync(col, "user:alice");
+    Console.WriteLine($"FindByKey(user:alice): {FormatRecord(byKey)} rev={byKey.Rev}");
+
+    // A missing key raises NotFoundException.
+    try
+    {
+        await db.FindByKeyAsync(col, "user:ghost");
+    }
+    catch (NotFoundException)
+    {
+        Console.WriteLine("FindByKey(user:ghost) correctly raised NotFound");
+    }
+
+    // Upsert — replaces the existing record's data, bumping rev.
+    var upserted = await db.UpsertAsync(col, "user:alice",
+        new() { ["name"] = "Alice", ["age"] = 31 });
+    Console.WriteLine($"Upsert(user:alice) -> rev {upserted.Rev}");
+
+    // Compare-and-swap: succeeds only when the expected rev matches.
+    var stale = await db.UpdateIfRevAsync(col, "user:alice", expectedRev: 1,
+        new() { ["name"] = "Alice", ["age"] = 99 });
+    Console.WriteLine($"UpdateIfRev(expected=1, stale): swapped={stale.Swapped}");
+
+    var fresh = await db.UpdateIfRevAsync(col, "user:alice", expectedRev: upserted.Rev,
+        new() { ["name"] = "Alice", ["age"] = 32 });
+    Console.WriteLine($"UpdateIfRev(expected={upserted.Rev}): swapped={fresh.Swapped}, rev={fresh.Record?.Rev}");
+
+    // UpdateByKey overwrites the keyed record, preserving the key.
+    var updated = await db.UpdateByKeyAsync(col, "user:alice",
+        new() { ["name"] = "Alice A.", ["age"] = 33 });
+    Console.WriteLine($"UpdateByKey(user:alice) -> id={updated.Id}, rev={updated.Rev}");
+
+    // DeleteByKey removes it.
+    bool del = await db.DeleteByKeyAsync(col, "user:alice");
+    Console.WriteLine($"DeleteByKey(user:alice): {del}");
+
+    await db.DropCollectionAsync(col);
+}
+
+// Aggregations: Count, Aggregate, GroupBy (N4).
+static async Task RunAggregateExampleAsync(FileDB db)
+{
+    const string col = "agg_csharp";
+    await db.CreateCollectionAsync(col);
+
+    Console.WriteLine("\n=== Aggregations (N4) ===");
+
+    await db.InsertManyAsync(col, new[]
+    {
+        new Dictionary<string, object?> { ["dept"] = "eng",   ["salary"] = 100 },
+        new Dictionary<string, object?> { ["dept"] = "eng",   ["salary"] = 120 },
+        new Dictionary<string, object?> { ["dept"] = "sales", ["salary"] = 80  },
+        new Dictionary<string, object?> { ["dept"] = "sales", ["salary"] = 90  },
+        new Dictionary<string, object?> { ["dept"] = "sales", ["salary"] = 70  },
+    });
+
+    // Count — whole collection and filtered.
+    ulong total = await db.CountAsync(col);
+    Console.WriteLine($"Count(all): {total}");
+    ulong sales = await db.CountAsync(col,
+        new() { ["field"] = "dept", ["op"] = "eq", ["value"] = "sales" });
+    Console.WriteLine($"Count(dept=sales): {sales}");
+
+    // Aggregate the whole set (single group).
+    var overall = await db.AggregateAsync(col,
+        aggregations: new[] { "sum", "avg", "min", "max" }, field: "salary");
+    Console.WriteLine($"Aggregate(salary): {overall[0]}");
+
+    // GroupBy dept with per-group numeric aggregates.
+    Console.WriteLine("GroupBy(dept):");
+    var groups = await db.GroupByAsync(col, field: "dept",
+        aggregations: new[] { "count", "sum", "avg" }, metric: "salary");
+    foreach (var g in groups) Console.WriteLine($"  {g}");
+
+    await db.DropCollectionAsync(col);
+}
+
 static async Task RunWatchExampleAsync(FileDB db)
 {
     const string col = "watch_csharp";
@@ -153,7 +273,10 @@ static async Task RunWatchExampleAsync(FileDB db)
                 Console.WriteLine($"  {evt}");
             }
         }
+        // Cancelling the token ends the stream; gRPC surfaces that either as an
+        // OperationCanceledException or as an RpcException with StatusCode.Cancelled.
         catch (OperationCanceledException) { /* normal exit */ }
+        catch (Grpc.Core.RpcException e) when (e.StatusCode == Grpc.Core.StatusCode.Cancelled) { /* normal exit */ }
     });
 
     // Give the stream time to connect, then insert a few records.
@@ -170,5 +293,5 @@ static async Task RunWatchExampleAsync(FileDB db)
     await db.DropCollectionAsync(col);
 }
 
-static string FormatRecord(Dictionary<string, object?> r) =>
-    "{" + string.Join(", ", r.Select(kvp => $"{kvp.Key}: {kvp.Value}")) + "}";
+static string FormatRecord(Record r) =>
+    "{" + string.Join(", ", r.Data.Select(kvp => $"{kvp.Key}: {kvp.Value}")) + "}";

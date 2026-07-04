@@ -4,6 +4,7 @@ syntax = "proto3";
 package google.api;
 
 import "google/protobuf/descriptor.proto";
+import "google/api/http.proto";
 
 option java_multiple_files = true;
 option java_package = "com.google.api";

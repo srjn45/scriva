@@ -60,14 +60,15 @@ ulong id = await db.InsertAsync("users", new()
     ["role"] = "admin",
 });
 
-// Fetch by id
-var record = await db.FindByIdAsync("users", id);
-Console.WriteLine(record["name"]); // Alice
+// Fetch by id — returns a Record (Id, Key, Rev, Data, timestamps)
+Record record = await db.FindByIdAsync("users", id);
+Console.WriteLine(record["name"]);       // Alice  (shortcut for record.Data["name"])
+Console.WriteLine(record.Rev);           // 1
 
 // Streaming find — use `await foreach`
 await foreach (var r in db.FindAsync("users",
     filter:  new() { ["field"] = "role", ["op"] = "eq", ["value"] = "admin" },
-    orderBy: "name"))
+    orderBy: new[] { Order.Ascending("name") }))
 {
     Console.WriteLine(r["name"]);
 }
@@ -137,22 +138,23 @@ IReadOnlyList<ulong> ids = await db.InsertManyAsync("col", new[]
     new Dictionary<string, object?> { ["name"] = "Bob" },
 });
 
-// Find by id
-Dictionary<string, object?> record = await db.FindByIdAsync("col", id);
+// Find by id — returns a Record
+Record record = await db.FindByIdAsync("col", id);
 
-// Streaming find (IAsyncEnumerable)
+// Streaming find (IAsyncEnumerable<Record>) — multi-field ordering, projection, paging
 await foreach (var r in db.FindAsync("col",
-    filter:     filter,     // Dictionary<string,object?>? — null = no filter
-    limit:      0,          // uint — 0 = no limit
-    offset:     0,          // uint
-    orderBy:    "name",     // string — "" = no ordering
-    descending: false))
+    filter:    filter,                          // Dictionary<string,object?>? — null = no filter
+    limit:     0,                               // uint — 0 = no limit
+    offset:    0,                               // uint
+    orderBy:   new[] { Order.Ascending("name") }, // IEnumerable<Order>? — null = no ordering
+    fields:    null,                            // IEnumerable<string>? — project data fields (N2)
+    pageToken: ""))                             // string — keyset cursor (N3)
 {
     Console.WriteLine(r["name"]);
 }
 
 // Collect all results
-List<Dictionary<string, object?>> all = await db.FindAllAsync("col", filter: filter);
+List<Record> all = await db.FindAllAsync("col", filter: filter);
 
 // Convenience — all records, no filter
 await foreach (var r in db.FindAsync("col")) { ... }
@@ -162,6 +164,18 @@ ulong updatedId = await db.UpdateAsync("col", id, new() { ["name"] = "new value"
 
 // Delete — returns true if record existed
 bool deleted = await db.DeleteAsync("col", id);
+```
+
+Every read returns a **`Record`**:
+
+```csharp
+ulong                       id     = record.Id;            // server-assigned numeric id
+string                      key    = record.Key;           // caller-supplied key ("" if keyless)
+ulong                       rev    = record.Rev;           // per-record revision (starts at 1)
+Dictionary<string, object?> data   = record.Data;          // decoded document
+DateTimeOffset?             added  = record.DateAdded;      // creation timestamp
+object?                     name   = record["name"];        // shortcut for record.Data["name"]
+bool                        keyed  = record.HasKey;
 ```
 
 #### Per-record TTL
@@ -188,6 +202,130 @@ await db.UpdateAsync("sessions", id, new() { ["token"] = "abc", ["seen"] = true 
 `ttlSeconds` of `0` (the default) inherits the collection's default TTL on
 insert; a value greater than 0 overrides it. Negative values are rejected by
 the server.
+
+---
+
+### Keyed CRUD, upsert & compare-and-swap (N1)
+
+Records may carry a caller-supplied string **key** in addition to their numeric
+id. Keyed operations map straight onto the engine's keyed API, giving natural
+primary keys, upsert, and optimistic-concurrency (revision) updates.
+
+```csharp
+// Keyed insert — insert under a caller-supplied key.
+// Raises AlreadyExistsException if the key is already held by a live record.
+ulong id = await db.InsertKeyedAsync("users", "user:alice", new() { ["name"] = "Alice" });
+// (equivalently: db.InsertAsync("users", data, key: "user:alice"))
+
+// Fetch by key — raises NotFoundException if no live record carries the key.
+Record r = await db.FindByKeyAsync("users", "user:alice");
+Console.WriteLine(r.Rev); // per-record revision
+
+// Upsert — insert under the key, or replace the existing record's data
+// (bumping its rev), atomically. Returns the resulting Record.
+Record up = await db.UpsertAsync("users", "user:alice", new() { ["name"] = "Alice", ["age"] = 31 });
+
+// Update by key — overwrite the keyed record, preserving the key.
+// Returns an UpdateResult (Id, Key, Rev, DateModified).
+UpdateResult res = await db.UpdateByKeyAsync("users", "user:alice", new() { ["name"] = "Alice A." });
+
+// Compare-and-swap — apply the write only if the current rev matches.
+// A stale rev (or missing key) is a clean no-op (Swapped == false), never an error.
+CasResult cas = await db.UpdateIfRevAsync("users", "user:alice", expectedRev: res.Rev,
+    new() { ["name"] = "Alice", ["age"] = 32 });
+if (cas.Swapped) Console.WriteLine(cas.Record!.Rev);
+
+// Delete by key — raises NotFoundException if no live record carries the key.
+bool ok = await db.DeleteByKeyAsync("users", "user:alice");
+```
+
+#### Typed exceptions
+
+Keyed operations map engine gRPC status codes onto typed exceptions
+(both derive from `FileDBException`):
+
+| Exception | gRPC code | Raised by |
+|---|---|---|
+| `NotFoundException` | `NOT_FOUND` | `FindByKeyAsync`, `UpdateByKeyAsync`, `DeleteByKeyAsync` |
+| `AlreadyExistsException` | `ALREADY_EXISTS` | `InsertKeyedAsync` / `InsertAsync` with a `key` |
+
+Any other status code propagates unchanged as the original `Grpc.Core.RpcException`.
+
+---
+
+### Field projection (N2)
+
+`FindByIdAsync`, `FindByKeyAsync`, and `FindAsync`/`FindAllAsync`/`FindPageAsync`
+take an optional `fields` list. When non-empty, only those top-level data fields
+are returned (`id`, `key`, and `rev` are always included); an unknown field is
+silently omitted.
+
+```csharp
+Record r = await db.FindByIdAsync("users", id, fields: new[] { "name", "email" });
+
+await foreach (var rec in db.FindAsync("users", fields: new[] { "name" })) { ... }
+```
+
+---
+
+### Ordering & keyset pagination (N3)
+
+Ordering is a list of `Order` sort keys, applied in order (multi-field sort). The
+record id is always the final tiebreaker, so the sort is total and pagination is
+stable.
+
+```csharp
+var order = new[] { Order.Ascending("role"), Order.Descending("age") };
+```
+
+`FindPageAsync` returns one keyset **`Page`** — the records plus a next-page
+cursor. Feed `page.NextPageToken` back as `pageToken` to walk the collection in
+O(page) time; an empty token means the last page was reached. Keep the same
+filter, ordering, and limit on every page.
+
+```csharp
+string token = "";
+do
+{
+    Page page = await db.FindPageAsync("users", limit: 50, orderBy: order, pageToken: token);
+    foreach (var r in page.Records) Console.WriteLine(r["name"]);
+    token = page.NextPageToken;
+} while (!string.IsNullOrEmpty(token));
+```
+
+The deprecated single-field sort remains available via the legacy overload
+`FindAsync(collection, filter, limit, offset, orderBy: "name", descending: false)`.
+
+---
+
+### Aggregations (N4)
+
+Aggregations run entirely in the engine over the same `Filter` as `Find`; the
+collection is never materialised on the client.
+
+```csharp
+// Count — whole collection, or filtered.
+ulong total = await db.CountAsync("users");
+ulong admins = await db.CountAsync("users",
+    new() { ["field"] = "role", ["op"] = "eq", ["value"] = "admin" });
+
+// Aggregate — count + numeric sum/avg/min/max over a field (single whole-set group).
+List<AggResult> overall = await db.AggregateAsync("orders",
+    aggregations: new[] { "sum", "avg", "min", "max" }, field: "total");
+Console.WriteLine(overall[0].Sum);
+
+// GroupBy — one AggResult per distinct value of the group-by field.
+List<AggResult> byDept = await db.GroupByAsync("employees",
+    field: "dept", aggregations: new[] { "count", "avg" }, metric: "salary");
+foreach (var g in byDept)
+    Console.WriteLine($"{g.Group}: count={g.Count} avg={g.Avg}");
+```
+
+Each `AggResult` carries `Group` (the group-by value, `null` for the whole-set
+group), `Count`, and — when at least one record in the group held a numeric
+`field` value (`Numeric == true`) — `Sum`, `Avg`, `Min`, `Max`. Supported
+aggregation names: `count`, `sum`, `avg`, `min`, `max` (`count` is always
+returned; the rest require `field`).
 
 ---
 

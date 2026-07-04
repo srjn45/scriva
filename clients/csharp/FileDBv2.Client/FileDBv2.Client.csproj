@@ -40,6 +40,15 @@
   -->
   <ItemGroup>
     <Protobuf Include="proto/filedb.proto" GrpcServices="Client" ProtoRoot="proto" />
+    <!--
+      The google/api/*.proto stubs back the (google.api.http) method options in
+      filedb.proto. filedb.proto's generated reflection descriptor lists them as
+      dependencies, so their C# (AnnotationsReflection / HttpReflection) must be
+      generated too — otherwise the descriptor references a Google.Api namespace
+      that does not exist. GrpcServices="None": message/reflection code only.
+    -->
+    <Protobuf Include="proto/google/api/annotations.proto" GrpcServices="None" ProtoRoot="proto" />
+    <Protobuf Include="proto/google/api/http.proto" GrpcServices="None" ProtoRoot="proto" />
   </ItemGroup>
 
 </Project>
