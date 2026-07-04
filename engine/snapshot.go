@@ -94,6 +94,14 @@ func (c *Collection) writeSnapshot(tw *tar.Writer) error {
 		if base == "index.json" {
 			continue
 		}
+		// The compaction swap manifest is excluded for the same reason: it
+		// records absolute paths into the source directory, and the segment set
+		// captured here is always swap-consistent (the copy holds the collection
+		// lock the swap needs), so a restored archive must never roll a swap
+		// "forward" — its removals would delete live segments.
+		if base == compactManifestFilename {
+			continue
+		}
 		if err := writeFileToTar(tw, c.dir, base, c.name); err != nil {
 			return err
 		}

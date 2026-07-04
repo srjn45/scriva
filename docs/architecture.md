@@ -543,14 +543,34 @@ A third, explicit trigger exists — see [On-demand compaction](#on-demand-compa
 2. Check dirty ratio — skip if below threshold
 3. Scan all sealed segments, keep latest entry per id, drop deletes
 4. Write resolved entries to new temp segments (no lock held)
-5. Acquire write lock
-6. Atomic rename: temp → final segment files
-7. Delete old dirty segments
-8. Rebuild primary index and all secondary indexes
-9. Release write lock
-10. Persist updated indexes to disk
-11. Fire OnCompaction hook (used by Prometheus metrics)
+5. Durably record the swap intent (compact.manifest: renames + removals)
+6. Acquire write lock
+7. Atomic rename: temp → final segment files (replacing reused names)
+8. Delete old segments whose names were not reused
+9. Rebuild primary index and all secondary indexes
+10. Release write lock
+11. Persist updated indexes to disk
+12. Retire the swap manifest
+13. Fire OnCompaction hook (used by Prometheus metrics)
 ```
+
+### Crash consistency
+
+The swap (steps 6–12) is crash-atomic. The manifest written in step 5 is an
+fsynced intent record: if the process dies anywhere before step 12, the next
+open rolls the swap forward idempotently — outstanding renames applied, listed
+removals deleted, leftover `.compact_*` temps discarded — and rebuilds the
+primary and secondary indexes from the resulting segments. Temps found
+*without* a manifest mean the pass died while still writing them; the old
+segments remain authoritative and the temps are discarded.
+
+Open also refuses to trust a persisted `index.json` blindly: even when its
+checksum validates, every entry must point inside a segment file that actually
+exists. A dangling reference (the signature of an index persisted against a
+layout that later changed) triggers a full rebuild from the segments, which are
+always the source of truth. Swap manifests are excluded from snapshots for the
+same reason `index.json` is: they record absolute paths into the source
+directory, and the archived segment set is always swap-consistent.
 
 ### Rebalancer
 
@@ -572,7 +592,11 @@ background pass with two differences:
 
 Background and on-demand passes are serialized by a dedicated `compactMu`, so a
 timer-triggered run and a forced run can never concurrently snapshot, remove,
-and rename the same sealed segments. A closed collection refuses to compact.
+and rename the same sealed segments. A closed collection refuses to compact,
+and `Close()` itself takes `compactMu`: it waits for an in-flight pass to
+finish (segment swap and index persist included) before persisting the final
+index, and a pass that was still blocked on the lock when Close finished
+aborts instead of mutating the layout afterwards.
 
 ---
 

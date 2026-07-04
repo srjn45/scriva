@@ -74,6 +74,13 @@ func (c *Collection) compact(force bool) error {
 	c.compactMu.Lock()
 	defer c.compactMu.Unlock()
 
+	// Re-check after acquiring the lock: Close() holds compactMu while it
+	// persists the final index, so a pass that was blocked on the lock during
+	// shutdown must not mutate the segment layout afterwards.
+	if c.closeDone {
+		return nil
+	}
+
 	start := time.Now()
 
 	// --- Step 1: Snapshot sealed segments under read lock ---
@@ -104,18 +111,35 @@ func (c *Collection) compact(force bool) error {
 	}
 	// Nothing survived (all deletes) — still need to swap under lock.
 
-
-	// --- Step 5: Acquire write lock, swap segments, rebuild index ---
-	c.mu.Lock()
-
-	// Remove old sealed segments from disk, then rename temp files into their
-	// permanent positions. Doing both under the lock avoids the race where the
-	// rename (step 4) overwrites an original file that the removal (step 5)
-	// then deletes, destroying the freshly-compacted data.
+	// --- Step 5: Durably record the swap intent, then swap under write lock ---
+	//
+	// The manifest is fsynced before any segment file is mutated and removed
+	// only after the post-swap index persist, so a crash anywhere in between
+	// is rolled forward idempotently by recoverCompaction at the next open.
+	renames := make(map[string]string, len(tempSegs))
+	finals := make(map[string]struct{}, len(tempSegs))
+	for i, seg := range tempSegs {
+		final := c.segmentPath(uint64(i + 1))
+		renames[seg.Path()] = final
+		finals[final] = struct{}{}
+	}
+	var removals []string
 	for _, s := range toCompact {
-		_ = os.Remove(s.Path())
+		if _, reused := finals[s.Path()]; !reused {
+			removals = append(removals, s.Path())
+		}
+	}
+	if err := writeCompactManifest(c.dir, compactManifest{Renames: renames, Removals: removals}); err != nil {
+		return fmt.Errorf("compactor: write manifest: %w", err)
 	}
 
+	c.mu.Lock()
+
+	// Rename the temp files over their final positions first — when a final
+	// name belongs to an old sealed segment the rename replaces it atomically —
+	// then delete the old segments whose names were not reused. The reverse
+	// order (remove everything, then rename) left a window where the only copy
+	// of the sealed data sat in temp files an open would never discover.
 	var newSegs []*Segment
 	for i, seg := range tempSegs {
 		finalPath := c.segmentPath(uint64(i + 1))
@@ -129,6 +153,9 @@ func (c *Collection) compact(force bool) error {
 			size = info.Size()
 		}
 		newSegs = append(newSegs, openSealedSegment(finalPath, size))
+	}
+	for _, p := range removals {
+		_ = os.Remove(p)
 	}
 
 	c.sealed = newSegs
@@ -144,8 +171,12 @@ func (c *Collection) compact(force bool) error {
 
 	c.mu.Unlock()
 
-	// Persist updated primary index.
-	_ = c.index.Persist(filepath.Join(c.dir, "index.json"))
+	// Persist updated primary index. On failure the manifest is deliberately
+	// left in place so the next open rebuilds from the segments instead of
+	// trusting a stale index.
+	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+		return fmt.Errorf("compactor: persist index: %w", err)
+	}
 
 	// Rebuild and persist every secondary index from the new segment layout.
 	c.sidxMu.RLock()
@@ -166,6 +197,11 @@ func (c *Collection) compact(force bool) error {
 			return fmt.Errorf("compactor: rebuild secondary index %q: %w", field, err)
 		}
 		_ = sidx.Persist(sidxFilePath(c.dir, field))
+	}
+
+	// The on-disk layout and indexes are consistent again — retire the intent.
+	if err := clearCompactManifest(c.dir); err != nil {
+		return fmt.Errorf("compactor: %w", err)
 	}
 
 	if c.cfg.OnCompaction != nil {

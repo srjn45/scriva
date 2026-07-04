@@ -140,6 +140,24 @@ func (idx *Index) Load(path string) error {
 	return nil
 }
 
+// segmentsValid reports whether every index entry points inside one of the
+// given segment files (path → size). An entry referencing a missing file — or
+// an offset at or past its end — means the persisted index describes a segment
+// layout that no longer exists on disk (e.g. it was written by a Close() that
+// raced a compaction swap) and must be rebuilt even though its checksum is
+// intact.
+func (idx *Index) segmentsValid(sizes map[string]int64) bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	for _, e := range idx.entries {
+		size, ok := sizes[e.SegmentPath]
+		if !ok || e.Offset >= size {
+			return false
+		}
+	}
+	return true
+}
+
 // Rebuild constructs the index by replaying all entries from the provided
 // segments in order. The latest entry for each id wins. Revisions are recomputed
 // by replay order — each surviving insert/update bumps a per-id counter — but

@@ -151,6 +151,12 @@ type Collection struct {
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
 	compactMu sync.Mutex    // serializes compaction passes (background + on-demand)
+	// closeDone records that Close has persisted the final index. Guarded by
+	// compactMu: a pass that acquires the lock afterwards must not mutate the
+	// segment layout (see compact). Deliberately distinct from the closed
+	// channel, which tests close directly just to stop the background goroutine
+	// while still driving compact() by hand.
+	closeDone bool
 	closeOnce sync.Once
 	closed    chan struct{}
 }
@@ -228,6 +234,14 @@ func (c *Collection) syncLoop() {
 // load reads existing segments from disk, restores the index, and opens
 // or creates the active (write) segment.
 func (c *Collection) load() error {
+	// Roll forward (or discard) any compaction swap a crash interrupted,
+	// before the segment files are enumerated. When a swap was in flight the
+	// persisted indexes describe the pre-swap layout and must be rebuilt.
+	swapRecovered, err := recoverCompaction(c.dir)
+	if err != nil {
+		return fmt.Errorf("collection: recover compaction: %w", err)
+	}
+
 	// Discover sealed segment files.
 	pattern := filepath.Join(c.dir, "seg_*.ndjson")
 	paths, err := filepath.Glob(pattern)
@@ -265,12 +279,29 @@ func (c *Collection) load() error {
 
 	// Try loading the persisted index.
 	indexPath := filepath.Join(c.dir, "index.json")
-	err = c.index.Load(indexPath)
-	if err != nil && !errors.Is(err, ErrIndexStale) && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("collection: load index: %w", err)
+	rebuilt := swapRecovered
+	if !rebuilt {
+		err = c.index.Load(indexPath)
+		if err != nil && !errors.Is(err, ErrIndexStale) && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("collection: load index: %w", err)
+		}
+		if err == nil {
+			// The checksum only guards the index's own contents. Verify every
+			// entry points inside a segment that actually exists — an index
+			// persisted by a Close() that raced a compaction swap validates its
+			// checksum yet references segments the swap deleted (#68).
+			sizes := make(map[string]int64, len(all))
+			for _, seg := range all {
+				sizes[seg.Path()] = seg.Size()
+			}
+			if !c.index.segmentsValid(sizes) {
+				err = ErrIndexStale
+			}
+		}
+		rebuilt = err != nil
 	}
-	if err != nil {
-		// Stale or missing — rebuild.
+	if rebuilt {
+		// Stale, missing, or dangling — rebuild from the segments.
 		if rbErr := c.index.Rebuild(all); rbErr != nil {
 			return fmt.Errorf("collection: rebuild index: %w", rbErr)
 		}
@@ -287,6 +318,14 @@ func (c *Collection) load() error {
 			sidx := newSecondaryIndex(field, false)
 			if err := sidx.Load(p); err != nil {
 				// stale/corrupt — rebuild from segments
+				if rbErr := sidx.rebuild(all); rbErr != nil {
+					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+				}
+				_ = sidx.Persist(p)
+			} else if rebuilt {
+				// The primary index had to be rebuilt, so this checksum-valid
+				// sidx may equally describe the pre-crash layout. Rebuild it
+				// from the same segments (Load already restored its unique flag).
 				if rbErr := sidx.rebuild(all); rbErr != nil {
 					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
 				}
@@ -700,7 +739,20 @@ func (c *Collection) rotateSegment() error {
 	}
 	c.sealed = append(c.sealed, c.active)
 
-	newPath := c.segmentPath(uint64(len(c.sealed) + 1))
+	// Number the new active segment one past the highest segment on disk.
+	// Counting live segments is not enough: compaction renumbers the sealed
+	// set to seg_000001..m while the active segment keeps its original higher
+	// number, so a count-based name collides with — and appends to — the
+	// segment that was just sealed, which the next compaction then deletes
+	// out from under the collection (#68).
+	maxSeg := uint64(0)
+	for _, s := range c.sealed {
+		var n uint64
+		if _, err := fmt.Sscanf(filepath.Base(s.Path()), "seg_%d.ndjson", &n); err == nil && n > maxSeg {
+			maxSeg = n
+		}
+	}
+	newPath := c.segmentPath(maxSeg + 1)
 	active, err := openActiveSegment(newPath)
 	if err != nil {
 		return err
@@ -891,6 +943,16 @@ func (c *Collection) Close() error {
 		return nil
 	}
 	c.closeOnce.Do(func() { close(c.closed) })
+	// Wait for any in-flight compaction pass to complete (segment swap and
+	// index persist included) before writing the final index. Closing c.closed
+	// only stops passes that have not started yet; without this, Close could
+	// persist an index describing segments the pass is about to replace, and
+	// the process exit that typically follows Close would kill the pass before
+	// it re-persists (#68). closeDone makes a pass that was still blocked on
+	// the lock abort instead of swapping after us.
+	c.compactMu.Lock()
+	defer c.compactMu.Unlock()
+	c.closeDone = true
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
