@@ -60,6 +60,10 @@ var writeMethods = map[string]bool{
 	"CommitTx":         true,
 	"RollbackTx":       true,
 	"Compact":          true,
+	// Promote (R3) is an admin/failover operation; it requires a read-write key.
+	// Finer-grained admin ACLs (an admin scope) are deferred to S3 — until then a
+	// read-write key is the admin boundary.
+	"Promote": true,
 }
 
 // readMethods is the set of RPCs known to be non-mutating. It exists only so

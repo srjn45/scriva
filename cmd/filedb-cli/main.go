@@ -72,6 +72,7 @@ func rootCmd() *cobra.Command {
 		aggregateCmd(flags),
 		statsCmd(flags),
 		compactCmd(flags),
+		promoteCmd(flags),
 		backupCmd(flags),
 		exportCmd(flags),
 		importCmd(flags),

@@ -36,6 +36,9 @@ func followerEngineConfig() engine.CollectionConfig {
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: time.Hour,
 		CompactDirtyPct: 0.30,
+		// Open in the follower role so the read-only guard rejects writes and a
+		// Promote (R3) is a valid transition — matching --replicate-from mode.
+		Follower: true,
 	}
 }
 

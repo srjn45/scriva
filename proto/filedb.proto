@@ -223,6 +223,23 @@ service FileDB {
       get: "/v1/replication/status"
     };
   }
+
+  // --- Failover (R3) ---
+
+  // Promote flips a caught-up follower into a leader: it stops replicating from
+  // its upstream, lifts the read-only guard, and begins accepting writes.
+  // Promotion is refused with FAILED_PRECONDITION when the node is not a
+  // follower, or when its replication lag (last-known leader LSN minus applied
+  // LSN) exceeds the server's configured threshold — pass force to override that
+  // guard when the leader is unrecoverable and some divergence is acceptable.
+  // This is an admin operation and requires a read-write API key. Promotion is a
+  // one-way transition; automatic leader election is out of scope.
+  rpc Promote(PromoteRequest) returns (PromoteResponse) {
+    option (google.api.http) = {
+      post: "/v1/replication/promote"
+      body: "*"
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -646,4 +663,28 @@ message FollowerStatus {
   uint64                    acked_lsn    = 2;
   uint64                    lag          = 3; // leader_lsn - acked_lsn
   google.protobuf.Timestamp connected_at = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Failover (R3)
+// ---------------------------------------------------------------------------
+
+message PromoteRequest {
+  // force promotes even when the follower's replication lag exceeds the server's
+  // configured threshold. Use only when the leader is unrecoverable and some
+  // divergence is acceptable — a forced promotion of a lagging replica discards
+  // the un-replicated tail of the old leader's writes.
+  bool force = 1;
+}
+
+message PromoteResponse {
+  // The node's role after the call: "leader" on a successful promotion.
+  string role = 1;
+  // The LSN the promoted leader continues assigning from — its applied watermark
+  // at promotion. New writes are tagged with strictly greater LSNs, so a promoted
+  // leader never reuses an LSN the old leader already assigned.
+  uint64 lsn  = 2;
+  // The replication lag (last-known leader LSN minus applied LSN) observed at the
+  // moment of promotion. 0 means the follower was fully caught up.
+  uint64 lag  = 3;
 }

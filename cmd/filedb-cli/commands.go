@@ -687,6 +687,36 @@ func compactCmd(flags *cliFlags) *cobra.Command {
 	}
 }
 
+func promoteCmd(flags *cliFlags) *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "promote",
+		Short: "Promote this follower to leader (manual failover)",
+		Long: "Flip a caught-up follower into a leader: it stops replicating from its\n" +
+			"upstream and begins accepting writes. Refused when the node is not a\n" +
+			"follower, or when its replication lag exceeds the server's threshold —\n" +
+			"pass --force to override the lag guard when the leader is unrecoverable.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := client.Promote(ctxWithAuth(flags), &pb.PromoteRequest{Force: force})
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"promoted: role=%s lsn=%d lag=%d\n", resp.Role, resp.Lsn, resp.Lag)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Promote even if the follower's replication lag exceeds the server threshold")
+	return cmd
+}
+
 func backupCmd(flags *cliFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "backup <dest>",

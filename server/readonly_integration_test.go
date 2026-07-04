@@ -23,7 +23,7 @@ import (
 // and returns a client to it.
 func startReadOnlyReplica(t *testing.T, fdb *engine.DB) pb.FileDBClient {
 	t.Helper()
-	roUnary, roStream := server.ReadOnlyInterceptors()
+	roUnary, roStream := server.ReadOnlyInterceptors(fdb)
 	gs := server.NewGRPCServer(fdb, 5*time.Minute)
 	t.Cleanup(gs.Close)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(roUnary), grpc.ChainStreamInterceptor(roStream))

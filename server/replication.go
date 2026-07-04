@@ -194,6 +194,13 @@ func (f *Follower) Run(ctx context.Context) error {
 func (f *Follower) stream(ctx context.Context) error {
 	from := f.db.AppliedLSN()
 	authCtx := ReplicationAuthContext(ctx, f.apiKey)
+	// Learn the leader's current LSN up front so the promotion lag guard (R3) has
+	// a fresh last-known-leader watermark even while this follower is catching up
+	// or the leader is otherwise idle. Best-effort: a failure just leaves the
+	// watermark at its previous value.
+	if st, serr := f.client.ReplicationStatus(authCtx, &pb.ReplicationStatusRequest{}); serr == nil {
+		f.db.NoteLeaderLSN(st.LeaderLsn)
+	}
 	rs, err := f.client.Replicate(authCtx, &pb.ReplicateRequest{FromLsn: from, FollowerId: f.id})
 	if err != nil {
 		return err
@@ -208,6 +215,9 @@ func (f *Follower) stream(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Track the highest LSN the leader is known to hold, for the R3 promotion
+		// lag guard, before applying (so a caught-up follower reports zero lag).
+		f.db.NoteLeaderLSN(rec.Lsn)
 		// Skip anything already applied (idempotency at the LSN level; record-level
 		// revision idempotency in the engine is the ultimate safety net).
 		if rec.Lsn <= f.db.AppliedLSN() {

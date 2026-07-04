@@ -87,6 +87,12 @@ type CollectionConfig struct {
 	// leaves the write path untouched — the embedded engine pays nothing. This is
 	// a DB-wide setting read once at Open; it is not per-collection.
 	ReplicationRingSize int
+
+	// Follower opens the DB in the follower role (R3): it starts read-only so the
+	// server's read-only guard rejects writes until an operator promotes it to
+	// leader. A leader (the default) accepts writes immediately. DB-wide, read
+	// once at Open.
+	Follower bool
 }
 
 func defaultConfig() CollectionConfig {

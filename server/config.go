@@ -69,6 +69,11 @@ type Config struct {
 	// memory so a briefly-disconnected follower can resume without a full
 	// re-snapshot (default: 8192). 0 disables leader-side replication.
 	ReplicationRingSize int `yaml:"replication_ring_size"`
+	// PromoteMaxLag is the R3 manual-failover lag ceiling: a follower whose
+	// replication lag (last-known leader LSN minus applied LSN) exceeds this many
+	// LSNs is refused promotion unless the Promote request forces it. 0 (the
+	// default) requires the follower to be fully caught up.
+	PromoteMaxLag uint64 `yaml:"promote_max_lag"`
 
 	// Logging
 	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
@@ -107,6 +112,7 @@ func DefaultConfig() Config {
 		ReplicateFrom:       "",
 		FollowerID:          "",
 		ReplicationRingSize: engine.DefaultReplicationRingSize,
+		PromoteMaxLag:       engine.DefaultPromoteMaxLag,
 
 		LogLevel:    "info",
 		LogFormat:   "text",
@@ -133,6 +139,9 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		DefaultTTL:      c.DefaultTTL,
 
 		ReplicationRingSize: c.ReplicationRingSize,
+		// A node started with --replicate-from opens in the follower role so the
+		// read-only guard rejects writes until an operator promotes it (R3).
+		Follower: c.ReplicateFrom != "",
 	}
 }
 
@@ -160,6 +169,7 @@ type fileConfig struct {
 	ReplicateFrom       string `yaml:"replicate_from"`
 	FollowerID          string `yaml:"follower_id"`
 	ReplicationRingSize int    `yaml:"replication_ring_size"`
+	PromoteMaxLag       uint64 `yaml:"promote_max_lag"`
 	LogLevel            string `yaml:"log_level"`
 	LogFormat           string `yaml:"log_format"`
 	SlowQueryMs         int    `yaml:"slow_query_ms"`
@@ -205,6 +215,7 @@ func LoadConfigFile(path string) (Config, error) {
 		ReplicateFrom:       defaults.ReplicateFrom,
 		FollowerID:          defaults.FollowerID,
 		ReplicationRingSize: defaults.ReplicationRingSize,
+		PromoteMaxLag:       defaults.PromoteMaxLag,
 
 		LogLevel:    defaults.LogLevel,
 		LogFormat:   defaults.LogFormat,
@@ -266,6 +277,7 @@ func LoadConfigFile(path string) (Config, error) {
 		ReplicateFrom:       fc.ReplicateFrom,
 		FollowerID:          fc.FollowerID,
 		ReplicationRingSize: fc.ReplicationRingSize,
+		PromoteMaxLag:       fc.PromoteMaxLag,
 
 		LogLevel:    fc.LogLevel,
 		LogFormat:   fc.LogFormat,

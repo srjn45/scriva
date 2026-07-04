@@ -32,6 +32,11 @@ type GRPCServer struct {
 	logger    *slog.Logger                             // nil = no slow-query log
 	slowQuery time.Duration                            // 0 = slow-query log disabled
 	onScan    func(collection string, rowsScanned int) // nil = no scan metric
+
+	// promoteMaxLag is the R3 promotion lag ceiling: a follower whose replication
+	// lag exceeds it is refused promotion unless the request forces it. Defaults
+	// to engine.DefaultPromoteMaxLag (0 = must be fully caught up).
+	promoteMaxLag uint64
 }
 
 // GRPCOption configures optional GRPCServer behaviour.
@@ -52,6 +57,14 @@ func WithSlowQueryLog(logger *slog.Logger, threshold time.Duration) GRPCOption {
 // histogram without the engine importing a metrics package.
 func WithScanObserver(fn func(collection string, rowsScanned int)) GRPCOption {
 	return func(s *GRPCServer) { s.onScan = fn }
+}
+
+// WithPromoteMaxLag sets the R3 promotion lag ceiling: a follower whose
+// replication lag (last-known leader LSN minus applied LSN) exceeds maxLag is
+// refused promotion unless the Promote request forces it. Zero (the default)
+// requires a follower to be fully caught up.
+func WithPromoteMaxLag(maxLag uint64) GRPCOption {
+	return func(s *GRPCServer) { s.promoteMaxLag = maxLag }
 }
 
 // NewGRPCServer creates a GRPCServer backed by the given DB. txTimeout bounds
@@ -808,6 +821,25 @@ func (s *GRPCServer) ReplicationStatus(_ context.Context, _ *pb.ReplicationStatu
 		})
 	}
 	return resp, nil
+}
+
+// ---- Failover (R3) --------------------------------------------------------
+
+// Promote flips a caught-up follower into a leader. It maps the engine's typed
+// promotion errors onto gRPC codes: a node that is not a follower, or a follower
+// too far behind for the configured lag ceiling (when not forced), is refused
+// with FailedPrecondition. On success the read-only guard is lifted (it reads the
+// now-leader role) and the node accepts writes. Admin auth is enforced upstream:
+// Promote requires a read-write API key (see internal/auth).
+func (s *GRPCServer) Promote(_ context.Context, req *pb.PromoteRequest) (*pb.PromoteResponse, error) {
+	res, err := s.db.Promote(s.promoteMaxLag, req.Force)
+	if err != nil {
+		if errors.Is(err, engine.ErrReplicaLagExceeded) || errors.Is(err, engine.ErrNotFollower) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "promote: %v", err)
+	}
+	return &pb.PromoteResponse{Role: res.Role.String(), Lsn: res.LSN, Lag: res.Lag}, nil
 }
 
 // replEntryToProto maps an engine replication entry onto its wire form.
