@@ -123,6 +123,8 @@ func serveCmd() *cobra.Command {
 						merged.LogLevel = cfg.LogLevel
 					case "log-format":
 						merged.LogFormat = cfg.LogFormat
+					case "audit-log":
+						merged.AuditLog = cfg.AuditLog
 					case "slow-query-ms":
 						merged.SlowQueryMs = cfg.SlowQueryMs
 					case "max-concurrent-streams":
@@ -173,6 +175,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.TLSClientAuth, "tls-client-auth", cfg.TLSClientAuth, "Client-certificate policy: off (default) | require | verify-if-given")
 	f.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug|info|warn|error")
 	f.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format: json|text")
+	f.StringVar(&cfg.AuditLog, "audit-log", cfg.AuditLog, "Path to an append-only audit NDJSON file recording mutating/admin RPCs and auth failures (empty = disabled)")
 	f.IntVar(&cfg.SlowQueryMs, "slow-query-ms", cfg.SlowQueryMs, "Log any Find slower than this many milliseconds at WARN, with scan stats (0 = disabled)")
 	f.Uint32Var(&cfg.MaxConcurrentStreams, "max-concurrent-streams", cfg.MaxConcurrentStreams, "Max concurrent HTTP/2 streams per gRPC connection (0 = gRPC library default)")
 	f.IntVar(&cfg.MaxInflight, "max-inflight", cfg.MaxInflight, "Server-wide concurrent in-flight RPC ceiling; excess calls get RESOURCE_EXHAUSTED (0 = unlimited)")
@@ -370,8 +373,32 @@ func serve(cfg server.Config, configFile string) error {
 	logUnary, logStream := server.LoggingInterceptors(logger)
 	limiter := server.NewLimiter(cfg.MaxInflight, cfg.RateLimit)
 
+	// Audit log (S2, optional): a dedicated append-only NDJSON sink recording
+	// every mutating/admin RPC and every auth failure. Its interceptor is chained
+	// *outside* auth so a rejected-auth call is still recorded; it therefore runs
+	// before the tracing/auth interceptors below.
+	var auditUnary grpc.UnaryServerInterceptor
+	var auditStream grpc.StreamServerInterceptor
+	if cfg.AuditLog != "" {
+		auditFile, err := os.OpenFile(cfg.AuditLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return fmt.Errorf("open audit log %q: %w", cfg.AuditLog, err)
+		}
+		defer func() { _ = auditFile.Close() }()
+		auditLogger, err := server.NewAuditLogger(auditFile)
+		if err != nil {
+			return err
+		}
+		auditUnary, auditStream = server.AuditInterceptors(auditLogger)
+		logger.Info("audit log enabled", "path", cfg.AuditLog)
+	}
+
 	var unaryInts []grpc.UnaryServerInterceptor
 	var streamInts []grpc.StreamServerInterceptor
+	if auditUnary != nil {
+		unaryInts = append(unaryInts, auditUnary)
+		streamInts = append(streamInts, auditStream)
+	}
 	if tracerProvider != nil {
 		traceUnary, traceStream := server.TracingInterceptors(tracerProvider)
 		unaryInts = append(unaryInts, traceUnary)

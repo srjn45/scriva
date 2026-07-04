@@ -86,6 +86,11 @@ type Config struct {
 	LogLevel  string `yaml:"log_level"`  // debug|info|warn|error (default: info)
 	LogFormat string `yaml:"log_format"` // json|text (default: text)
 
+	// Audit log (S2, optional — off by default). When set to a file path, every
+	// mutating/admin RPC and every auth failure is appended as a JSON (NDJSON)
+	// record carrying the principal, RPC method, target, and outcome.
+	AuditLog string `yaml:"audit_log"` // path to the append-only audit NDJSON file (empty = disabled)
+
 	// Observability
 	SlowQueryMs int `yaml:"slow_query_ms"` // Find slower than this many ms is logged at WARN (0 = disabled)
 
@@ -124,6 +129,7 @@ func DefaultConfig() Config {
 
 		LogLevel:    "info",
 		LogFormat:   "text",
+		AuditLog:    "",
 		SlowQueryMs: 0,
 
 		MaxConcurrentStreams: 0,
@@ -182,6 +188,7 @@ type fileConfig struct {
 	PromoteMaxLag       uint64 `yaml:"promote_max_lag"`
 	LogLevel            string `yaml:"log_level"`
 	LogFormat           string `yaml:"log_format"`
+	AuditLog            string `yaml:"audit_log"`
 	SlowQueryMs         int    `yaml:"slow_query_ms"`
 
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
@@ -231,6 +238,7 @@ func LoadConfigFile(path string) (Config, error) {
 
 		LogLevel:    defaults.LogLevel,
 		LogFormat:   defaults.LogFormat,
+		AuditLog:    defaults.AuditLog,
 		SlowQueryMs: defaults.SlowQueryMs,
 
 		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
@@ -295,6 +303,7 @@ func LoadConfigFile(path string) (Config, error) {
 
 		LogLevel:    fc.LogLevel,
 		LogFormat:   fc.LogFormat,
+		AuditLog:    fc.AuditLog,
 		SlowQueryMs: fc.SlowQueryMs,
 
 		MaxConcurrentStreams: fc.MaxConcurrentStreams,

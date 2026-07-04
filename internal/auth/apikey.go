@@ -54,6 +54,42 @@ func withPrincipal(ctx context.Context, p Principal) context.Context {
 	return context.WithValue(ctx, principalContextKey{}, p)
 }
 
+// principalSink is a single-request cell an *outer* interceptor can install on
+// the context so it can learn the principal this package resolves. The S2 audit
+// log runs outside the auth interceptor — so it can also record rejected auth
+// attempts — which means it never sees the derived context withPrincipal stores
+// the identity on (context values only flow downward). authorize therefore also
+// deposits the resolved principal into a sink when one is present, giving the
+// auditor the identity of a successful call. On a rejected call the sink stays
+// empty and the auditor attributes the RPC to an unauthenticated caller.
+//
+// It needs no lock: the sink is created per request and written by authorize on
+// the same goroutine that later reads it, after the handler returns.
+type principalSink struct {
+	p  Principal
+	ok bool
+}
+
+type principalSinkKey struct{}
+
+// ContextWithPrincipalSink returns a child of ctx carrying a fresh principal sink
+// plus a reader reporting the principal the auth interceptor resolved for the
+// request (ok=false when authentication never succeeded — auth disabled, or a
+// rejected call). It is used by the audit interceptor, which wraps auth.
+func ContextWithPrincipalSink(ctx context.Context) (context.Context, func() (Principal, bool)) {
+	s := &principalSink{}
+	return context.WithValue(ctx, principalSinkKey{}, s), func() (Principal, bool) {
+		return s.p, s.ok
+	}
+}
+
+// depositPrincipal records p into the principal sink installed on ctx, if any.
+func depositPrincipal(ctx context.Context, p Principal) {
+	if s, ok := ctx.Value(principalSinkKey{}).(*principalSink); ok {
+		s.p, s.ok = p, true
+	}
+}
+
 // wrappedServerStream overrides Context so a stream interceptor can thread a
 // derived context (carrying the resolved principal) down to the handler.
 type wrappedServerStream struct {
@@ -232,9 +268,16 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 		return ctx, status.Error(codes.Unauthenticated, "missing api key or client certificate")
 	}
 
+	// The caller is authenticated; record the identity for the audit sink now so a
+	// subsequent scope denial is still attributed to the real principal (the sink
+	// is informational — the request context only carries the principal on the
+	// success path below).
+	p := Principal{Name: resolved.name, Scope: resolved.scope}
+	depositPrincipal(ctx, p)
+
 	if methodRequiresWrite(fullMethod) && resolved.scope != ScopeReadWrite {
 		return ctx, status.Errorf(codes.PermissionDenied,
 			"principal %q has read-only scope; %s requires read-write", resolved.name, fullMethod)
 	}
-	return withPrincipal(ctx, Principal{Name: resolved.name, Scope: resolved.scope}), nil
+	return withPrincipal(ctx, p), nil
 }

@@ -72,6 +72,7 @@ All flags and their defaults:
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, or `error` |
 | `--log-format` | `text` | Log output format: `json` or `text` |
+| `--audit-log` | *(none)* | Path to an append-only audit NDJSON file recording mutating/admin RPCs and auth failures (empty = disabled) |
 | `--max-concurrent-streams` | `0` | Max concurrent HTTP/2 streams per gRPC connection (`0` = gRPC library default) |
 | `--max-inflight` | `0` | Server-wide concurrent in-flight RPC ceiling; excess calls get `RESOURCE_EXHAUSTED` (`0` = unlimited) |
 | `--rate-limit` | `0` | Per-API-key rate limit in requests/sec; over-budget calls get `RESOURCE_EXHAUSTED` (`0` = disabled) |
@@ -104,6 +105,7 @@ default_ttl: 0              # expire inserted records after this long (0 = never
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
 log_level: info             # debug | info | warn | error
 log_format: text            # json | text
+audit_log: ""               # path to append-only audit NDJSON file (empty = disabled)
 max_concurrent_streams: 0   # per-connection HTTP/2 stream cap (0 = gRPC default)
 max_inflight: 0             # server-wide in-flight RPC ceiling (0 = unlimited)
 rate_limit: 0               # per-API-key requests/sec (0 = disabled)
@@ -338,6 +340,53 @@ The same cost is exported as the `filedb_scan_rows_scanned` Prometheus histogram
 (labelled by `collection`), so you can alert on scan cost without scraping logs.
 See [architecture.md](architecture.md#slow-query-log--scan-stats) for how the
 stats flow from the engine to the log and the metric.
+
+---
+
+## Audit log
+
+The audit log is a durable, append-only record of **who did what**: every
+state-mutating and admin RPC, plus every rejected authentication attempt. It is
+separate from the request log (`--log-*`) so you can ship it to a tamper-evident
+store, retain it on its own schedule, and reason about access without wading
+through routine reads. It is **off by default**; point `--audit-log` at a file to
+enable it:
+
+```bash
+filedb serve --data ./data --api-key sekret --audit-log /var/log/filedb/audit.log
+```
+
+Each line is a self-contained JSON object (NDJSON — one record per line, appended
+never rewritten). A successful keyed insert and a rejected call look like:
+
+```json
+{"time":"2026-07-04T10:15:04Z","level":"INFO","msg":"audit","method":"/filedb.v1.FileDB/Insert","principal":"writer","outcome":"ok","collection":"users","key":"u42"}
+{"time":"2026-07-04T10:15:07Z","level":"INFO","msg":"audit","method":"/filedb.v1.FileDB/Insert","principal":"unauthenticated","outcome":"Unauthenticated","collection":"users","auth_failure":true}
+```
+
+Fields:
+
+- **`principal`** — the resolved identity: an API key's configured name, a client
+  certificate's subject (under mTLS), `anonymous` when auth is disabled, or
+  `unauthenticated` for a rejected call.
+- **`method`** — the full gRPC method name of the RPC.
+- **`collection` / `key` / `id`** — the target the RPC acted on, where
+  applicable (a create/drop names the collection; keyed and id-addressed
+  operations add `key`/`id`). Omitted when the RPC has no such target
+  (e.g. `Promote`).
+- **`outcome`** — `ok` on success, otherwise the gRPC status code
+  (`NotFound`, `AlreadyExists`, `Unauthenticated`, …).
+- **`auth_failure`** — present and `true` only on a rejected-auth record.
+
+**What is recorded:** all writes (`Insert`/`Update`/`Delete`, their keyed and
+compare-and-swap variants, `InsertMany`, `Upsert`), schema changes
+(`CreateCollection`/`DropCollection`, `EnsureIndex`/`DropIndex`), transaction
+control (`BeginTx`/`CommitTx`/`RollbackTx`), the admin `Compact` and `Promote`,
+and any RPC — read or write — rejected by the auth layer. Successful read RPCs
+are **not** audited; use the request log or tracing for those.
+
+See [operations.md](operations.md#audit-log) for the retention runbook and how
+the interceptor captures the principal.
 
 ---
 

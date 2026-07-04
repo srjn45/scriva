@@ -138,3 +138,47 @@ leader takes writes at a time:
   admin scope) arrive with the S3 milestone; until then a read-write key is the
   admin boundary. The replication link itself uses plain gRPC — run it inside a
   trusted network (mutual TLS is a later milestone).
+
+---
+
+## Audit log
+
+`--audit-log <path>` turns on a durable, append-only trail of every
+state-mutating and admin RPC and every rejected authentication attempt. It is the
+system of record for "who did what" — including the `Promote`, `Compact`,
+`CreateCollection`, and `DropCollection` admin actions — and is kept deliberately
+separate from the request log so it can have its own retention and be shipped to
+an append-only or write-once store. It is off by default. See
+[Audit log](getting-started.md#audit-log) for the record format and field
+reference.
+
+### How it works
+
+The audit trail is a single gRPC interceptor chained **outside** the auth
+interceptor, so a call rejected by auth is still recorded (an inner interceptor
+would never run for a rejected call). Because the resolved principal lives on a
+context the auth interceptor derives *downstream*, the audit interceptor installs
+a small principal "sink" that the auth interceptor fills in on a successful
+authentication; on a rejected call the sink stays empty and the record is
+attributed to `unauthenticated`. Writes to the file are serialized by the JSON
+handler, so records are whole lines even under concurrent RPCs. One record is
+emitted per RPC — never zero, never two — and it is written before the RPC's
+response reaches the client.
+
+### Runbook
+
+- **Placement.** Point `--audit-log` at a file on a volume with its own retention
+  and, ideally, append-only/immutable semantics (e.g. a WORM mount or a shipper
+  that tails the file into a tamper-evident store). Keeping it off the data
+  directory avoids coupling audit retention to database backups.
+- **Rotation.** FileDB opens the path with `O_APPEND` and holds it open for the
+  process lifetime; it does not rotate the file itself. Use `copytruncate`-style
+  rotation (e.g. `logrotate --copytruncate`) so the open descriptor keeps writing
+  to the same inode, or rotate during a restart. A plain `rename`+`create` leaves
+  FileDB writing to the renamed (still-open) file until the next restart.
+- **Volume.** Only mutating/admin RPCs and auth failures are recorded, so a
+  read-heavy workload produces a modest, predictable audit volume; a write-heavy
+  one produces roughly one line per write. Size retention accordingly.
+- **What is not covered.** Successful reads are not audited (use the request log
+  or tracing). The audit log records the *fact and target* of a mutation, not the
+  record payload, so it does not leak stored data.
