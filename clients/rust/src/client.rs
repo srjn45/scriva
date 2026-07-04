@@ -6,7 +6,71 @@ use tonic::Request;
 use crate::pb;
 use crate::pb::file_db_client::FileDbClient;
 
+/// Transport / setup errors from [`FileDB::connect`], [`FileDB::connect_tls`]
+/// and the file-writing snapshot helper. RPC methods return [`FileDbError`].
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Errors returned by FileDB RPC methods.
+///
+/// [`NotFound`](FileDbError::NotFound) and
+/// [`AlreadyExists`](FileDbError::AlreadyExists) are surfaced as dedicated
+/// variants so keyed operations can be matched idiomatically: a keyed
+/// lookup/update/delete against a key no live record holds yields `NotFound`,
+/// and a keyed insert on a key already held by a live record yields
+/// `AlreadyExists`. Every other gRPC status propagates as
+/// [`Rpc`](FileDbError::Rpc).
+#[derive(Debug)]
+pub enum FileDbError {
+    /// A keyed lookup/update/delete referenced a key no live record holds
+    /// (gRPC `NOT_FOUND`).
+    NotFound(tonic::Status),
+    /// A keyed insert used a key already held by a live record (gRPC
+    /// `ALREADY_EXISTS`).
+    AlreadyExists(tonic::Status),
+    /// Any other gRPC status.
+    Rpc(tonic::Status),
+}
+
+impl FileDbError {
+    /// The underlying gRPC status.
+    pub fn status(&self) -> &tonic::Status {
+        match self {
+            FileDbError::NotFound(s)
+            | FileDbError::AlreadyExists(s)
+            | FileDbError::Rpc(s) => s,
+        }
+    }
+}
+
+impl From<tonic::Status> for FileDbError {
+    fn from(status: tonic::Status) -> Self {
+        match status.code() {
+            tonic::Code::NotFound => FileDbError::NotFound(status),
+            tonic::Code::AlreadyExists => FileDbError::AlreadyExists(status),
+            _ => FileDbError::Rpc(status),
+        }
+    }
+}
+
+impl std::fmt::Display for FileDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileDbError::NotFound(s) => write!(f, "not found: {}", s.message()),
+            FileDbError::AlreadyExists(s) => write!(f, "already exists: {}", s.message()),
+            FileDbError::Rpc(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl std::error::Error for FileDbError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.status())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -16,19 +80,130 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: u64,
+    /// Caller-supplied string primary key; empty for records inserted without one.
+    pub key: String,
+    /// Monotonic per-record revision, bumped on every write. Fresh records start
+    /// at 1. Feed it to [`FileDB::update_if_rev`] for optimistic-concurrency updates.
+    pub rev: u64,
     pub data: serde_json::Value,
     pub date_added: Option<String>,
     pub date_modified: Option<String>,
 }
 
-/// Options for the `find` method.
+/// One sort key and its direction, for the multi-field ordering of a `find`.
+///
+/// Several may be supplied via [`FindOptions::order_by_fields`]; they are applied
+/// in order as a lexicographic sort. The record id is always the final tiebreaker,
+/// so the ordering is total and a keyset cursor ([`FindOptions::page_token`]) is
+/// stable.
+#[derive(Debug, Clone)]
+pub struct OrderBy {
+    pub field: String,
+    /// `false` = ascending, `true` = descending.
+    pub desc: bool,
+}
+
+impl OrderBy {
+    /// Sort ascending by `field`.
+    pub fn asc(field: impl Into<String>) -> Self {
+        OrderBy { field: field.into(), desc: false }
+    }
+
+    /// Sort descending by `field`.
+    pub fn desc(field: impl Into<String>) -> Self {
+        OrderBy { field: field.into(), desc: true }
+    }
+}
+
+/// Options for the `find` methods.
 #[derive(Debug, Clone, Default)]
 pub struct FindOptions {
     pub filter: Option<FilterInput>,
     pub limit: u32,
     pub offset: u32,
+    /// Deprecated single-field sort. Superseded by [`order_by_fields`](Self::order_by_fields):
+    /// honoured only when `order_by_fields` is empty.
     pub order_by: String,
+    /// Deprecated: direction for the single-field [`order_by`](Self::order_by).
     pub descending: bool,
+    /// Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+    /// the deprecated scalar `order_by`/`descending`.
+    pub order_by_fields: Vec<OrderBy>,
+    /// Optional field projection (N2): when non-empty, only these top-level fields
+    /// are returned in each record's `data` (`id`, `key` and `rev` are always
+    /// included). Empty returns full records; an unknown field is silently omitted.
+    pub fields: Vec<String>,
+    /// Opaque keyset pagination token (N3). Empty requests the first page;
+    /// otherwise it must be a token returned by a previous [`FileDB::find_page`].
+    /// Only meaningful with an ordering — pass the same ordering, filter and limit
+    /// on every page.
+    pub page_token: String,
+}
+
+/// Result of a keyed update ([`FileDB::update_by_key`]).
+#[derive(Debug, Clone)]
+pub struct UpdateResult {
+    pub id: u64,
+    /// Caller-supplied string key preserved by the update (empty for a keyless one).
+    pub key: String,
+    /// The record's revision after the write.
+    pub rev: u64,
+    pub date_modified: Option<String>,
+}
+
+/// Result of a compare-and-swap update ([`FileDB::update_if_rev`]).
+#[derive(Debug, Clone)]
+pub struct CasResult {
+    /// `true` when `expected_rev` matched and the update applied; `false` — never
+    /// an error — when the revision was stale or no live record carries the key.
+    pub swapped: bool,
+    /// The resulting record when `swapped` is `true`; `None` otherwise.
+    pub record: Option<Record>,
+}
+
+/// A numeric aggregation to compute per group over a request's `field`.
+///
+/// `Count` (the per-group record count) is always returned and need not be listed.
+/// Any of `Sum`/`Avg`/`Min`/`Max` requires [`AggregateOptions::field`] to be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateOp {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// Options for [`FileDB::aggregate`].
+#[derive(Debug, Clone, Default)]
+pub struct AggregateOptions {
+    /// Which aggregations to compute. `Count` is always returned even if omitted;
+    /// an empty list yields count-only. `Sum`/`Avg`/`Min`/`Max` require `field`.
+    pub aggregations: Vec<AggregateOp>,
+    /// Numeric field for `Sum`/`Avg`/`Min`/`Max`; ignored for a pure count.
+    pub field: String,
+    /// Optional group-by field — one result per distinct value. Empty aggregates
+    /// the whole filtered set into a single group whose `group` is `Null`.
+    pub group_by: String,
+    /// The same composable filter as `find`. Empty aggregates the whole collection.
+    pub filter: Option<FilterInput>,
+}
+
+/// One group's result from [`FileDB::aggregate`].
+#[derive(Debug, Clone)]
+pub struct AggregateGroup {
+    /// The group-by field's value for this group, type-preserved. `Null` for the
+    /// whole-set group and for records missing the group field.
+    pub group: serde_json::Value,
+    /// Number of records in this group (post-filter).
+    pub count: u64,
+    /// `true` when at least one record in the group carried a numeric `field`.
+    /// When `false`, `sum`/`avg`/`min`/`max` are zero and meaningless.
+    pub numeric: bool,
+    pub sum: f64,
+    pub avg: f64,
+    pub min: f64,
+    pub max: f64,
 }
 
 /// Collection statistics returned by `stats`.
@@ -146,6 +321,20 @@ fn filter_op_to_proto(op: FilterOp) -> i32 {
     }
 }
 
+fn agg_op_to_proto(op: AggregateOp) -> i32 {
+    match op {
+        AggregateOp::Count => pb::AggregateOp::AggCount as i32,
+        AggregateOp::Sum   => pb::AggregateOp::AggSum as i32,
+        AggregateOp::Avg   => pb::AggregateOp::AggAvg as i32,
+        AggregateOp::Min   => pb::AggregateOp::AggMin as i32,
+        AggregateOp::Max   => pb::AggregateOp::AggMax as i32,
+    }
+}
+
+fn order_by_to_proto(o: &OrderBy) -> pb::OrderBy {
+    pb::OrderBy { field: o.field.clone(), desc: o.desc }
+}
+
 fn filter_to_proto(f: &FilterInput) -> pb::Filter {
     let kind = match f {
         FilterInput::Field { field, op, value } => {
@@ -234,6 +423,8 @@ fn struct_to_json(s: prost_types::Struct) -> serde_json::Value {
 fn proto_record_to_record(r: pb::Record) -> Record {
     Record {
         id: r.id,
+        key: r.key,
+        rev: r.rev,
         data: r.data.map(struct_to_json).unwrap_or(serde_json::Value::Object(Default::default())),
         date_added: r.date_added.map(timestamp_to_rfc3339),
         date_modified: r.date_modified.map(timestamp_to_rfc3339),
@@ -300,6 +491,14 @@ fn watch_op_from_proto(op: i32) -> WatchOp {
     }
 }
 
+fn opt_string(s: String) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FileDB client
 // ---------------------------------------------------------------------------
@@ -310,7 +509,9 @@ fn watch_op_from_proto(op: i32) -> WatchOp {
 /// [`FileDB::connect_tls`] (TLS with CA certificate verification).
 ///
 /// All RPC methods require `&mut self` because the underlying tonic channel
-/// is driven through a mutable reference to the generated stub.
+/// is driven through a mutable reference to the generated stub, and return
+/// [`FileDbError`] (with dedicated `NotFound` / `AlreadyExists` variants for
+/// keyed operations).
 pub struct FileDB {
     client: FileDbClient<Channel>,
     api_key: String,
@@ -356,12 +557,29 @@ impl FileDB {
         req
     }
 
+    fn build_find_request(&self, collection: &str, opts: FindOptions) -> pb::FindRequest {
+        // order_by / descending are the deprecated single-field sort, still
+        // supported for back-compat (honoured only when order_by_fields is empty).
+        #[allow(deprecated)]
+        pb::FindRequest {
+            collection: collection.to_owned(),
+            filter: opts.filter.as_ref().map(filter_to_proto),
+            limit: opts.limit,
+            offset: opts.offset,
+            order_by: opts.order_by,
+            descending: opts.descending,
+            fields: opts.fields,
+            page_token: opts.page_token,
+            order_by_fields: opts.order_by_fields.iter().map(order_by_to_proto).collect(),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Collection management
     // -------------------------------------------------------------------------
 
     /// Create a new collection. Returns the collection name.
-    pub async fn create_collection(&mut self, name: &str) -> Result<String, tonic::Status> {
+    pub async fn create_collection(&mut self, name: &str) -> Result<String, FileDbError> {
         self.create_collection_with_ttl(name, 0).await
     }
 
@@ -375,7 +593,7 @@ impl FileDB {
         &mut self,
         name: &str,
         default_ttl_seconds: i64,
-    ) -> Result<String, tonic::Status> {
+    ) -> Result<String, FileDbError> {
         let resp = self
             .client
             .create_collection(self.req(pb::CreateCollectionRequest {
@@ -388,7 +606,7 @@ impl FileDB {
     }
 
     /// Drop a collection and all its data. Returns `true` on success.
-    pub async fn drop_collection(&mut self, name: &str) -> Result<bool, tonic::Status> {
+    pub async fn drop_collection(&mut self, name: &str) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .drop_collection(self.req(pb::DropCollectionRequest {
@@ -400,7 +618,7 @@ impl FileDB {
     }
 
     /// List all collection names.
-    pub async fn list_collections(&mut self) -> Result<Vec<String>, tonic::Status> {
+    pub async fn list_collections(&mut self) -> Result<Vec<String>, FileDbError> {
         let resp = self
             .client
             .list_collections(self.req(pb::ListCollectionsRequest {}))
@@ -418,8 +636,8 @@ impl FileDB {
         &mut self,
         collection: &str,
         data: serde_json::Value,
-    ) -> Result<u64, tonic::Status> {
-        self.insert_with_ttl(collection, data, 0).await
+    ) -> Result<u64, FileDbError> {
+        self.insert_inner(collection, data, 0, "").await
     }
 
     /// Insert one record with a per-record TTL, in seconds.
@@ -432,13 +650,39 @@ impl FileDB {
         collection: &str,
         data: serde_json::Value,
         ttl_seconds: i64,
-    ) -> Result<u64, tonic::Status> {
+    ) -> Result<u64, FileDbError> {
+        self.insert_inner(collection, data, ttl_seconds, "").await
+    }
+
+    /// Insert one record under a caller-supplied string primary `key` (keyed
+    /// create). Returns the assigned ID.
+    ///
+    /// A key already held by a live record is rejected with
+    /// [`FileDbError::AlreadyExists`]. A keyed insert does not participate in
+    /// transactions or per-record TTL.
+    pub async fn insert_with_key(
+        &mut self,
+        collection: &str,
+        data: serde_json::Value,
+        key: &str,
+    ) -> Result<u64, FileDbError> {
+        self.insert_inner(collection, data, 0, key).await
+    }
+
+    async fn insert_inner(
+        &mut self,
+        collection: &str,
+        data: serde_json::Value,
+        ttl_seconds: i64,
+        key: &str,
+    ) -> Result<u64, FileDbError> {
         let resp = self
             .client
             .insert(self.req(pb::InsertRequest {
                 collection: collection.to_owned(),
                 data: Some(json_to_struct(data)),
                 ttl_seconds,
+                key: key.to_owned(),
             }))
             .await?
             .into_inner();
@@ -450,7 +694,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         records: Vec<serde_json::Value>,
-    ) -> Result<Vec<u64>, tonic::Status> {
+    ) -> Result<Vec<u64>, FileDbError> {
         self.insert_many_with_ttl(collection, records, 0).await
     }
 
@@ -462,7 +706,7 @@ impl FileDB {
         collection: &str,
         records: Vec<serde_json::Value>,
         ttl_seconds: i64,
-    ) -> Result<Vec<u64>, tonic::Status> {
+    ) -> Result<Vec<u64>, FileDbError> {
         let resp = self
             .client
             .insert_many(self.req(pb::InsertManyRequest {
@@ -480,12 +724,27 @@ impl FileDB {
         &mut self,
         collection: &str,
         id: u64,
-    ) -> Result<Record, tonic::Status> {
+    ) -> Result<Record, FileDbError> {
+        self.find_by_id_with_fields(collection, id, &[]).await
+    }
+
+    /// Fetch a single record by ID, projecting `data` to `fields` (N2).
+    ///
+    /// When `fields` is non-empty, only those top-level fields are returned in
+    /// the record's `data`; `id`, `key` and `rev` are always included. An empty
+    /// slice returns the full record.
+    pub async fn find_by_id_with_fields(
+        &mut self,
+        collection: &str,
+        id: u64,
+        fields: &[&str],
+    ) -> Result<Record, FileDbError> {
         let resp = self
             .client
             .find_by_id(self.req(pb::FindByIdRequest {
                 collection: collection.to_owned(),
                 id,
+                fields: fields.iter().map(|s| s.to_string()).collect(),
             }))
             .await?
             .into_inner();
@@ -495,43 +754,59 @@ impl FileDB {
     /// Query records and collect them into a `Vec`.
     ///
     /// The server streams results one by one; this method buffers the full
-    /// stream for convenience. Use [`FileDB::find_stream`] for large datasets.
+    /// stream for convenience. Use [`FileDB::find_stream`] for large datasets,
+    /// or [`FileDB::find_page`] to also receive the next-page cursor.
     pub async fn find(
         &mut self,
         collection: &str,
         opts: FindOptions,
-    ) -> Result<Vec<Record>, tonic::Status> {
-        let mut stream = self.find_stream(collection, opts).await?;
-        let mut records = Vec::new();
-        while let Some(item) = stream.next().await {
-            records.push(item?);
-        }
+    ) -> Result<Vec<Record>, FileDbError> {
+        let (records, _) = self.find_page(collection, opts).await?;
         Ok(records)
+    }
+
+    /// Query one keyset page, returning `(records, next_page_token)` (N3).
+    ///
+    /// Pass an ordering ([`FindOptions::order_by_fields`]) and a `limit`, then
+    /// feed the returned token back as [`FindOptions::page_token`] on the next
+    /// call to walk the collection page by page in O(page) time. An empty
+    /// returned token means the last page was reached. Keep the same filter,
+    /// ordering and limit on every page.
+    pub async fn find_page(
+        &mut self,
+        collection: &str,
+        opts: FindOptions,
+    ) -> Result<(Vec<Record>, String), FileDbError> {
+        let request = self.req(self.build_find_request(collection, opts));
+        let mut streaming = self.client.find(request).await?.into_inner();
+        let mut records = Vec::new();
+        let mut next_token = String::new();
+        while let Some(resp) = streaming.message().await? {
+            records.push(proto_record_to_record(resp.record.unwrap_or_default()));
+            if !resp.page_token.is_empty() {
+                next_token = resp.page_token;
+            }
+        }
+        Ok((records, next_token))
     }
 
     /// Query records and return a server-side streaming [`Stream`].
     ///
     /// Prefer this over [`FileDB::find`] when the result set may be very large.
+    /// The keyset page token is not surfaced by the streaming variant — use
+    /// [`FileDB::find_page`] when you need to paginate.
     pub async fn find_stream(
         &mut self,
         collection: &str,
         opts: FindOptions,
-    ) -> Result<impl Stream<Item = Result<Record, tonic::Status>>, tonic::Status> {
-        let streaming = self
-            .client
-            .find(self.req(pb::FindRequest {
-                collection: collection.to_owned(),
-                filter: opts.filter.as_ref().map(filter_to_proto),
-                limit: opts.limit,
-                offset: opts.offset,
-                order_by: opts.order_by,
-                descending: opts.descending,
-            }))
-            .await?
-            .into_inner();
+    ) -> Result<impl Stream<Item = Result<Record, FileDbError>>, FileDbError> {
+        let request = self.req(self.build_find_request(collection, opts));
+        let streaming = self.client.find(request).await?.into_inner();
 
         Ok(streaming.map(|result| {
-            result.map(|resp| proto_record_to_record(resp.record.unwrap_or_default()))
+            result
+                .map(|resp| proto_record_to_record(resp.record.unwrap_or_default()))
+                .map_err(FileDbError::from)
         }))
     }
 
@@ -541,7 +816,7 @@ impl FileDB {
         collection: &str,
         id: u64,
         data: serde_json::Value,
-    ) -> Result<u64, tonic::Status> {
+    ) -> Result<u64, FileDbError> {
         self.update_with_ttl(collection, id, data, 0).await
     }
 
@@ -557,7 +832,7 @@ impl FileDB {
         id: u64,
         data: serde_json::Value,
         ttl_seconds: i64,
-    ) -> Result<u64, tonic::Status> {
+    ) -> Result<u64, FileDbError> {
         let resp = self
             .client
             .update(self.req(pb::UpdateRequest {
@@ -572,7 +847,7 @@ impl FileDB {
     }
 
     /// Delete a record by ID. Returns `true` if the record existed.
-    pub async fn delete(&mut self, collection: &str, id: u64) -> Result<bool, tonic::Status> {
+    pub async fn delete(&mut self, collection: &str, id: u64) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .delete(self.req(pb::DeleteRequest {
@@ -585,6 +860,143 @@ impl FileDB {
     }
 
     // -------------------------------------------------------------------------
+    // Keyed CRUD, upsert & compare-and-swap (N1)
+    // -------------------------------------------------------------------------
+
+    /// Insert `data` under `key`, or replace the existing keyed record — atomically.
+    ///
+    /// If no live record carries `key` it is inserted; otherwise the existing
+    /// record's data is replaced and its `rev` incremented. Returns the resulting
+    /// [`Record`] (including its `key` and `rev`).
+    pub async fn upsert(
+        &mut self,
+        collection: &str,
+        key: &str,
+        data: serde_json::Value,
+    ) -> Result<Record, FileDbError> {
+        let resp = self
+            .client
+            .upsert(self.req(pb::UpsertRequest {
+                collection: collection.to_owned(),
+                key: key.to_owned(),
+                data: Some(json_to_struct(data)),
+            }))
+            .await?
+            .into_inner();
+        Ok(proto_record_to_record(resp.record.unwrap_or_default()))
+    }
+
+    /// Fetch the record carrying `key`. Returns [`FileDbError::NotFound`] if none.
+    pub async fn find_by_key(
+        &mut self,
+        collection: &str,
+        key: &str,
+    ) -> Result<Record, FileDbError> {
+        self.find_by_key_with_fields(collection, key, &[]).await
+    }
+
+    /// Fetch the record carrying `key`, projecting `data` to `fields` (N2).
+    ///
+    /// `id`, `key` and `rev` are always included. An empty slice returns the full
+    /// record. Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    pub async fn find_by_key_with_fields(
+        &mut self,
+        collection: &str,
+        key: &str,
+        fields: &[&str],
+    ) -> Result<Record, FileDbError> {
+        let resp = self
+            .client
+            .find_by_key(self.req(pb::FindByKeyRequest {
+                collection: collection.to_owned(),
+                key: key.to_owned(),
+                fields: fields.iter().map(|s| s.to_string()).collect(),
+            }))
+            .await?
+            .into_inner();
+        Ok(proto_record_to_record(resp.record.unwrap_or_default()))
+    }
+
+    /// Overwrite the record carrying `key`, preserving the key itself.
+    ///
+    /// Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    pub async fn update_by_key(
+        &mut self,
+        collection: &str,
+        key: &str,
+        data: serde_json::Value,
+    ) -> Result<UpdateResult, FileDbError> {
+        let resp = self
+            .client
+            .update_by_key(self.req(pb::UpdateByKeyRequest {
+                collection: collection.to_owned(),
+                key: key.to_owned(),
+                data: Some(json_to_struct(data)),
+            }))
+            .await?
+            .into_inner();
+        Ok(UpdateResult {
+            id: resp.id,
+            key: resp.key,
+            rev: resp.rev,
+            date_modified: opt_string(resp.date_modified),
+        })
+    }
+
+    /// Delete the record carrying `key`. Returns `true` on success.
+    ///
+    /// Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    pub async fn delete_by_key(
+        &mut self,
+        collection: &str,
+        key: &str,
+    ) -> Result<bool, FileDbError> {
+        let resp = self
+            .client
+            .delete_by_key(self.req(pb::DeleteByKeyRequest {
+                collection: collection.to_owned(),
+                key: key.to_owned(),
+            }))
+            .await?
+            .into_inner();
+        Ok(resp.ok)
+    }
+
+    /// Compare-and-swap update on `key`, conditional on `expected_rev`.
+    ///
+    /// The write is applied only if the record's current `rev` equals
+    /// `expected_rev`. A stale revision (or a missing key) is a clean no-op —
+    /// never an error — reported as [`CasResult::swapped`] `= false`. The
+    /// resulting record is returned only when the swap applied.
+    pub async fn update_if_rev(
+        &mut self,
+        collection: &str,
+        key: &str,
+        expected_rev: u64,
+        data: serde_json::Value,
+    ) -> Result<CasResult, FileDbError> {
+        let resp = self
+            .client
+            .update_if_rev(self.req(pb::UpdateIfRevRequest {
+                collection: collection.to_owned(),
+                key: key.to_owned(),
+                expected_rev,
+                data: Some(json_to_struct(data)),
+            }))
+            .await?
+            .into_inner();
+        let record = if resp.swapped {
+            resp.record.map(proto_record_to_record)
+        } else {
+            None
+        };
+        Ok(CasResult {
+            swapped: resp.swapped,
+            record,
+        })
+    }
+
+    // -------------------------------------------------------------------------
     // Secondary indexes
     // -------------------------------------------------------------------------
 
@@ -593,7 +1005,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         field: &str,
-    ) -> Result<(), tonic::Status> {
+    ) -> Result<(), FileDbError> {
         self.client
             .ensure_index(self.req(pb::EnsureIndexRequest {
                 collection: collection.to_owned(),
@@ -608,7 +1020,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         field: &str,
-    ) -> Result<bool, tonic::Status> {
+    ) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .drop_index(self.req(pb::DropIndexRequest {
@@ -621,7 +1033,7 @@ impl FileDB {
     }
 
     /// List all indexed field names for a collection.
-    pub async fn list_indexes(&mut self, collection: &str) -> Result<Vec<String>, tonic::Status> {
+    pub async fn list_indexes(&mut self, collection: &str) -> Result<Vec<String>, FileDbError> {
         let resp = self
             .client
             .list_indexes(self.req(pb::ListIndexesRequest {
@@ -637,7 +1049,7 @@ impl FileDB {
     // -------------------------------------------------------------------------
 
     /// Begin a transaction on a collection. Returns the transaction ID.
-    pub async fn begin_tx(&mut self, collection: &str) -> Result<String, tonic::Status> {
+    pub async fn begin_tx(&mut self, collection: &str) -> Result<String, FileDbError> {
         let resp = self
             .client
             .begin_tx(self.req(pb::BeginTxRequest {
@@ -649,7 +1061,7 @@ impl FileDB {
     }
 
     /// Commit a transaction. Returns `true` on success.
-    pub async fn commit_tx(&mut self, tx_id: &str) -> Result<bool, tonic::Status> {
+    pub async fn commit_tx(&mut self, tx_id: &str) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .commit_tx(self.req(pb::CommitTxRequest {
@@ -661,7 +1073,7 @@ impl FileDB {
     }
 
     /// Roll back a transaction. Returns `true` on success.
-    pub async fn rollback_tx(&mut self, tx_id: &str) -> Result<bool, tonic::Status> {
+    pub async fn rollback_tx(&mut self, tx_id: &str) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .rollback_tx(self.req(pb::RollbackTxRequest {
@@ -687,7 +1099,7 @@ impl FileDB {
     /// ```rust,no_run
     /// use futures::StreamExt;
     ///
-    /// # async fn example(mut db: filedbv2::FileDB) -> Result<(), tonic::Status> {
+    /// # async fn example(mut db: filedbv2::FileDB) -> Result<(), filedbv2::FileDbError> {
     /// let mut events = db.watch("users", None).await?;
     /// while let Some(event) = events.next().await {
     ///     let event = event?;
@@ -700,7 +1112,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         filter: Option<FilterInput>,
-    ) -> Result<impl Stream<Item = Result<WatchEvent, tonic::Status>>, tonic::Status> {
+    ) -> Result<impl Stream<Item = Result<WatchEvent, FileDbError>>, FileDbError> {
         let streaming = self
             .client
             .watch(self.req(pb::WatchRequest {
@@ -711,13 +1123,92 @@ impl FileDB {
             .into_inner();
 
         Ok(streaming.map(|result| {
-            result.map(|event| WatchEvent {
-                op: watch_op_from_proto(event.op),
-                collection: event.collection,
-                record: proto_record_to_record(event.record.unwrap_or_default()),
-                ts: event.ts.map(timestamp_to_rfc3339),
-            })
+            result
+                .map(|event| WatchEvent {
+                    op: watch_op_from_proto(event.op),
+                    collection: event.collection,
+                    record: proto_record_to_record(event.record.unwrap_or_default()),
+                    ts: event.ts.map(timestamp_to_rfc3339),
+                })
+                .map_err(FileDbError::from)
         }))
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregations (N4)
+    // -------------------------------------------------------------------------
+
+    /// Compute count + numeric aggregations over the filtered live records.
+    ///
+    /// The `Aggregate` RPC is server-streaming — one message per group; this
+    /// collects them into a `Vec`. Each [`AggregateGroup`] carries its `group`
+    /// value (`Null` for the whole-set group), `count`, and — when the group had
+    /// at least one numeric `field` value ([`AggregateGroup::numeric`]) — the
+    /// `sum`/`avg`/`min`/`max`.
+    pub async fn aggregate(
+        &mut self,
+        collection: &str,
+        opts: AggregateOptions,
+    ) -> Result<Vec<AggregateGroup>, FileDbError> {
+        let request = self.req(pb::AggregateRequest {
+            collection: collection.to_owned(),
+            filter: opts.filter.as_ref().map(filter_to_proto),
+            group_by: opts.group_by,
+            field: opts.field,
+            aggregations: opts.aggregations.iter().map(|o| agg_op_to_proto(*o)).collect(),
+        });
+        let mut streaming = self.client.aggregate(request).await?.into_inner();
+        let mut out = Vec::new();
+        while let Some(resp) = streaming.message().await? {
+            out.push(AggregateGroup {
+                group: resp.group_value.map(value_to_json).unwrap_or(serde_json::Value::Null),
+                count: resp.count,
+                numeric: resp.numeric,
+                sum: resp.sum,
+                avg: resp.avg,
+                min: resp.min,
+                max: resp.max,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Count the live records matching `filter` (or all records when `None`).
+    pub async fn count(
+        &mut self,
+        collection: &str,
+        filter: Option<FilterInput>,
+    ) -> Result<u64, FileDbError> {
+        let groups = self
+            .aggregate(collection, AggregateOptions { filter, ..Default::default() })
+            .await?;
+        Ok(groups.first().map(|g| g.count).unwrap_or(0))
+    }
+
+    /// Group live records by `field` and aggregate each group.
+    ///
+    /// Convenience wrapper over [`FileDB::aggregate`]: `field` is the group-by
+    /// field, `metric` the numeric field for `sum`/`avg`/`min`/`max` (request
+    /// those via `aggregations`). Returns one [`AggregateGroup`] per distinct
+    /// group value.
+    pub async fn group_by(
+        &mut self,
+        collection: &str,
+        field: &str,
+        aggregations: Vec<AggregateOp>,
+        metric: &str,
+        filter: Option<FilterInput>,
+    ) -> Result<Vec<AggregateGroup>, FileDbError> {
+        self.aggregate(
+            collection,
+            AggregateOptions {
+                aggregations,
+                field: metric.to_owned(),
+                group_by: field.to_owned(),
+                filter,
+            },
+        )
+        .await
     }
 
     // -------------------------------------------------------------------------
@@ -725,7 +1216,7 @@ impl FileDB {
     // -------------------------------------------------------------------------
 
     /// Return statistics for a collection.
-    pub async fn stats(&mut self, collection: &str) -> Result<CollectionStats, tonic::Status> {
+    pub async fn stats(&mut self, collection: &str) -> Result<CollectionStats, FileDbError> {
         let resp = self
             .client
             .collection_stats(self.req(pb::CollectionStatsRequest {
@@ -750,7 +1241,7 @@ impl FileDB {
     ///
     /// Merges dirty segments and reclaims space from deleted or overwritten
     /// records. Returns only after the pass completes; `true` on success.
-    pub async fn compact(&mut self, collection: &str) -> Result<bool, tonic::Status> {
+    pub async fn compact(&mut self, collection: &str) -> Result<bool, FileDbError> {
         let resp = self
             .client
             .compact(self.req(pb::CompactRequest {
@@ -769,14 +1260,14 @@ impl FileDB {
     /// a convenience wrapper that writes straight to disk.
     pub async fn snapshot(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<Vec<u8>, tonic::Status>>, tonic::Status> {
+    ) -> Result<impl Stream<Item = Result<Vec<u8>, FileDbError>>, FileDbError> {
         let streaming = self
             .client
             .snapshot(self.req(pb::SnapshotRequest {}))
             .await?
             .into_inner();
 
-        Ok(streaming.map(|result| result.map(|chunk| chunk.data)))
+        Ok(streaming.map(|result| result.map(|chunk| chunk.data).map_err(FileDbError::from)))
     }
 
     /// Stream a database snapshot straight to a file at `path`.

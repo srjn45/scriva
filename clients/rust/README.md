@@ -78,6 +78,51 @@ db.update("users", id, json!({"name": "Alice", "age": 31})).await?;
 let existed: bool = db.delete("users", id).await?;
 ```
 
+Every record also carries a caller-supplied `key` (empty for records inserted
+without one) and a monotonic `rev` (starts at 1, bumped on every write):
+
+```rust
+let r = db.find_by_id("users", id).await?;
+println!("id={} key={:?} rev={}", r.id, r.key, r.rev);
+```
+
+## Keyed CRUD, upsert & compare-and-swap
+
+Records may carry a caller-supplied string primary **key**, giving natural upsert
+and optimistic-concurrency (compare-and-swap on `rev`) semantics.
+
+```rust
+use filedbv2::FileDbError;
+
+// Insert under a key. A key already held by a live record is AlreadyExists.
+let id = db.insert_with_key("users", json!({"name": "Alice"}), "alice").await?;
+
+// Upsert: insert under the key, or replace the existing keyed record — atomic.
+// Returns the resulting Record (rev is incremented on replace).
+let rec = db.upsert("users", "alice", json!({"name": "Alice", "age": 31})).await?;
+println!("key={} rev={}", rec.key, rec.rev);
+
+// Fetch / overwrite / delete by key. A missing key is a typed NotFound error.
+let rec = db.find_by_key("users", "alice").await?;
+let upd = db.update_by_key("users", "alice", json!({"name": "Alice", "age": 32})).await?;
+println!("rev after update = {}", upd.rev);
+let existed = db.delete_by_key("users", "alice").await?;
+
+// Compare-and-swap: applies only if the current rev matches expected_rev.
+// A stale rev (or missing key) is a clean no-op — swapped = false, never an error.
+let cas = db.update_if_rev("users", "alice", upd.rev, json!({"name": "Alice", "age": 33})).await?;
+if cas.swapped {
+    println!("swapped; new rev = {}", cas.record.unwrap().rev);
+}
+
+// NotFound / AlreadyExists are dedicated error variants you can match on.
+match db.find_by_key("users", "ghost").await {
+    Err(FileDbError::NotFound(_)) => println!("no such key"),
+    Ok(rec) => println!("{}", rec.data),
+    Err(e) => return Err(e.into()),
+}
+```
+
 ### Per-record TTL
 
 `insert`, `insert_many`, and `update` each have a `*_with_ttl` variant taking a
@@ -142,6 +187,53 @@ while let Some(record) = stream.next().await {
 }
 ```
 
+### Field projection
+
+Set `fields` to project each record's `data` down to those top-level fields
+(`id`, `key` and `rev` are always returned; unknown fields are silently omitted):
+
+```rust
+let slim = db.find("users", FindOptions {
+    fields: vec!["name".into(), "email".into()],
+    ..Default::default()
+}).await?;
+
+// Also on single-record fetches:
+let r = db.find_by_id_with_fields("users", id, &["name"]).await?;
+let r = db.find_by_key_with_fields("users", "alice", &["name"]).await?;
+```
+
+### Multi-field sort & keyset pagination
+
+`order_by_fields` gives a multi-field, per-field-directional sort (the record id
+is always the final tiebreaker, so the order is total). Use `find_page` to walk
+results page by page with a keyset cursor — O(page), not O(offset):
+
+```rust
+use filedbv2::OrderBy;
+
+let mut page_token = String::new();
+loop {
+    let (records, next) = db.find_page("users", FindOptions {
+        order_by_fields: vec![OrderBy::asc("role"), OrderBy::desc("age")],
+        limit: 100,
+        page_token: page_token.clone(),
+        ..Default::default()
+    }).await?;
+
+    for r in &records {
+        println!("{}", r.data);
+    }
+    if next.is_empty() {
+        break;   // last page reached
+    }
+    page_token = next;   // feed the cursor back for the next page
+}
+```
+
+Keep the same filter, ordering and limit on every page. The deprecated scalar
+`order_by` / `descending` fields are still honoured when `order_by_fields` is empty.
+
 ### Filter operators
 
 | `FilterOp` | Description |
@@ -162,8 +254,11 @@ while let Some(record) = stream.next().await {
 | `filter` | `Option<FilterInput>` | `None` | Query filter |
 | `limit` | `u32` | `0` | Max results (0 = no limit) |
 | `offset` | `u32` | `0` | Skip first N results |
-| `order_by` | `String` | `""` | Field name to sort by |
-| `descending` | `bool` | `false` | Reverse sort order |
+| `order_by` | `String` | `""` | *Deprecated* single-field sort — use `order_by_fields` |
+| `descending` | `bool` | `false` | *Deprecated* direction for `order_by` |
+| `order_by_fields` | `Vec<OrderBy>` | `[]` | Multi-field sort (supersedes `order_by`) |
+| `fields` | `Vec<String>` | `[]` | Project `data` to these top-level fields |
+| `page_token` | `String` | `""` | Keyset cursor from a previous `find_page` |
 
 ## Secondary indexes
 
@@ -220,6 +315,45 @@ while let Some(event) = events.next().await {
 let filter = FilterInput::field("role", FilterOp::Eq, "admin");
 let mut events = db.watch("users", Some(filter)).await?;
 ```
+
+## Aggregations
+
+Compute `count` and numeric aggregations (`sum`/`avg`/`min`/`max`) entirely in the
+engine — optionally grouped by a field, honouring the same filter as `find`.
+
+```rust
+use filedbv2::{AggregateOp, AggregateOptions, FilterInput, FilterOp};
+
+// Count matching records.
+let n = db.count("users", Some(FilterInput::field("role", FilterOp::Eq, "admin"))).await?;
+
+// Whole-collection numeric aggregation over a field.
+let groups = db.aggregate("users", AggregateOptions {
+    aggregations: vec![AggregateOp::Sum, AggregateOp::Avg, AggregateOp::Min, AggregateOp::Max],
+    field: "age".into(),
+    ..Default::default()
+}).await?;
+let g = &groups[0];   // ungrouped => exactly one group, with `group == Null`
+println!("count={} sum={} avg={} min={} max={}", g.count, g.sum, g.avg, g.min, g.max);
+
+// Group by a field — one AggregateGroup per distinct value.
+let by_role = db.group_by(
+    "users",
+    "role",                    // group-by field
+    vec![AggregateOp::Avg],    // aggregations
+    "age",                     // numeric metric field
+    None,                      // optional filter
+).await?;
+for g in &by_role {
+    // `numeric` is false for groups with no numeric metric value; then
+    // sum/avg/min/max are meaningless.
+    println!("{:?}: count={} avg_age={}", g.group, g.count, if g.numeric { g.avg } else { 0.0 });
+}
+```
+
+`count` is always returned; `sum`/`avg`/`min`/`max` require `field` to be set.
+`Aggregate` is server-streaming (one message per group); these helpers collect it
+into a `Vec<AggregateGroup>`.
 
 ## Stats
 

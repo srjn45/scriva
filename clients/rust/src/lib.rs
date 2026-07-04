@@ -28,6 +28,10 @@
 //! }
 //! ```
 
+// FileDbError wraps tonic::Status (a large type) by design, so callers can match
+// its NotFound / AlreadyExists variants directly; boxing it would obscure the API.
+#![allow(clippy::result_large_err)]
+
 pub(crate) mod pb {
     tonic::include_proto!("filedb.v1");
 }
@@ -35,5 +39,7 @@ pub(crate) mod pb {
 mod client;
 
 pub use client::{
-    CollectionStats, FileDB, FilterInput, FilterOp, FindOptions, Record, WatchEvent, WatchOp,
+    AggregateGroup, AggregateOp, AggregateOptions, CasResult, CollectionStats, Error, FileDB,
+    FileDbError, FilterInput, FilterOp, FindOptions, OrderBy, Record, UpdateResult, WatchEvent,
+    WatchOp,
 };

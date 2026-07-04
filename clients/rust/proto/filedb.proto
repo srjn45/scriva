@@ -77,6 +77,58 @@ service FileDB {
     };
   }
 
+  // --- Keyed CRUD, Upsert & compare-and-swap (N1) ---
+  //
+  // These map straight onto the embedded engine's keyed operations, giving
+  // network clients natural (caller-supplied) string keys, upsert, and
+  // optimistic-concurrency updates keyed on a per-record revision (`rev`).
+
+  // Upsert inserts data under key if no live record carries it, or replaces the
+  // existing record's data if one does — atomically. Returns the resulting
+  // record with its (incremented on replace) revision. This is the keyed-insert
+  // path: there is no separate InsertWithKey RPC.
+  rpc Upsert(UpsertRequest) returns (UpsertResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/records:upsert"
+      body: "*"
+    };
+  }
+
+  // FindByKey returns the record carrying the caller-supplied string key.
+  // A missing key yields NOT_FOUND.
+  rpc FindByKey(FindByKeyRequest) returns (FindResponse) {
+    option (google.api.http) = {
+      get: "/v1/{collection}/keys/{key}"
+    };
+  }
+
+  // UpdateByKey overwrites the record carrying key, preserving the key itself.
+  // A missing key yields NOT_FOUND.
+  rpc UpdateByKey(UpdateByKeyRequest) returns (UpdateResponse) {
+    option (google.api.http) = {
+      put: "/v1/{collection}/keys/{key}"
+      body: "*"
+    };
+  }
+
+  // DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.
+  rpc DeleteByKey(DeleteByKeyRequest) returns (DeleteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/{collection}/keys/{key}"
+    };
+  }
+
+  // UpdateIfRev conditionally updates the record carrying key: the write is
+  // applied only if the record's current revision equals expected_rev. A stale
+  // revision (or a missing key) is a clean no-op reported as swapped=false, not
+  // an error.
+  rpc UpdateIfRev(UpdateIfRevRequest) returns (UpdateIfRevResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/keys/{key}:cas"
+      body: "*"
+    };
+  }
+
   // --- Secondary indexes ---
 
   rpc EnsureIndex(EnsureIndexRequest) returns (EnsureIndexResponse) {
@@ -109,6 +161,20 @@ service FileDB {
   rpc Watch(WatchRequest) returns (stream WatchEvent) {
     option (google.api.http) = {
       post: "/v1/{collection}/watch"
+      body: "*"
+    };
+  }
+
+  // --- Aggregations (N4) ---
+
+  // Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+  // live records matching the same Filter as Find, optionally grouped by a field.
+  // It server-streams one message per group; a plain (ungrouped) aggregation
+  // streams a single message. Aggregation runs entirely in the engine — the
+  // collection is never materialised on the client.
+  rpc Aggregate(AggregateRequest) returns (stream AggregateResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/aggregate"
       body: "*"
     };
   }
@@ -147,6 +213,11 @@ message Record {
   google.protobuf.Struct    data          = 2;
   google.protobuf.Timestamp date_added    = 3;
   google.protobuf.Timestamp date_modified = 4;
+  // Caller-supplied string primary key, empty for records inserted without one.
+  string                    key           = 5;
+  // Monotonic per-record revision, bumped on every write. Fresh records start
+  // at 1. Feed it to UpdateIfRev for optimistic-concurrency updates.
+  uint64                    rev           = 6;
 }
 
 // A composable filter node.
@@ -213,10 +284,20 @@ message InsertRequest {
   // after insertion, overriding any collection default. 0 (the default)
   // applies the collection's default TTL, if any.
   int64 ttl_seconds = 3;
+  // Optional caller-supplied string primary key (keyed Create). When set, the
+  // record is inserted under this key and a key already held by a live record
+  // is rejected with ALREADY_EXISTS. Empty (the default) preserves the existing
+  // server-assigned-id behaviour. A keyed insert does not participate in
+  // transactions or per-record TTL.
+  string key = 4;
 }
 message InsertResponse {
   uint64 id         = 1;
   string date_added = 2;
+  // Caller-supplied string key (empty for a keyless insert) and the record's
+  // revision. A fresh insert always starts at rev 1.
+  string key        = 3;
+  uint64 rev        = 4;
 }
 
 message InsertManyRequest {
@@ -233,6 +314,18 @@ message InsertManyResponse {
 message FindByIdRequest {
   string collection = 1;
   uint64 id         = 2;
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in the record's data. id, key and rev are always included. Empty
+  // (the default) returns the full record. An unknown field is silently omitted.
+  repeated string fields = 3;
+}
+
+// OrderBy names one sort key and its direction. A Find may carry several, applied
+// in order as a lexicographic (multi-field) sort; ties beyond the last key break
+// on the record id so the ordering is always total and a keyset cursor is stable.
+message OrderBy {
+  string field = 1;
+  bool   desc  = 2; // false = ascending, true = descending
 }
 
 message FindRequest {
@@ -240,12 +333,34 @@ message FindRequest {
   Filter  filter     = 2;
   uint32  limit      = 3; // 0 = no limit
   uint32  offset     = 4;
-  string  order_by   = 5; // field name
-  bool    descending = 6;
+  // Deprecated single-field sort. Superseded by order_by_fields (N3): honoured
+  // only when order_by_fields is empty, and slated for removal after one release.
+  // Migrate `order_by:"f", descending:d` to `order_by_fields:[{field:"f", desc:d}]`.
+  string  order_by   = 5 [deprecated = true]; // field name
+  bool    descending = 6 [deprecated = true];
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in each record's data. id, key and rev are always included. Empty
+  // (the default) returns full records. An unknown field is silently omitted.
+  repeated string fields = 7;
+  // Opaque keyset (cursor) pagination token (N3). Empty (the default) requests
+  // the first page; otherwise it must be a page_token returned by a previous Find
+  // and the scan seeks past the rows already returned instead of counting past
+  // them (O(page), not O(offset)). Only meaningful with an ordering
+  // (order_by_fields or the deprecated order_by); pass the same ordering, filter,
+  // and limit on every page. Combine with offset=0 for keyset paging.
+  string page_token = 8;
+  // Multi-field, per-field-directional sort (N3). When non-empty it supersedes
+  // the deprecated scalar order_by/descending. The record id is always the final
+  // tiebreaker, so the sort is total and pagination is stable.
+  repeated OrderBy order_by_fields = 9;
 }
 
 message FindResponse {
   Record record = 1;
+  // Next-page cursor (N3). Set on the final streamed message when more rows remain
+  // under the requested ordering — feed it back as FindRequest.page_token to fetch
+  // the next page. Empty on every message means the last page was reached.
+  string page_token = 2;
 }
 
 message UpdateRequest {
@@ -260,6 +375,10 @@ message UpdateRequest {
 message UpdateResponse {
   uint64 id            = 1;
   string date_modified = 2;
+  // Caller-supplied string key (empty for a keyless update) and the record's
+  // revision after the write.
+  string key           = 3;
+  uint64 rev           = 4;
 }
 
 message DeleteRequest {
@@ -267,6 +386,54 @@ message DeleteRequest {
   uint64 id         = 2;
 }
 message DeleteResponse { bool ok = 1; }
+
+// ---------------------------------------------------------------------------
+// Keyed CRUD, Upsert & compare-and-swap (N1)
+// ---------------------------------------------------------------------------
+
+message UpsertRequest {
+  string                 collection = 1;
+  string                 key        = 2;
+  google.protobuf.Struct data       = 3;
+}
+message UpsertResponse {
+  // The resulting record, including its key and (incremented on replace) rev.
+  Record record = 1;
+}
+
+message FindByKeyRequest {
+  string collection = 1;
+  string key        = 2;
+  // Optional field projection: when non-empty, only these top-level fields are
+  // returned in the record's data. id, key and rev are always included. Empty
+  // (the default) returns the full record. An unknown field is silently omitted.
+  repeated string fields = 3;
+}
+
+message UpdateByKeyRequest {
+  string                 collection = 1;
+  string                 key        = 2;
+  google.protobuf.Struct data       = 3;
+}
+
+message DeleteByKeyRequest {
+  string collection = 1;
+  string key        = 2;
+}
+
+message UpdateIfRevRequest {
+  string                 collection   = 1;
+  string                 key          = 2;
+  uint64                 expected_rev = 3;
+  google.protobuf.Struct data         = 4;
+}
+message UpdateIfRevResponse {
+  // swapped is true when expected_rev matched and the update applied; false —
+  // never an error — when the revision was stale or no live record carries key.
+  bool   swapped = 1;
+  // The resulting record when swapped is true; unset otherwise.
+  Record record  = 2;
+}
 
 // ---------------------------------------------------------------------------
 // Secondary indexes
@@ -318,6 +485,62 @@ message WatchEvent {
   string                    collection = 2;
   Record                    record     = 3;
   google.protobuf.Timestamp ts         = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Aggregations (N4)
+// ---------------------------------------------------------------------------
+
+// AggregateOp names a numeric aggregation to compute per group over the request's
+// numeric `field`. COUNT (the per-group record count) is always returned and need
+// not be listed. Any of SUM/AVG/MIN/MAX requires `field` to be set.
+enum AggregateOp {
+  AGGREGATE_OP_UNSPECIFIED = 0;
+  AGG_COUNT                = 1; // per-group record count (always returned)
+  AGG_SUM                  = 2; // sum of numeric field values
+  AGG_AVG                  = 3; // mean of numeric field values
+  AGG_MIN                  = 4; // smallest numeric field value
+  AGG_MAX                  = 5; // largest numeric field value
+}
+
+message AggregateRequest {
+  string collection = 1;
+  // The same composable filter as Find. Aggregation honours it: only matching
+  // live records contribute. Empty (nil) aggregates the whole collection.
+  Filter filter = 2;
+  // Optional group-by field. When set, one response is streamed per distinct value
+  // of this field; records are bucketed by that value. Empty (the default)
+  // aggregates the whole filtered set into a single group whose group_value is
+  // null.
+  string group_by = 3;
+  // Numeric field for SUM/AVG/MIN/MAX. Required when any of those aggregations is
+  // requested; ignored for a pure count. Only records whose `field` is numeric
+  // contribute to the numeric aggregates (AVG divides by that numeric count).
+  string field = 4;
+  // Which aggregations to compute. COUNT is always returned even if omitted; an
+  // empty list yields count-only. SUM/AVG/MIN/MAX require `field`.
+  repeated AggregateOp aggregations = 5;
+}
+
+// AggregateResponse is one group's result. For a grouped request there is one per
+// distinct group_by value, streamed in ascending group order; for an ungrouped
+// request there is exactly one, carrying a null group_value.
+message AggregateResponse {
+  // The group_by field's value for this group, type-preserved (number, string,
+  // bool). Null for the whole-set group and for records missing the group field.
+  google.protobuf.Value group_value = 1;
+  // Records in this group (post-filter). Always populated.
+  uint64 count = 2;
+  // Numeric aggregates over `field` across this group's records that carried a
+  // numeric value. Meaningful only when `numeric` is true.
+  double sum = 3;
+  double avg = 4;
+  double min = 5;
+  double max = 6;
+  // numeric is true when at least one record in the group carried a numeric
+  // `field`; when false the sum/avg/min/max above are zero and meaningless (e.g.
+  // a count-only aggregation, or a group where the field was absent/non-numeric).
+  bool numeric = 7;
 }
 
 // ---------------------------------------------------------------------------
