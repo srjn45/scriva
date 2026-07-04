@@ -131,6 +131,12 @@ func serveCmd() *cobra.Command {
 						merged.OTLPEndpoint = cfg.OTLPEndpoint
 					case "otlp-sample-ratio":
 						merged.OTLPSampleRatio = cfg.OTLPSampleRatio
+					case "replicate-from":
+						merged.ReplicateFrom = cfg.ReplicateFrom
+					case "replicate-id":
+						merged.FollowerID = cfg.FollowerID
+					case "replication-ring-size":
+						merged.ReplicationRingSize = cfg.ReplicationRingSize
 					}
 				})
 				cfg = merged
@@ -165,6 +171,9 @@ func serveCmd() *cobra.Command {
 	f.Float64Var(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "Per-API-key rate limit in requests/sec; over-budget calls get RESOURCE_EXHAUSTED (0 = disabled)")
 	f.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP/gRPC collector address for OpenTelemetry tracing, e.g. localhost:4317 (empty = tracing disabled)")
 	f.Float64Var(&cfg.OTLPSampleRatio, "otlp-sample-ratio", cfg.OTLPSampleRatio, "Fraction of traces to sample when tracing is enabled (0–1)")
+	f.StringVar(&cfg.ReplicateFrom, "replicate-from", cfg.ReplicateFrom, "Run as a follower tailing the leader at this gRPC address (empty = leader mode)")
+	f.StringVar(&cfg.FollowerID, "replicate-id", cfg.FollowerID, "Follower identity reported to the leader in ReplicationStatus (default: hostname)")
+	f.IntVar(&cfg.ReplicationRingSize, "replication-ring-size", cfg.ReplicationRingSize, "Leader-side buffer of recent committed entries for follower resume (0 = disable replication)")
 
 	return cmd
 }
@@ -206,6 +215,40 @@ func serve(cfg server.Config, configFile string) error {
 		}()
 	}
 
+	// Follower mode (R1): when configured to replicate from a leader, dial it and
+	// — on a fresh data directory — bootstrap from a snapshot before opening the
+	// DB, so the DB opens over the restored state. An existing data directory is
+	// resumed from its persisted applied-LSN instead.
+	var leaderConn *grpc.ClientConn
+	var followerWatermark uint64
+	var followerBootstrapped bool
+	if cfg.ReplicateFrom != "" {
+		conn, err := grpc.NewClient(cfg.ReplicateFrom, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return fmt.Errorf("dial leader %q: %w", cfg.ReplicateFrom, err)
+		}
+		leaderConn = conn
+		defer func() { _ = leaderConn.Close() }()
+
+		fresh, err := dirHasNoCollections(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		if fresh {
+			logger.Info("follower: bootstrapping from leader snapshot", "leader", cfg.ReplicateFrom)
+			bctx := server.ReplicationAuthContext(context.Background(), cfg.APIKey)
+			wm, err := server.Bootstrap(bctx, pb.NewFileDBClient(conn), cfg.DataDir)
+			if err != nil {
+				return fmt.Errorf("follower bootstrap: %w", err)
+			}
+			followerWatermark = wm
+			followerBootstrapped = true
+			logger.Info("follower: bootstrap complete", "resume_lsn", wm)
+		} else {
+			logger.Info("follower: resuming from existing data", "leader", cfg.ReplicateFrom)
+		}
+	}
+
 	// Open the database, attaching the compaction hook.
 	engineCfg := cfg.EngineConfig()
 	engineCfg.OnCompaction = m.ObserveCompaction
@@ -228,6 +271,14 @@ func serve(cfg server.Config, configFile string) error {
 	}
 	defer func() { _ = db.Close() }()
 	logger.Info("database opened", "data_dir", cfg.DataDir)
+
+	// If we just bootstrapped a fresh follower, record the leader LSN watermark
+	// captured before the snapshot as the resume point for the replication tail.
+	if followerBootstrapped {
+		if err := db.SetAppliedLSN(followerWatermark); err != nil {
+			return fmt.Errorf("record follower resume lsn: %w", err)
+		}
+	}
 
 	// Register the per-collection gauge collector.
 	metrics.NewDBCollector(reg, func() []metrics.CollectionStats {
@@ -404,6 +455,29 @@ func serve(cfg server.Config, configFile string) error {
 	go func() { _ = grpcSrv.Serve(tcpLn) }()
 	healthSvc.SetServing()
 
+	// Follower mode (R1): start tailing the leader once the local server is up.
+	// The apply loop resumes from the DB's persisted applied-LSN and reconnects
+	// with backoff on transient errors. stopFollower is called first on shutdown
+	// so the tail drains before the DB closes.
+	stopFollower := func() {}
+	if cfg.ReplicateFrom != "" {
+		fctx, cancelF := context.WithCancel(context.Background())
+		stopFollower = cancelF
+		followerID := cfg.FollowerID
+		if followerID == "" {
+			if hn, herr := os.Hostname(); herr == nil {
+				followerID = hn
+			}
+		}
+		fol := server.NewFollower(db, pb.NewFileDBClient(leaderConn), followerID, cfg.APIKey, logger)
+		go func() {
+			if err := fol.Run(fctx); err != nil && fctx.Err() == nil {
+				logger.Error("follower replication stopped", "err", err)
+			}
+		}()
+		logger.Info("follower replication started", "leader", cfg.ReplicateFrom, "follower_id", followerID)
+	}
+
 	// Hot-reload API keys on SIGHUP (rotation without a restart). Only useful
 	// when keys come from a config file; the startup --api-key is preserved.
 	if configFile != "" {
@@ -437,6 +511,9 @@ func serve(cfg server.Config, configFile string) error {
 	<-quit
 	logger.Info("shutting down")
 
+	// Stop the follower tail (if any) before closing the DB it writes into.
+	stopFollower()
+
 	// Flip health to NOT_SERVING first so load balancers stop routing new work,
 	// then drain in-flight RPCs via GracefulStop.
 	healthSvc.SetNotServing()
@@ -457,6 +534,25 @@ func serve(cfg server.Config, configFile string) error {
 
 	logger.Info("stopped")
 	return nil
+}
+
+// dirHasNoCollections reports whether dataDir contains no collection
+// sub-directories yet — i.e. this is a fresh follower that must bootstrap from a
+// leader snapshot. A missing directory counts as empty.
+func dirHasNoCollections(dataDir string) (bool, error) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("read data dir %q: %w", dataDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // buildKeys converts the server config's scoped key list plus the legacy

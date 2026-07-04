@@ -79,6 +79,14 @@ type CollectionConfig struct {
 	// their own deadline; updates preserve a record's existing expiry unless one
 	// is supplied explicitly. Zero (the default) means records never expire.
 	DefaultTTL time.Duration
+
+	// ReplicationRingSize enables leader-side replication (R1) when > 0: the DB
+	// assigns a monotonic global LSN to every committed entry and keeps this many
+	// recent entries in memory so a briefly-disconnected follower can resume
+	// without a full re-snapshot. Zero (the default) disables replication and
+	// leaves the write path untouched — the embedded engine pays nothing. This is
+	// a DB-wide setting read once at Open; it is not per-collection.
+	ReplicationRingSize int
 }
 
 func defaultConfig() CollectionConfig {
@@ -127,6 +135,12 @@ type Collection struct {
 	// Secondary indexes: field name → index.
 	sidxMu  sync.RWMutex
 	sidxMap map[string]*SecondaryIndex
+
+	// broker, when non-nil, is the DB-level replication feed. Committed entries
+	// are published to it (under c.mu, in commit order) so followers can tail
+	// them with a global LSN. It is wired by DB.Open when replication is enabled;
+	// a collection opened directly (embedded, no DB) leaves it nil.
+	broker *replicationBroker
 
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
@@ -402,6 +416,7 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 		c.mu.Unlock()
 		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
 	}
+	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -479,6 +494,7 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: %w", err)
 	}
+	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -511,6 +527,7 @@ func (c *Collection) Delete(id uint64) error {
 		c.mu.Unlock()
 		return fmt.Errorf("collection: delete: %w", err)
 	}
+	c.publishCommit(e)
 	c.mu.Unlock()
 
 	c.emit(WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts})
@@ -656,6 +673,17 @@ func (c *Collection) emit(ev WatchEvent) {
 	c.watchMu.Unlock()
 }
 
+// publishCommit ships a just-committed entry to the replication feed, assigning
+// it the next global LSN. It must be called while c.mu is held and after the
+// entry's disk append (and any fsync) has succeeded, so followers only ever see
+// durably-committed entries and per-collection order is preserved. It is a no-op
+// when replication is disabled.
+func (c *Collection) publishCommit(e store.Entry) {
+	if c.broker != nil {
+		c.broker.publish(c.name, e)
+	}
+}
+
 // rotateSegment seals the current active segment and opens a new one.
 func (c *Collection) rotateSegment() error {
 	c.mu.Lock()
@@ -758,6 +786,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 
 	// Apply all ops sequentially.
 	var events []WatchEvent
+	var committed []store.Entry
 	var maxInsertID uint64
 
 	for _, op := range ops {
@@ -778,6 +807,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			if op.id > maxInsertID {
 				maxInsertID = op.id
 			}
+			committed = append(committed, e)
 			events = append(events, WatchEvent{Op: store.OpInsert, ID: op.id, Data: op.data, Ts: op.ts})
 
 		case txOpUpdate:
@@ -801,6 +831,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp})
 			c.sidxUpdateEntry(op.id, op.data)
+			committed = append(committed, e)
 			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
 
 		case txOpDelete:
@@ -812,6 +843,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			}
 			c.index.Delete(op.id)
 			c.sidxRemoveEntry(op.id)
+			committed = append(committed, e)
 			events = append(events, WatchEvent{Op: store.OpDelete, ID: op.id, Ts: op.ts})
 		}
 	}
@@ -819,6 +851,9 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
 		return fmt.Errorf("tx commit: sync: %w", err)
+	}
+	for _, e := range committed {
+		c.publishCommit(e)
 	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
@@ -1159,6 +1194,7 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		c.mu.Unlock()
 		return false, fmt.Errorf("collection: cas: %w", err)
 	}
+	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 

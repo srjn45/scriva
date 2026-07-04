@@ -31,7 +31,30 @@ embedding-specific contract.
 
 ## [Unreleased]
 
-_Nothing yet — next up: v0.8.0 Replication & HA._
+### Added
+
+- **R1 — leader→follower replication (log shipping).** A follower node tails a
+  new server-streaming `Replicate` RPC that ships every committed segment entry
+  (post-fsync) tagged with a monotonic **global LSN**, and applies it through the
+  engine's normal write path so its primary and secondary indexes match the
+  leader's exactly. Replication is **asynchronous** (bounded lag) with a
+  per-follower shipped-LSN channel that lays the groundwork for R2.
+  - New `ReplicationStatus` RPC (`GET /v1/replication/status`) reports the leader
+    LSN and, per connected follower, its shipped LSN, lag, and connect time.
+  - Run a node as a follower with `--replicate-from <leader-addr>` (config:
+    `replicate_from`). A fresh follower **bootstraps from a `Snapshot`** and then
+    catches up from the stream; a restarted follower **resumes from its persisted
+    applied-LSN** with no gaps and no duplication (apply is idempotent by record
+    revision). Tune the leader's in-memory resume buffer with
+    `--replication-ring-size` (config: `replication_ring_size`, default 8192).
+  - The embeddable `engine` package stays dependency-free: it exposes the LSN
+    feed and apply as plain Go types (`engine.ReplicationEntry`,
+    `DB.SubscribeReplication`, `DB.ApplyReplication`, `DB.ReplicationStatus`); the
+    server maps them to proto. Leader-side sequencing is opt-in via
+    `CollectionConfig.ReplicationRingSize`, so the default/embedded write path is
+    unchanged.
+  - New on-disk file `replication.json` at the data-dir root holds the leader LSN
+    and follower applied-LSN watermarks (additive; absent on non-replicated DBs).
 
 ## [0.7.0] — 2026-07-04
 

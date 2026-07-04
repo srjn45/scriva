@@ -740,6 +740,138 @@ func (w *snapshotChunkWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// ---- Replication (R1) -----------------------------------------------------
+
+// Replicate ships committed segment entries, each tagged with a monotonic global
+// LSN, to a tailing follower. It first drains the recent-history backlog still
+// buffered by the leader, then streams live commits as they happen. A follower
+// too far behind for the leader's buffer — or one whose consumer overflows — is
+// told to re-bootstrap from a Snapshot via FAILED_PRECONDITION.
+func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.FileDB_ReplicateServer) error {
+	rs, backlog, ok := s.db.SubscribeReplication(req.FromLsn, req.FollowerId)
+	if !ok {
+		return status.Error(codes.FailedPrecondition,
+			"replication unavailable or follower too far behind; re-bootstrap from a snapshot")
+	}
+	defer rs.Close()
+
+	for _, re := range backlog {
+		if err := sendReplRecord(stream, rs, re); err != nil {
+			return err
+		}
+	}
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case <-rs.Dead():
+			return status.Error(codes.FailedPrecondition,
+				"replication buffer overflowed; re-bootstrap from a snapshot")
+		case re, live := <-rs.Entries():
+			if !live {
+				return nil
+			}
+			if err := sendReplRecord(stream, rs, re); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// sendReplRecord marshals and ships one entry, then records the shipped LSN for
+// ReplicationStatus lag reporting.
+func sendReplRecord(stream pb.FileDB_ReplicateServer, rs *engine.ReplicationStream, re engine.ReplicationEntry) error {
+	rec, err := replEntryToProto(re)
+	if err != nil {
+		return status.Errorf(codes.Internal, "replicate: %v", err)
+	}
+	if err := stream.Send(rec); err != nil {
+		return err
+	}
+	rs.NoteSent(re.LSN)
+	return nil
+}
+
+// ReplicationStatus returns the leader's current LSN and per-follower progress.
+func (s *GRPCServer) ReplicationStatus(_ context.Context, _ *pb.ReplicationStatusRequest) (*pb.ReplicationStatusResponse, error) {
+	st := s.db.ReplicationStatus()
+	resp := &pb.ReplicationStatusResponse{LeaderLsn: st.LeaderLSN}
+	for _, f := range st.Followers {
+		resp.Followers = append(resp.Followers, &pb.FollowerStatus{
+			FollowerId:  f.FollowerID,
+			AckedLsn:    f.AckedLSN,
+			Lag:         f.Lag,
+			ConnectedAt: timestamppb.New(f.ConnectedAt),
+		})
+	}
+	return resp, nil
+}
+
+// replEntryToProto maps an engine replication entry onto its wire form.
+func replEntryToProto(re engine.ReplicationEntry) (*pb.ReplicationRecord, error) {
+	e := re.Entry
+	rec := &pb.ReplicationRecord{
+		Lsn:        re.LSN,
+		Collection: re.Collection,
+		Op:         replOpToProto(e.Op),
+		Id:         e.ID,
+		Rev:        e.Rev,
+		ExpiresAt:  e.ExpiresAt,
+		Ts:         timestamppb.New(e.Ts),
+	}
+	if e.Data != nil {
+		st, err := structpb.NewStruct(e.Data)
+		if err != nil {
+			return nil, fmt.Errorf("replEntryToProto: %w", err)
+		}
+		rec.Data = st
+	}
+	return rec, nil
+}
+
+// replRecordToEntry maps a wire replication record back to a store.Entry so a
+// follower can apply it verbatim.
+func replRecordToEntry(rec *pb.ReplicationRecord) store.Entry {
+	e := store.Entry{
+		ID:        rec.Id,
+		Op:        replOpFromProto(rec.Op),
+		Ts:        rec.Ts.AsTime(),
+		Rev:       rec.Rev,
+		ExpiresAt: rec.ExpiresAt,
+	}
+	if rec.Data != nil {
+		e.Data = rec.Data.AsMap()
+	}
+	return e
+}
+
+func replOpToProto(op store.Op) pb.ReplicationOp {
+	switch op {
+	case store.OpInsert:
+		return pb.ReplicationOp_REP_INSERT
+	case store.OpUpdate:
+		return pb.ReplicationOp_REP_UPDATE
+	case store.OpDelete:
+		return pb.ReplicationOp_REP_DELETE
+	default:
+		return pb.ReplicationOp_REPLICATION_OP_UNSPECIFIED
+	}
+}
+
+func replOpFromProto(op pb.ReplicationOp) store.Op {
+	switch op {
+	case pb.ReplicationOp_REP_INSERT:
+		return store.OpInsert
+	case pb.ReplicationOp_REP_UPDATE:
+		return store.OpUpdate
+	case pb.ReplicationOp_REP_DELETE:
+		return store.OpDelete
+	default:
+		return ""
+	}
+}
+
 // ---- Transactions ---------------------------------------------------------
 
 func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {

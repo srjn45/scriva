@@ -19,31 +19,33 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FileDB_CreateCollection_FullMethodName = "/filedb.v1.FileDB/CreateCollection"
-	FileDB_DropCollection_FullMethodName   = "/filedb.v1.FileDB/DropCollection"
-	FileDB_ListCollections_FullMethodName  = "/filedb.v1.FileDB/ListCollections"
-	FileDB_Insert_FullMethodName           = "/filedb.v1.FileDB/Insert"
-	FileDB_InsertMany_FullMethodName       = "/filedb.v1.FileDB/InsertMany"
-	FileDB_FindById_FullMethodName         = "/filedb.v1.FileDB/FindById"
-	FileDB_Find_FullMethodName             = "/filedb.v1.FileDB/Find"
-	FileDB_Update_FullMethodName           = "/filedb.v1.FileDB/Update"
-	FileDB_Delete_FullMethodName           = "/filedb.v1.FileDB/Delete"
-	FileDB_Upsert_FullMethodName           = "/filedb.v1.FileDB/Upsert"
-	FileDB_FindByKey_FullMethodName        = "/filedb.v1.FileDB/FindByKey"
-	FileDB_UpdateByKey_FullMethodName      = "/filedb.v1.FileDB/UpdateByKey"
-	FileDB_DeleteByKey_FullMethodName      = "/filedb.v1.FileDB/DeleteByKey"
-	FileDB_UpdateIfRev_FullMethodName      = "/filedb.v1.FileDB/UpdateIfRev"
-	FileDB_EnsureIndex_FullMethodName      = "/filedb.v1.FileDB/EnsureIndex"
-	FileDB_DropIndex_FullMethodName        = "/filedb.v1.FileDB/DropIndex"
-	FileDB_ListIndexes_FullMethodName      = "/filedb.v1.FileDB/ListIndexes"
-	FileDB_BeginTx_FullMethodName          = "/filedb.v1.FileDB/BeginTx"
-	FileDB_CommitTx_FullMethodName         = "/filedb.v1.FileDB/CommitTx"
-	FileDB_RollbackTx_FullMethodName       = "/filedb.v1.FileDB/RollbackTx"
-	FileDB_Watch_FullMethodName            = "/filedb.v1.FileDB/Watch"
-	FileDB_Aggregate_FullMethodName        = "/filedb.v1.FileDB/Aggregate"
-	FileDB_CollectionStats_FullMethodName  = "/filedb.v1.FileDB/CollectionStats"
-	FileDB_Compact_FullMethodName          = "/filedb.v1.FileDB/Compact"
-	FileDB_Snapshot_FullMethodName         = "/filedb.v1.FileDB/Snapshot"
+	FileDB_CreateCollection_FullMethodName  = "/filedb.v1.FileDB/CreateCollection"
+	FileDB_DropCollection_FullMethodName    = "/filedb.v1.FileDB/DropCollection"
+	FileDB_ListCollections_FullMethodName   = "/filedb.v1.FileDB/ListCollections"
+	FileDB_Insert_FullMethodName            = "/filedb.v1.FileDB/Insert"
+	FileDB_InsertMany_FullMethodName        = "/filedb.v1.FileDB/InsertMany"
+	FileDB_FindById_FullMethodName          = "/filedb.v1.FileDB/FindById"
+	FileDB_Find_FullMethodName              = "/filedb.v1.FileDB/Find"
+	FileDB_Update_FullMethodName            = "/filedb.v1.FileDB/Update"
+	FileDB_Delete_FullMethodName            = "/filedb.v1.FileDB/Delete"
+	FileDB_Upsert_FullMethodName            = "/filedb.v1.FileDB/Upsert"
+	FileDB_FindByKey_FullMethodName         = "/filedb.v1.FileDB/FindByKey"
+	FileDB_UpdateByKey_FullMethodName       = "/filedb.v1.FileDB/UpdateByKey"
+	FileDB_DeleteByKey_FullMethodName       = "/filedb.v1.FileDB/DeleteByKey"
+	FileDB_UpdateIfRev_FullMethodName       = "/filedb.v1.FileDB/UpdateIfRev"
+	FileDB_EnsureIndex_FullMethodName       = "/filedb.v1.FileDB/EnsureIndex"
+	FileDB_DropIndex_FullMethodName         = "/filedb.v1.FileDB/DropIndex"
+	FileDB_ListIndexes_FullMethodName       = "/filedb.v1.FileDB/ListIndexes"
+	FileDB_BeginTx_FullMethodName           = "/filedb.v1.FileDB/BeginTx"
+	FileDB_CommitTx_FullMethodName          = "/filedb.v1.FileDB/CommitTx"
+	FileDB_RollbackTx_FullMethodName        = "/filedb.v1.FileDB/RollbackTx"
+	FileDB_Watch_FullMethodName             = "/filedb.v1.FileDB/Watch"
+	FileDB_Aggregate_FullMethodName         = "/filedb.v1.FileDB/Aggregate"
+	FileDB_CollectionStats_FullMethodName   = "/filedb.v1.FileDB/CollectionStats"
+	FileDB_Compact_FullMethodName           = "/filedb.v1.FileDB/Compact"
+	FileDB_Snapshot_FullMethodName          = "/filedb.v1.FileDB/Snapshot"
+	FileDB_Replicate_FullMethodName         = "/filedb.v1.FileDB/Replicate"
+	FileDB_ReplicationStatus_FullMethodName = "/filedb.v1.FileDB/ReplicationStatus"
 )
 
 // FileDBClient is the client API for FileDB service.
@@ -99,6 +101,19 @@ type FileDBClient interface {
 	// database. Restore by extracting it into a data directory. gRPC-only:
 	// binary streaming does not map cleanly onto the REST gateway.
 	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error)
+	// Replicate is the leader's log-shipping feed: a follower tails committed
+	// segment entries, each tagged with a monotonic global sequence number (LSN),
+	// and applies them through the normal write path to stay consistent. The
+	// follower asks to resume from the last LSN it applied (from_lsn); the leader
+	// streams every committed entry with lsn > from_lsn — first any recent history
+	// still buffered, then live writes as they commit. A follower too far behind
+	// for the leader's in-memory buffer gets FAILED_PRECONDITION and must
+	// re-bootstrap from a Snapshot. gRPC-only (binary, long-lived stream).
+	Replicate(ctx context.Context, in *ReplicateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReplicationRecord], error)
+	// ReplicationStatus reports the leader's current LSN and, for each connected
+	// follower, the last LSN shipped to it and its lag. Used for observability and
+	// to read the leader's LSN watermark before bootstrapping a fresh follower.
+	ReplicationStatus(ctx context.Context, in *ReplicationStatusRequest, opts ...grpc.CallOption) (*ReplicationStatusResponse, error)
 }
 
 type fileDBClient struct {
@@ -395,6 +410,35 @@ func (c *fileDBClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts .
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileDB_SnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
 
+func (c *fileDBClient) Replicate(ctx context.Context, in *ReplicateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReplicationRecord], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[4], FileDB_Replicate_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ReplicateRequest, ReplicationRecord]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_ReplicateClient = grpc.ServerStreamingClient[ReplicationRecord]
+
+func (c *fileDBClient) ReplicationStatus(ctx context.Context, in *ReplicationStatusRequest, opts ...grpc.CallOption) (*ReplicationStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplicationStatusResponse)
+	err := c.cc.Invoke(ctx, FileDB_ReplicationStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileDBServer is the server API for FileDB service.
 // All implementations must embed UnimplementedFileDBServer
 // for forward compatibility.
@@ -448,6 +492,19 @@ type FileDBServer interface {
 	// database. Restore by extracting it into a data directory. gRPC-only:
 	// binary streaming does not map cleanly onto the REST gateway.
 	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error
+	// Replicate is the leader's log-shipping feed: a follower tails committed
+	// segment entries, each tagged with a monotonic global sequence number (LSN),
+	// and applies them through the normal write path to stay consistent. The
+	// follower asks to resume from the last LSN it applied (from_lsn); the leader
+	// streams every committed entry with lsn > from_lsn — first any recent history
+	// still buffered, then live writes as they commit. A follower too far behind
+	// for the leader's in-memory buffer gets FAILED_PRECONDITION and must
+	// re-bootstrap from a Snapshot. gRPC-only (binary, long-lived stream).
+	Replicate(*ReplicateRequest, grpc.ServerStreamingServer[ReplicationRecord]) error
+	// ReplicationStatus reports the leader's current LSN and, for each connected
+	// follower, the last LSN shipped to it and its lag. Used for observability and
+	// to read the leader's LSN watermark before bootstrapping a fresh follower.
+	ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error)
 	mustEmbedUnimplementedFileDBServer()
 }
 
@@ -532,6 +589,12 @@ func (UnimplementedFileDBServer) Compact(context.Context, *CompactRequest) (*Com
 }
 func (UnimplementedFileDBServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
 	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
+}
+func (UnimplementedFileDBServer) Replicate(*ReplicateRequest, grpc.ServerStreamingServer[ReplicationRecord]) error {
+	return status.Error(codes.Unimplemented, "method Replicate not implemented")
+}
+func (UnimplementedFileDBServer) ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReplicationStatus not implemented")
 }
 func (UnimplementedFileDBServer) mustEmbedUnimplementedFileDBServer() {}
 func (UnimplementedFileDBServer) testEmbeddedByValue()                {}
@@ -976,6 +1039,35 @@ func _FileDB_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileDB_SnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
 
+func _FileDB_Replicate_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ReplicateRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(FileDBServer).Replicate(m, &grpc.GenericServerStream[ReplicateRequest, ReplicationRecord]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileDB_ReplicateServer = grpc.ServerStreamingServer[ReplicationRecord]
+
+func _FileDB_ReplicationStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplicationStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).ReplicationStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_ReplicationStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).ReplicationStatus(ctx, req.(*ReplicationStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileDB_ServiceDesc is the grpc.ServiceDesc for FileDB service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1067,6 +1159,10 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Compact",
 			Handler:    _FileDB_Compact_Handler,
 		},
+		{
+			MethodName: "ReplicationStatus",
+			Handler:    _FileDB_ReplicationStatus_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1087,6 +1183,11 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Snapshot",
 			Handler:       _FileDB_Snapshot_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Replicate",
+			Handler:       _FileDB_Replicate_Handler,
 			ServerStreams: true,
 		},
 	},

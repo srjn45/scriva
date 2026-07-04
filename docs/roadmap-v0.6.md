@@ -361,7 +361,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] N4 — aggregations (count / group-by / numeric)
 
 **v0.8.0 — Replication & HA**
-- [ ] R1 — leader→follower segment/log replication
+- [x] R1 — leader→follower segment/log replication
 - [ ] R2 — read replicas & follower reads
 - [ ] R3 — manual failover & role management
 

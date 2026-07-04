@@ -161,6 +161,7 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		c.mu.Unlock()
 		return Record{}, fmt.Errorf("collection: upsert: %w", err)
 	}
+	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
