@@ -165,6 +165,20 @@ service FileDB {
     };
   }
 
+  // --- Aggregations (N4) ---
+
+  // Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
+  // live records matching the same Filter as Find, optionally grouped by a field.
+  // It server-streams one message per group; a plain (ungrouped) aggregation
+  // streams a single message. Aggregation runs entirely in the engine — the
+  // collection is never materialised on the client.
+  rpc Aggregate(AggregateRequest) returns (stream AggregateResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/aggregate"
+      body: "*"
+    };
+  }
+
   // --- Stats ---
 
   rpc CollectionStats(CollectionStatsRequest) returns (CollectionStatsResponse) {
@@ -471,6 +485,62 @@ message WatchEvent {
   string                    collection = 2;
   Record                    record     = 3;
   google.protobuf.Timestamp ts         = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Aggregations (N4)
+// ---------------------------------------------------------------------------
+
+// AggregateOp names a numeric aggregation to compute per group over the request's
+// numeric `field`. COUNT (the per-group record count) is always returned and need
+// not be listed. Any of SUM/AVG/MIN/MAX requires `field` to be set.
+enum AggregateOp {
+  AGGREGATE_OP_UNSPECIFIED = 0;
+  AGG_COUNT                = 1; // per-group record count (always returned)
+  AGG_SUM                  = 2; // sum of numeric field values
+  AGG_AVG                  = 3; // mean of numeric field values
+  AGG_MIN                  = 4; // smallest numeric field value
+  AGG_MAX                  = 5; // largest numeric field value
+}
+
+message AggregateRequest {
+  string collection = 1;
+  // The same composable filter as Find. Aggregation honours it: only matching
+  // live records contribute. Empty (nil) aggregates the whole collection.
+  Filter filter = 2;
+  // Optional group-by field. When set, one response is streamed per distinct value
+  // of this field; records are bucketed by that value. Empty (the default)
+  // aggregates the whole filtered set into a single group whose group_value is
+  // null.
+  string group_by = 3;
+  // Numeric field for SUM/AVG/MIN/MAX. Required when any of those aggregations is
+  // requested; ignored for a pure count. Only records whose `field` is numeric
+  // contribute to the numeric aggregates (AVG divides by that numeric count).
+  string field = 4;
+  // Which aggregations to compute. COUNT is always returned even if omitted; an
+  // empty list yields count-only. SUM/AVG/MIN/MAX require `field`.
+  repeated AggregateOp aggregations = 5;
+}
+
+// AggregateResponse is one group's result. For a grouped request there is one per
+// distinct group_by value, streamed in ascending group order; for an ungrouped
+// request there is exactly one, carrying a null group_value.
+message AggregateResponse {
+  // The group_by field's value for this group, type-preserved (number, string,
+  // bool). Null for the whole-set group and for records missing the group field.
+  google.protobuf.Value group_value = 1;
+  // Records in this group (post-filter). Always populated.
+  uint64 count = 2;
+  // Numeric aggregates over `field` across this group's records that carried a
+  // numeric value. Meaningful only when `numeric` is true.
+  double sum = 3;
+  double avg = 4;
+  double min = 5;
+  double max = 6;
+  // numeric is true when at least one record in the group carried a numeric
+  // `field`; when false the sum/avg/min/max above are zero and meaningless (e.g.
+  // a count-only aggregation, or a group where the field was absent/non-numeric).
+  bool numeric = 7;
 }
 
 // ---------------------------------------------------------------------------

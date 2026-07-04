@@ -675,6 +675,52 @@ Rules:
 Projection is applied in the engine after filtering and ordering, so an
 `order_by` field need not be listed in `--fields`.
 
+### Aggregations (count / group-by / numeric)
+
+`aggregate` computes a **count** and the numeric aggregations **`sum`/`avg`/`min`/`max`**
+over the records matching the **same filter as `find`**, optionally grouped by a
+field — so you can total, average, or count server-side instead of pulling the
+whole collection down and reducing it in the client. The RPC server-streams one
+result per group.
+
+```bash
+# Count every record (equivalent to len(find), but the engine never ships the rows)
+filedb-cli aggregate orders
+
+# Count just the open orders (any find filter works)
+filedb-cli aggregate orders '{"field":"status","op":"eq","value":"open"}'
+
+# Per-region count + numeric aggregates over the "amount" field
+filedb-cli aggregate sales --group-by region --field amount --aggs count,sum,avg,min,max
+# region=apac count:1 sum:7 avg:7 min:7 max:7
+# region=eu   count:3 sum:35 avg:11.67 min:5 max:25
+# region=us   count:3 sum:60 avg:20 min:10 max:30
+```
+
+Flags:
+
+- **`--group-by <field>`** buckets records by that field's value and streams one
+  result per distinct value, in ascending group order. Omitting it aggregates the
+  whole filtered set into a single group.
+- **`--field <field>`** names the numeric field to reduce for `sum`/`avg`/`min`/`max`.
+  It is **required** whenever one of those aggregations is requested.
+- **`--aggs count,sum,avg,min,max`** selects which aggregations to show
+  (default: `count`).
+
+Rules:
+
+- **Only numeric field values contribute** to `sum`/`avg`/`min`/`max`, using the
+  same numeric-vs-string rules as the `gt`/`lt` filter operators. A record whose
+  `--field` is absent or non-numeric still counts toward `count` but is skipped by
+  the numeric aggregates, and **`avg` divides by that numeric count** (SQL `AVG`
+  semantics — it ignores nulls rather than treating them as zero).
+- **The filter is honoured** exactly as in `find`: non-matching records never
+  contribute to any group.
+- Aggregation runs entirely in the storage engine and holds only per-group
+  accumulators, so memory is bounded by the number of **distinct groups**, not the
+  collection size; a whole-collection count is answered straight from the index
+  without reading segments.
+
 ---
 
 ## Secondary indexes

@@ -625,6 +625,77 @@ func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsR
 	}, nil
 }
 
+// ---- Aggregations (N4) ----------------------------------------------------
+
+// Aggregate computes count and numeric aggregations over the records matching the
+// request's Filter, optionally grouped by a field, and server-streams one message
+// per group. It maps straight onto the engine's Aggregate, which folds each record
+// into its group's accumulator without materialising the collection.
+func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.FileDB_AggregateServer) error {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return status.Errorf(codes.NotFound, "%v", err)
+	}
+	f, err := protoFilterToQuery(req.Filter)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "filter: %v", err)
+	}
+	// SUM/AVG/MIN/MAX are numeric aggregations: they need a field to reduce over.
+	if wantsNumericAgg(req.Aggregations) && req.Field == "" {
+		return status.Error(codes.InvalidArgument, "sum/avg/min/max require a numeric field")
+	}
+
+	spec := engine.AggregateSpec{Filter: f, GroupBy: req.GroupBy, Field: req.Field}
+	err = col.Aggregate(stream.Context(), spec, func(g engine.GroupResult) error {
+		gv, verr := groupValue(g.Key)
+		if verr != nil {
+			return status.Errorf(codes.Internal, "aggregate: %v", verr)
+		}
+		return stream.Send(&pb.AggregateResponse{
+			GroupValue: gv,
+			Count:      g.Count,
+			Sum:        g.Sum,
+			Avg:        g.Avg,
+			Min:        g.Min,
+			Max:        g.Max,
+			Numeric:    g.Numeric,
+		})
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return status.FromContextError(err).Err()
+		}
+		if _, ok := status.FromError(err); ok {
+			return err // already a gRPC status (stream.Send / marshal error)
+		}
+		return status.Errorf(codes.Internal, "aggregate: %v", err)
+	}
+	return nil
+}
+
+// wantsNumericAgg reports whether the requested aggregations include one that
+// reduces over the numeric field (sum/avg/min/max) and therefore requires a field.
+func wantsNumericAgg(ops []pb.AggregateOp) bool {
+	for _, op := range ops {
+		switch op {
+		case pb.AggregateOp_AGG_SUM, pb.AggregateOp_AGG_AVG,
+			pb.AggregateOp_AGG_MIN, pb.AggregateOp_AGG_MAX:
+			return true
+		}
+	}
+	return false
+}
+
+// groupValue converts an aggregation group key (nil for the whole-set/absent-field
+// group, else a number/string/bool from the decoded record) into a proto Value,
+// preserving its type. A nil key becomes a null Value.
+func groupValue(k any) (*structpb.Value, error) {
+	if k == nil {
+		return structpb.NewNullValue(), nil
+	}
+	return structpb.NewValue(k)
+}
+
 // ---- Admin ----------------------------------------------------------------
 
 func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.CompactResponse, error) {

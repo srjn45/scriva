@@ -166,6 +166,35 @@ pre-existing clients are unaffected.
     `order_by:"f", descending:d` → `order_by_fields:[{field:"f", desc:d}]`. The CLI
     `--descending` flag likewise still applies to a single bare `--order-by`; prefer
     the `field:desc` form.
+- **Aggregations — count / group-by / numeric (N4).** A new server-streaming
+  **`Aggregate`** RPC (`POST /v1/{collection}/aggregate`) computes a `count` and
+  the numeric aggregations `sum`/`avg`/`min`/`max` over the live records matching
+  the **same `Filter` as `Find`**, optionally grouped by a field — so clients no
+  longer pull a whole collection just to count or total it.
+  - **Ungrouped** (`group_by` empty) streams a single result over the whole
+    filtered set; **grouped** streams one result per distinct `group_by` value, in
+    ascending group order. Each result carries the type-preserved `group_value`
+    (number/string/bool, or null for the whole-set group), the `count`, and — when
+    a numeric `field` is named — `sum`/`avg`/`min`/`max` with a `numeric` flag.
+    Only records whose `field` is numeric contribute (per the same `query.AsNumber`
+    rules the filter/sort use); `avg` divides by that numeric count (SQL `AVG`
+    semantics, ignoring absent/non-numeric values). `sum`/`avg`/`min`/`max` require
+    a `field` — requesting one without it is `InvalidArgument`.
+  - **Runs entirely in the engine, streaming — never materialised.** New
+    `engine.Aggregate` (in `engine/aggregate.go`) folds each matching record into
+    its group's accumulator, so memory is bounded by the number of **distinct
+    groups**, not the collection size. A whole-set count reuses the existing
+    `Collection.Count` fast path (answered from the primary/secondary index without
+    reading segments where possible); grouped/filtered aggregations reuse the same
+    index-aware `forEachMatch` scan as `Count`/`Find`. The engine returns plain Go
+    structs (`AggregateSpec` / `GroupResult`) the server maps to proto, so the
+    embeddable engine keeps **zero** transport dependencies (enforced by
+    `make deps-check`). A new exported `query.AsNumber` gives the numeric reduction
+    the exact type rules of `query.Compare`.
+  - New CLI `aggregate <collection> [filter-json]` with `--group-by`, numeric
+    `--field`, and comma-separated `--aggs count,sum,avg,min,max` (default
+    `count`), reusing the existing filter-JSON style. The 7-language SDK parity
+    sweep is a separate follow-on wave.
 
 ## [0.3.0] — 2026-07-03
 

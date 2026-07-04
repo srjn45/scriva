@@ -154,6 +154,12 @@ func Compare(a, b any) int {
 	return strings.Compare(as, bs)
 }
 
+// AsNumber reports whether v is a JSON/Go numeric value and, if so, returns it as
+// a float64. It applies the exact same type rules as Compare and the gt/lt filter
+// operators — numeric-looking strings are deliberately not coerced — so a numeric
+// aggregation (sum/avg/min/max) agrees with how the same field filters and sorts.
+func AsNumber(v any) (float64, bool) { return asNumber(v) }
+
 // asNumber reports whether v is a JSON/Go numeric value and returns it as a
 // float64. Numeric-looking strings are deliberately NOT treated as numbers:
 // a value's JSON type determines whether numeric or lexicographic comparison
