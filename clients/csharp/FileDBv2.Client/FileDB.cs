@@ -12,7 +12,10 @@ namespace FileDBv2.Client;
 /// Async C# / .NET 8 client for FileDB v2.
 ///
 /// <para>Wraps every RPC in the <c>filedb.proto</c> service with idiomatic async methods.
-/// Streaming RPCs (<c>Find</c>, <c>Watch</c>) are exposed as <see cref="IAsyncEnumerable{T}"/>.</para>
+/// Streaming RPCs (<c>Find</c>, <c>Watch</c>, <c>Snapshot</c>) are exposed as
+/// <see cref="IAsyncEnumerable{T}"/>. Records are returned as <see cref="Record"/> value
+/// objects carrying the server id, the optional caller-supplied string key, and the
+/// monotonic per-record revision.</para>
 ///
 /// <example>
 /// <code>
@@ -20,8 +23,7 @@ namespace FileDBv2.Client;
 /// await db.CreateCollectionAsync("users");
 /// ulong id = await db.InsertAsync("users", new() { ["name"] = "Alice", ["age"] = 30 });
 /// var record = await db.FindByIdAsync("users", id);
-/// await foreach (var r in db.FindAsync("users", filter: new() { ["field"] = "role", ["op"] = "eq", ["value"] = "admin" }))
-///     Console.WriteLine(r["name"]);
+/// Console.WriteLine(record["name"]);
 /// </code>
 /// </example>
 /// </summary>
@@ -82,6 +84,37 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
     }
 
     // -----------------------------------------------------------------------
+    // Error translation — map engine gRPC status codes to typed exceptions
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Translate a gRPC <see cref="RpcException"/> into a typed FileDB exception:
+    /// <c>NOT_FOUND</c> becomes <see cref="NotFoundException"/> and <c>ALREADY_EXISTS</c>
+    /// becomes <see cref="AlreadyExistsException"/>. Any other status code returns
+    /// <c>null</c> so the original exception propagates unchanged.
+    /// </summary>
+    private static FileDBException? Translate(RpcException e) => e.StatusCode switch
+    {
+        StatusCode.NotFound      => new NotFoundException(e.Status.Detail, e),
+        StatusCode.AlreadyExists => new AlreadyExistsException(e.Status.Detail, e),
+        _                        => null,
+    };
+
+    private static async Task<T> GuardAsync<T>(Func<Task<T>> op)
+    {
+        try
+        {
+            return await op().ConfigureAwait(false);
+        }
+        catch (RpcException e)
+        {
+            var typed = Translate(e);
+            if (typed is not null) throw typed;
+            throw;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Collection management
     // -----------------------------------------------------------------------
 
@@ -119,25 +152,46 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Insert one record and return its assigned id. When <paramref name="ttlSeconds"/>
-    /// is greater than 0, the record expires that many seconds after insertion,
-    /// overriding any collection default; 0 (the default) applies the collection's
-    /// default TTL, if any.
+    /// Insert one record and return its assigned id.
+    ///
+    /// <para>When <paramref name="key"/> is non-empty the record is inserted under that
+    /// caller-supplied string primary key (keyed create); a key already held by a live
+    /// record raises <see cref="AlreadyExistsException"/>. A keyed insert does not
+    /// participate in transactions or per-record TTL.</para>
+    ///
+    /// <para>When <paramref name="ttlSeconds"/> is greater than 0 the record expires that
+    /// many seconds after insertion, overriding any collection default (keyless inserts
+    /// only); 0 (the default) applies the collection's default TTL, if any.</para>
     /// </summary>
-    public async Task<ulong> InsertAsync(
+    public Task<ulong> InsertAsync(
         string collection,
         Dictionary<string, object?> data,
         long ttlSeconds = 0,
+        string key = "",
         CancellationToken ct = default)
-    {
-        var resp = await _stub.InsertAsync(new InsertRequest
+        => GuardAsync(async () =>
         {
-            Collection = collection,
-            Data       = DictToStruct(data),
-            TtlSeconds = ttlSeconds,
-        }, _headers, cancellationToken: ct);
-        return resp.Id;
-    }
+            var resp = await _stub.InsertAsync(new InsertRequest
+            {
+                Collection = collection,
+                Data       = DictToStruct(data),
+                TtlSeconds = ttlSeconds,
+                Key        = key ?? "",
+            }, _headers, cancellationToken: ct);
+            return resp.Id;
+        });
+
+    /// <summary>
+    /// Insert one record under a caller-supplied string primary key (keyed create).
+    /// Raises <see cref="AlreadyExistsException"/> if <paramref name="key"/> is already
+    /// held by a live record. Returns the assigned id.
+    /// </summary>
+    public Task<ulong> InsertKeyedAsync(
+        string collection,
+        string key,
+        Dictionary<string, object?> data,
+        CancellationToken ct = default)
+        => InsertAsync(collection, data, ttlSeconds: 0, key: key, ct: ct);
 
     /// <summary>
     /// Insert multiple records and return their assigned ids in insertion order.
@@ -156,74 +210,191 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
         return resp.Ids;
     }
 
-    /// <summary>Fetch a single record by its id.</summary>
-    public async Task<Dictionary<string, object?>> FindByIdAsync(
+    /// <summary>
+    /// Fetch a single record by its id, optionally projecting its data (N2).
+    ///
+    /// <para>When <paramref name="fields"/> is non-empty only those top-level fields are
+    /// returned in the record's data (<c>id</c>, <c>key</c> and <c>rev</c> are always
+    /// included). Pass <c>null</c>/empty for the full record.</para>
+    /// </summary>
+    public Task<Record> FindByIdAsync(
         string collection,
         ulong id,
+        IEnumerable<string>? fields = null,
         CancellationToken ct = default)
-    {
-        var resp = await _stub.FindByIdAsync(new FindByIdRequest
+        => GuardAsync(async () =>
         {
-            Collection = collection,
-            Id         = id,
-        }, _headers, cancellationToken: ct);
-        return StructToDict(resp.Record.Data);
-    }
+            var req = new FindByIdRequest { Collection = collection, Id = id };
+            if (fields is not null) req.Fields.AddRange(fields);
+            var resp = await _stub.FindByIdAsync(req, _headers, cancellationToken: ct);
+            return RecordFromProto(resp.Record);
+        });
 
     /// <summary>
-    /// Stream records matching <paramref name="filter"/> from the server.
+    /// Stream records matching <paramref name="filter"/> from the server (N2/N3).
     /// Results are yielded one-by-one as they arrive (server-streaming RPC).
     /// </summary>
     /// <param name="collection">Collection name.</param>
-    /// <param name="filter">
-    /// Optional filter as a plain dictionary — see <see cref="FilterToProto"/> for the accepted shape.
-    /// </param>
+    /// <param name="filter">Optional filter as a plain dictionary — see <see cref="FilterToProto"/>.</param>
     /// <param name="limit">Maximum results to return (0 = no limit).</param>
-    /// <param name="offset">Number of results to skip.</param>
-    /// <param name="orderBy">Field name to sort by, or empty string for unordered.</param>
-    /// <param name="descending">Sort descending when <c>true</c>.</param>
-    public async IAsyncEnumerable<Dictionary<string, object?>> FindAsync(
+    /// <param name="offset">Number of results to skip (use 0 with <paramref name="pageToken"/>).</param>
+    /// <param name="orderBy">Multi-field sort keys (N3), applied in order; null/empty for unordered.</param>
+    /// <param name="fields">Top-level data fields to project (N2), or null/empty for the full record.</param>
+    /// <param name="pageToken">Keyset cursor from a prior page (N3), or "" for the first page.</param>
+    public async IAsyncEnumerable<Record> FindAsync(
         string collection,
-        Dictionary<string, object?>? filter    = null,
-        uint   limit                           = 0,
-        uint   offset                          = 0,
-        string orderBy                         = "",
-        bool   descending                      = false,
+        Dictionary<string, object?>? filter          = null,
+        uint   limit                                 = 0,
+        uint   offset                                = 0,
+        IEnumerable<Order>? orderBy                  = null,
+        IEnumerable<string>? fields                  = null,
+        string pageToken                             = "",
         [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var req = BuildFindRequest(collection, filter, limit, offset,
+            orderBy, legacyOrderBy: "", descending: false, fields, pageToken);
+
+        using var call = _stub.Find(req, _headers, cancellationToken: ct);
+        var stream = call.ResponseStream;
+        while (true)
+        {
+            bool moved;
+            try
+            {
+                moved = await stream.MoveNext(ct).ConfigureAwait(false);
+            }
+            catch (RpcException e)
+            {
+                var typed = Translate(e);
+                if (typed is not null) throw typed;
+                throw;
+            }
+            if (!moved) yield break;
+            yield return RecordFromProto(stream.Current.Record);
+        }
+    }
+
+    /// <summary>Convenience overload — returns all records with no filter or ordering.</summary>
+    public IAsyncEnumerable<Record> FindAsync(string collection, CancellationToken ct = default)
+        => FindAsync(collection, filter: null, ct: ct);
+
+    /// <summary>
+    /// Legacy single-field sort (deprecated). Superseded by the multi-field
+    /// <see cref="FindAsync(string, Dictionary{string, object?}, uint, uint, IEnumerable{Order}, IEnumerable{string}, string, CancellationToken)"/>
+    /// overload. Streams records sorted on one field.
+    /// </summary>
+    public async IAsyncEnumerable<Record> FindAsync(
+        string collection,
+        Dictionary<string, object?>? filter,
+        uint   limit,
+        uint   offset,
+        string orderBy,
+        bool   descending,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var req = BuildFindRequest(collection, filter, limit, offset,
+            orderBy: null, legacyOrderBy: orderBy, descending: descending, fields: null, pageToken: "");
+
+        using var call = _stub.Find(req, _headers, cancellationToken: ct);
+        await foreach (var resp in call.ResponseStream.ReadAllAsync(ct))
+            yield return RecordFromProto(resp.Record);
+    }
+
+    /// <summary>Collect <see cref="FindAsync"/> into a list (N2/N3 rich overload).</summary>
+    public async Task<List<Record>> FindAllAsync(
+        string collection,
+        Dictionary<string, object?>? filter = null,
+        uint   limit                        = 0,
+        uint   offset                       = 0,
+        IEnumerable<Order>? orderBy         = null,
+        IEnumerable<string>? fields         = null,
+        string pageToken                    = "",
+        CancellationToken ct                = default)
+    {
+        var results = new List<Record>();
+        await foreach (var r in FindAsync(collection, filter, limit, offset, orderBy, fields, pageToken, ct))
+            results.Add(r);
+        return results;
+    }
+
+    /// <summary>
+    /// Fetch one keyset page, returning the records plus a next-page cursor (N3).
+    ///
+    /// <para>Pass an ordering and a <paramref name="limit"/>, then feed the returned
+    /// <see cref="Page.NextPageToken"/> back as <paramref name="pageToken"/> on the next
+    /// call to walk the collection page by page in O(page) time. An empty next-page token
+    /// means the last page was reached. Keep the same filter, ordering and limit on every
+    /// page.</para>
+    /// </summary>
+    public async Task<Page> FindPageAsync(
+        string collection,
+        Dictionary<string, object?>? filter = null,
+        uint   limit                        = 0,
+        uint   offset                       = 0,
+        IEnumerable<Order>? orderBy         = null,
+        IEnumerable<string>? fields         = null,
+        string pageToken                    = "",
+        CancellationToken ct                = default)
+    {
+        var req = BuildFindRequest(collection, filter, limit, offset,
+            orderBy, legacyOrderBy: "", descending: false, fields, pageToken);
+
+        var records   = new List<Record>();
+        var nextToken = "";
+        try
+        {
+            using var call = _stub.Find(req, _headers, cancellationToken: ct);
+            await foreach (var resp in call.ResponseStream.ReadAllAsync(ct))
+            {
+                records.Add(RecordFromProto(resp.Record));
+                if (!string.IsNullOrEmpty(resp.PageToken)) nextToken = resp.PageToken;
+            }
+        }
+        catch (RpcException e)
+        {
+            var typed = Translate(e);
+            if (typed is not null) throw typed;
+            throw;
+        }
+        return new Page(records, nextToken);
+    }
+
+    private static FindRequest BuildFindRequest(
+        string collection,
+        Dictionary<string, object?>? filter,
+        uint limit,
+        uint offset,
+        IEnumerable<Order>? orderBy,
+        string legacyOrderBy,
+        bool descending,
+        IEnumerable<string>? fields,
+        string pageToken)
     {
         var req = new FindRequest
         {
             Collection = collection,
             Limit      = limit,
             Offset     = offset,
-            OrderBy    = orderBy,
-            Descending = descending,
+            PageToken  = pageToken ?? "",
         };
         if (filter is not null) req.Filter = FilterToProto(filter);
+        if (fields is not null) req.Fields.AddRange(fields);
 
-        using var call = _stub.Find(req, _headers, cancellationToken: ct);
-        await foreach (var resp in call.ResponseStream.ReadAllAsync(ct))
-            yield return StructToDict(resp.Record.Data);
-    }
-
-    /// <summary>Convenience overload — returns all records with no filter or ordering.</summary>
-    public IAsyncEnumerable<Dictionary<string, object?>> FindAsync(string collection, CancellationToken ct = default)
-        => FindAsync(collection, filter: null, ct: ct);
-
-    /// <summary>Collect <see cref="FindAsync"/> into a list.</summary>
-    public async Task<List<Dictionary<string, object?>>> FindAllAsync(
-        string collection,
-        Dictionary<string, object?>? filter = null,
-        uint   limit                        = 0,
-        uint   offset                       = 0,
-        string orderBy                      = "",
-        bool   descending                   = false,
-        CancellationToken ct                = default)
-    {
-        var results = new List<Dictionary<string, object?>>();
-        await foreach (var r in FindAsync(collection, filter, limit, offset, orderBy, descending, ct))
-            results.Add(r);
-        return results;
+        var orderList = orderBy?.ToList();
+        if (orderList is { Count: > 0 })
+        {
+            foreach (var o in orderList)
+                req.OrderByFields.Add(new Filedb.V1.OrderBy { Field = o.Field, Desc = o.Desc });
+        }
+        else if (!string.IsNullOrEmpty(legacyOrderBy))
+        {
+            // Deprecated single-field path — honoured only when order_by_fields is empty.
+#pragma warning disable CS0612
+            req.OrderBy    = legacyOrderBy;
+            req.Descending = descending;
+#pragma warning restore CS0612
+        }
+        return req;
     }
 
     /// <summary>
@@ -261,6 +432,122 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
             Id         = id,
         }, _headers, cancellationToken: ct);
         return resp.Ok;
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyed CRUD, upsert & compare-and-swap (N1)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Insert <paramref name="data"/> under <paramref name="key"/>, or replace the
+    /// existing keyed record — atomically. If no live record carries the key it is
+    /// inserted; otherwise the existing record's data is replaced and its <c>rev</c>
+    /// incremented. Returns the resulting record (including its key and rev).
+    /// </summary>
+    public Task<Record> UpsertAsync(
+        string collection,
+        string key,
+        Dictionary<string, object?> data,
+        CancellationToken ct = default)
+        => GuardAsync(async () =>
+        {
+            var resp = await _stub.UpsertAsync(new UpsertRequest
+            {
+                Collection = collection,
+                Key        = key,
+                Data       = DictToStruct(data),
+            }, _headers, cancellationToken: ct);
+            return RecordFromProto(resp.Record);
+        });
+
+    /// <summary>
+    /// Fetch the record carrying <paramref name="key"/>, optionally projecting its data (N2).
+    /// Raises <see cref="NotFoundException"/> if no live record carries the key.
+    /// </summary>
+    public Task<Record> FindByKeyAsync(
+        string collection,
+        string key,
+        IEnumerable<string>? fields = null,
+        CancellationToken ct = default)
+        => GuardAsync(async () =>
+        {
+            var req = new FindByKeyRequest { Collection = collection, Key = key };
+            if (fields is not null) req.Fields.AddRange(fields);
+            var resp = await _stub.FindByKeyAsync(req, _headers, cancellationToken: ct);
+            return RecordFromProto(resp.Record);
+        });
+
+    /// <summary>
+    /// Overwrite the record carrying <paramref name="key"/>, preserving the key itself.
+    /// Raises <see cref="NotFoundException"/> if no live record carries the key. Returns
+    /// the write's outcome — id, key, rev (after the write) and the modified timestamp.
+    /// </summary>
+    public Task<UpdateResult> UpdateByKeyAsync(
+        string collection,
+        string key,
+        Dictionary<string, object?> data,
+        CancellationToken ct = default)
+        => GuardAsync(async () =>
+        {
+            var resp = await _stub.UpdateByKeyAsync(new UpdateByKeyRequest
+            {
+                Collection = collection,
+                Key        = key,
+                Data       = DictToStruct(data),
+            }, _headers, cancellationToken: ct);
+            return new UpdateResult
+            {
+                Id           = resp.Id,
+                Key          = resp.Key,
+                Rev          = resp.Rev,
+                DateModified = resp.DateModified,
+            };
+        });
+
+    /// <summary>
+    /// Delete the record carrying <paramref name="key"/>. Returns <c>true</c> on success.
+    /// Raises <see cref="NotFoundException"/> if no live record carries the key.
+    /// </summary>
+    public Task<bool> DeleteByKeyAsync(
+        string collection,
+        string key,
+        CancellationToken ct = default)
+        => GuardAsync(async () =>
+        {
+            var resp = await _stub.DeleteByKeyAsync(new DeleteByKeyRequest
+            {
+                Collection = collection,
+                Key        = key,
+            }, _headers, cancellationToken: ct);
+            return resp.Ok;
+        });
+
+    /// <summary>
+    /// Compare-and-swap update on <paramref name="key"/>, conditional on
+    /// <paramref name="expectedRev"/>. The write is applied only if the record's current
+    /// <c>rev</c> equals <paramref name="expectedRev"/>. A stale revision (or a missing
+    /// key) is a clean no-op — never an error — reported as <see cref="CasResult.Swapped"/>
+    /// <c>false</c>. The result's <see cref="CasResult.Record"/> is populated only when
+    /// the swap applied.
+    /// </summary>
+    public async Task<CasResult> UpdateIfRevAsync(
+        string collection,
+        string key,
+        ulong  expectedRev,
+        Dictionary<string, object?> data,
+        CancellationToken ct = default)
+    {
+        var resp = await _stub.UpdateIfRevAsync(new UpdateIfRevRequest
+        {
+            Collection  = collection,
+            Key         = key,
+            ExpectedRev = expectedRev,
+            Data        = DictToStruct(data),
+        }, _headers, cancellationToken: ct);
+        var record = resp is { Swapped: true, Record: not null }
+            ? RecordFromProto(resp.Record)
+            : null;
+        return new CasResult(resp.Swapped, record);
     }
 
     // -----------------------------------------------------------------------
@@ -346,6 +633,102 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
             };
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Aggregations (N4)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Compute count and numeric aggregations over the filtered live records (N4).
+    ///
+    /// <para>The <c>Aggregate</c> RPC is server-streaming — one message per group; this
+    /// collects them into a list. Each <see cref="AggResult"/> carries <c>Group</c> (the
+    /// group-by value, <c>null</c> for the whole-set group), <c>Count</c>, and — when the
+    /// group held at least one numeric <paramref name="field"/> value — sum/avg/min/max
+    /// with <see cref="AggResult.Numeric"/> <c>true</c>.</para>
+    /// </summary>
+    /// <param name="collection">Collection name.</param>
+    /// <param name="aggregations">
+    /// Which numeric aggregations to compute: any of <c>count sum avg min max</c>.
+    /// <c>count</c> is always returned; the rest require <paramref name="field"/>.
+    /// Null/empty = count only.
+    /// </param>
+    /// <param name="field">Numeric field for <c>sum/avg/min/max</c>, or "".</param>
+    /// <param name="groupBy">Optional group-by field — one result per distinct value, or "".</param>
+    /// <param name="filter">The same plain-map filter as <see cref="FindAsync"/>, or null.</param>
+    public async Task<List<AggResult>> AggregateAsync(
+        string collection,
+        IEnumerable<string>? aggregations   = null,
+        string field                        = "",
+        string groupBy                      = "",
+        Dictionary<string, object?>? filter = null,
+        CancellationToken ct                = default)
+    {
+        var req = new AggregateRequest
+        {
+            Collection = collection,
+            Field      = field ?? "",
+            GroupBy    = groupBy ?? "",
+        };
+        if (filter is not null) req.Filter = FilterToProto(filter);
+        if (aggregations is not null)
+            foreach (var a in aggregations) req.Aggregations.Add(ParseAgg(a));
+
+        var results = new List<AggResult>();
+        using var call = _stub.Aggregate(req, _headers, cancellationToken: ct);
+        await foreach (var r in call.ResponseStream.ReadAllAsync(ct))
+        {
+            results.Add(new AggResult
+            {
+                Group   = ValueToObject(r.GroupValue),
+                Count   = r.Count,
+                Numeric = r.Numeric,
+                Sum     = r.Sum,
+                Avg     = r.Avg,
+                Min     = r.Min,
+                Max     = r.Max,
+            });
+        }
+        return results;
+    }
+
+    /// <summary>Count the live records matching <paramref name="filter"/> (or all records when null).</summary>
+    public async Task<ulong> CountAsync(
+        string collection,
+        Dictionary<string, object?>? filter = null,
+        CancellationToken ct = default)
+    {
+        var groups = await AggregateAsync(collection, aggregations: null, field: "", groupBy: "", filter, ct);
+        return groups.Count == 0 ? 0UL : groups[0].Count;
+    }
+
+    /// <summary>
+    /// Group live records by <paramref name="field"/> and aggregate each group (N4).
+    ///
+    /// <para>Convenience wrapper over <see cref="AggregateAsync"/>. <paramref name="field"/>
+    /// is the group-by field; <paramref name="metric"/> is the numeric field for
+    /// <c>sum/avg/min/max</c> (pass those names in <paramref name="aggregations"/>).
+    /// Returns one <see cref="AggResult"/> per distinct group value.</para>
+    /// </summary>
+    public Task<List<AggResult>> GroupByAsync(
+        string collection,
+        string field,
+        IEnumerable<string>? aggregations   = null,
+        string metric                       = "",
+        Dictionary<string, object?>? filter = null,
+        CancellationToken ct                = default)
+        => AggregateAsync(collection, aggregations, metric, field, filter, ct);
+
+    private static AggregateOp ParseAgg(string op) => op.ToLowerInvariant() switch
+    {
+        "count" => AggregateOp.AggCount,
+        "sum"   => AggregateOp.AggSum,
+        "avg"   => AggregateOp.AggAvg,
+        "min"   => AggregateOp.AggMin,
+        "max"   => AggregateOp.AggMax,
+        _       => throw new ArgumentException(
+            $"unknown aggregation '{op}'; expected one of [avg, count, max, min, sum]"),
+    };
 
     // -----------------------------------------------------------------------
     // Stats
@@ -455,9 +838,9 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
         {
             Field = new FieldFilter
             {
-                Field_ = filter["field"]?.ToString() ?? "",
-                Op     = ParseOp(filter["op"]?.ToString() ?? ""),
-                Value  = filter["value"]?.ToString() ?? "",
+                Field = filter["field"]?.ToString() ?? "",
+                Op    = ParseOp(filter["op"]?.ToString() ?? ""),
+                Value = filter["value"]?.ToString() ?? "",
             },
         };
     }
@@ -480,12 +863,22 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
         "lte"      => FilterOp.Lte,
         "contains" => FilterOp.Contains,
         "regex"    => FilterOp.Regex,
-        _          => FilterOp.FilterOpUnspecified,
+        _          => FilterOp.Unspecified,
     };
 
     // -----------------------------------------------------------------------
-    // Struct ↔ Dictionary helpers
+    // Record / Struct ↔ Dictionary helpers
     // -----------------------------------------------------------------------
+
+    private static Record RecordFromProto(Filedb.V1.Record r) => new()
+    {
+        Id           = r.Id,
+        Key          = r.Key,
+        Rev          = r.Rev,
+        Data         = r.Data is not null ? StructToDict(r.Data) : new Dictionary<string, object?>(),
+        DateAdded    = r.DateAdded?.ToDateTimeOffset(),
+        DateModified = r.DateModified?.ToDateTimeOffset(),
+    };
 
     private static Struct DictToStruct(Dictionary<string, object?> dict)
     {
@@ -544,8 +937,138 @@ public sealed class FileDB : IAsyncDisposable, IDisposable
 }
 
 // -----------------------------------------------------------------------
-// Result types
+// Value types
 // -----------------------------------------------------------------------
+
+/// <summary>
+/// A record returned from the engine.
+///
+/// <para><see cref="Id"/> is the server-assigned numeric id; <see cref="Key"/> is the
+/// caller-supplied string key (<c>""</c> for keyless records); <see cref="Rev"/> is the
+/// monotonic per-record revision (starts at 1, bumped on every write); <see cref="Data"/>
+/// is the decoded document. The indexer is a shortcut to a top-level <see cref="Data"/>
+/// field.</para>
+/// </summary>
+public sealed class Record
+{
+    public required ulong Id { get; init; }
+
+    /// <summary>Caller-supplied string key, or <c>""</c> for a keyless record.</summary>
+    public required string Key { get; init; }
+
+    /// <summary>Monotonic per-record revision (starts at 1, bumped on every write).</summary>
+    public required ulong Rev { get; init; }
+
+    public required Dictionary<string, object?> Data { get; init; }
+
+    /// <summary>Creation timestamp, or <c>null</c> when unset.</summary>
+    public DateTimeOffset? DateAdded { get; init; }
+
+    /// <summary>Last-modified timestamp, or <c>null</c> when unset.</summary>
+    public DateTimeOffset? DateModified { get; init; }
+
+    /// <summary>True when this record carries a caller-supplied key.</summary>
+    public bool HasKey => !string.IsNullOrEmpty(Key);
+
+    /// <summary>Shortcut for <c>Data[field]</c>; returns <c>null</c> if the field is absent.</summary>
+    public object? this[string field] => Data.TryGetValue(field, out var v) ? v : null;
+
+    public override string ToString() =>
+        HasKey ? $"Record{{id={Id}, key={Key}, rev={Rev}, data={{{Data.Count} fields}}}}"
+               : $"Record{{id={Id}, rev={Rev}, data={{{Data.Count} fields}}}}";
+}
+
+/// <summary>
+/// A single sort key for a multi-field order-by (N3): a field name and a direction.
+/// Use <see cref="Asc"/> / <see cref="Desc"/> to build one.
+/// </summary>
+public sealed record Order(string Field, bool Desc)
+{
+    public static Order Ascending(string field)  => new(field, false);
+    public static Order Descending(string field) => new(field, true);
+}
+
+/// <summary>
+/// One keyset page from <see cref="FileDB.FindPageAsync"/>: the records plus the next-page
+/// cursor. An empty <see cref="NextPageToken"/> means the last page was reached.
+/// </summary>
+public sealed class Page
+{
+    public Page(IReadOnlyList<Record> records, string nextPageToken)
+    {
+        Records = records;
+        NextPageToken = nextPageToken;
+    }
+
+    public IReadOnlyList<Record> Records { get; }
+    public string NextPageToken { get; }
+
+    /// <summary>True when a further page remains under the requested ordering.</summary>
+    public bool HasNextPage => !string.IsNullOrEmpty(NextPageToken);
+}
+
+/// <summary>
+/// The outcome of an <see cref="FileDB.UpdateByKeyAsync"/> write: the affected record's id,
+/// key, revision (after the write) and last-modified timestamp.
+/// </summary>
+public sealed class UpdateResult
+{
+    public required ulong  Id           { get; init; }
+    public required string Key          { get; init; }
+    public required ulong  Rev          { get; init; }
+
+    /// <summary>Last-modified timestamp string as returned by the engine.</summary>
+    public required string DateModified { get; init; }
+
+    public override string ToString() =>
+        $"UpdateResult{{id={Id}, key={Key}, rev={Rev}, dateModified={DateModified}}}";
+}
+
+/// <summary>
+/// The outcome of an <see cref="FileDB.UpdateIfRevAsync"/> compare-and-swap.
+/// <see cref="Record"/> is populated only when <see cref="Swapped"/> is <c>true</c>.
+/// </summary>
+public sealed class CasResult
+{
+    public CasResult(bool swapped, Record? record)
+    {
+        Swapped = swapped;
+        Record = record;
+    }
+
+    public bool Swapped { get; }
+
+    /// <summary>The resulting record when <see cref="Swapped"/> is true; <c>null</c> otherwise.</summary>
+    public Record? Record { get; }
+
+    public override string ToString() => $"CasResult{{swapped={Swapped}, record={Record}}}";
+}
+
+/// <summary>
+/// One group's aggregation result (N4). <see cref="Group"/> is the group-by value
+/// (<c>null</c> for the whole-set group); the numeric aggregates are meaningful only when
+/// <see cref="Numeric"/> is <c>true</c>.
+/// </summary>
+public sealed class AggResult
+{
+    /// <summary>The group-by field's value (number/string/bool), or <c>null</c> for the whole set.</summary>
+    public required object? Group { get; init; }
+
+    public required ulong Count { get; init; }
+
+    /// <summary>True when at least one record in the group carried a numeric aggregate field.</summary>
+    public required bool Numeric { get; init; }
+
+    public required double Sum { get; init; }
+    public required double Avg { get; init; }
+    public required double Min { get; init; }
+    public required double Max { get; init; }
+
+    public override string ToString() =>
+        Numeric
+            ? $"AggResult{{group={Group}, count={Count}, sum={Sum}, avg={Avg}, min={Min}, max={Max}}}"
+            : $"AggResult{{group={Group}, count={Count}}}";
+}
 
 /// <summary>A change-feed event returned by <see cref="FileDB.WatchAsync"/>.</summary>
 public sealed class WatchEventResult
