@@ -31,7 +31,17 @@ embedding-specific contract.
 
 ## [Unreleased]
 
-**Operability & observability (v0.6.0).** The server is no longer a black box:
+_Nothing yet — next up: v0.8.0 Replication & HA._
+
+## [0.7.0] — 2026-07-04
+
+This release rolls up the operability/observability and network-API-parity work
+accumulated since v0.3.0, plus the follow-on sweep that brought all seven client
+SDKs up to the new wire surface. It collapses the interim internal milestone
+labels (v0.6.0 operability, v0.7.0 API parity) into a single tagged release. No
+breaking changes to existing behaviour; every addition is opt-in or additive.
+
+**Operability & observability.** The server is no longer a black box:
 it emits structured request logs (PR-A), exposes health/readiness probes for
 load balancers and orchestrators (PR-A), can shed load under pressure with
 opt-in concurrency, in-flight, and per-key rate limits (PR-B), can emit
@@ -98,7 +108,7 @@ every limit, tracing, and the slow-query log are off by default.
   server-layer hook pattern as compaction — the engine never imports metrics
   (enforced by `make deps-check`).
 
-**Network/engine API parity (v0.7.0).** The wire API is catching up to the
+**Network/engine API parity.** The wire API is catching up to the
 embedded engine: the richest engine operations — natural string keys, upsert, and
 optimistic-concurrency updates — are now reachable from any gRPC/REST client, not
 just an in-process Go program. Additive only: new field numbers and new RPCs, so
