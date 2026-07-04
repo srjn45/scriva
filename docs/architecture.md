@@ -69,6 +69,45 @@ Writes are always sequential appends — the fastest possible disk operation.
 
 ---
 
+## Quotas
+
+A collection can carry an optional **write-path budget** — a maximum live-record
+count (`MaxRecords`) and/or a maximum on-disk size in bytes (`MaxBytes`), either
+`0` for unlimited. Enforcement lives **in the engine**, on the write path,
+because that is the only layer that (a) holds the collection write lock and (b)
+sees live usage without a round-trip: `MaxRecords` compares against the in-memory
+primary index length, and `MaxBytes` against the summed segment size — the same
+figures `Stats()` exposes. Doing it at the server would race concurrent writers
+and duplicate the size bookkeeping the engine already maintains.
+
+The check runs under the write lock, **before** the durable append, so a refused
+write appends nothing and mutates no index. A breach returns the typed
+`engine.ErrResourceExhausted`, which the server maps to gRPC `ResourceExhausted`
+(HTTP `429`). The engine stays dependency-free: the rejection counter is fed by a
+server-supplied observer hook (`WithQuotaObserver`), never a metrics import in
+the engine — the same pattern as the compaction/scan hooks.
+
+Quotas **gate the creation of new records only.** The record-adding paths
+(`Insert`, `InsertMany`, `InsertWithKey`, an inserting `Upsert`, and transaction
+inserts) are checked; an in-place `Update`, a compare-and-swap, an `Upsert` that
+replaces, and a `Delete` are not — blocking them would trap a tenant that needs
+to edit or delete to get back under budget. Batch paths (`InsertMany`,
+`CommitTx`) evaluate the whole batch against the budget under a single lock hold,
+so a batch that would breach is rejected atomically with nothing written; this is
+what makes `InsertMany` a genuinely atomic engine operation rather than a
+server-side loop. When a byte budget is set, the per-entry encoded size is
+measured for the check; an unlimited collection skips that work entirely, so the
+hot path pays nothing.
+
+Per-collection budgets are supplied two ways that converge on the same
+`CollectionConfig` fields: the embedded façade sets `MaxRecords`/`MaxBytes`
+directly (`filedb.WithMaxRecords`/`WithMaxBytes`), while the server passes a
+DB-wide `Quotas` name→budget map that `OpenCollection` overlays onto each
+collection by name. Per-**key** quotas are out of scope — the engine has no key
+identity on the write path.
+
+---
+
 ## Read Path
 
 ```

@@ -14,6 +14,7 @@ type CollectionStats struct {
 	Name         string
 	RecordCount  uint64
 	SegmentCount uint64
+	SizeBytes    uint64
 }
 
 // Metrics holds all Prometheus instruments for FileDB.
@@ -23,6 +24,7 @@ type Metrics struct {
 	CompactionDuration *prometheus.HistogramVec
 	GRPCDuration       *prometheus.HistogramVec
 	ScanRowsScanned    *prometheus.HistogramVec
+	QuotaRejectedTotal *prometheus.CounterVec
 }
 
 // New creates a Metrics and registers all instruments with reg.
@@ -57,7 +59,16 @@ func New(reg prometheus.Registerer) *Metrics {
 		Buckets: prometheus.ExponentialBuckets(1, 4, 10), // 1, 4, 16, ... ~262144
 	}, []string{"collection"})
 
-	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned)
+	// Writes refused because they would breach a collection's configured quota
+	// (S4). Paired with the filedb_collection_records_total / segments gauges (and
+	// the SizeBytes the DBCollector reads), an operator sees both consumption and
+	// the rejections it triggers.
+	m.QuotaRejectedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "filedb_quota_rejected_total",
+		Help: "Total number of writes refused because they would exceed a collection's quota.",
+	}, []string{"collection"})
+
+	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal)
 	return m
 }
 
@@ -78,12 +89,18 @@ func (m *Metrics) ObserveScan(collection string, rowsScanned int) {
 	m.ScanRowsScanned.WithLabelValues(collection).Observe(float64(rowsScanned))
 }
 
+// ObserveQuotaReject records one write refused by the named collection's quota.
+func (m *Metrics) ObserveQuotaReject(collection string) {
+	m.QuotaRejectedTotal.WithLabelValues(collection).Inc()
+}
+
 // DBCollector is a prometheus.Collector that emits per-collection record and
 // segment gauges by calling statsFunc at every scrape.
 type DBCollector struct {
 	statsFunc    func() []CollectionStats
 	recordsDesc  *prometheus.Desc
 	segmentsDesc *prometheus.Desc
+	bytesDesc    *prometheus.Desc
 }
 
 // NewDBCollector returns a DBCollector backed by statsFunc and registers it
@@ -101,6 +118,11 @@ func NewDBCollector(reg prometheus.Registerer, statsFunc func() []CollectionStat
 			"Current number of segment files in the collection.",
 			[]string{"collection"}, nil,
 		),
+		bytesDesc: prometheus.NewDesc(
+			"filedb_collection_bytes",
+			"Current on-disk size of the collection in bytes (summed segment files).",
+			[]string{"collection"}, nil,
+		),
 	}
 	reg.MustRegister(c)
 	return c
@@ -110,6 +132,7 @@ func NewDBCollector(reg prometheus.Registerer, statsFunc func() []CollectionStat
 func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.recordsDesc
 	ch <- c.segmentsDesc
+	ch <- c.bytesDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -122,6 +145,10 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(
 			c.segmentsDesc, prometheus.GaugeValue,
 			float64(s.SegmentCount), s.Name,
+		)
+		ch <- prometheus.MustNewConstMetric(
+			c.bytesDesc, prometheus.GaugeValue,
+			float64(s.SizeBytes), s.Name,
 		)
 	}
 }

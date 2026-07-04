@@ -20,6 +20,13 @@ type APIKeyConfig struct {
 	Collections []string `yaml:"collections"`
 }
 
+// QuotaConfig is one collection's write-path resource budget (S4). A zero field
+// leaves that dimension unlimited.
+type QuotaConfig struct {
+	MaxRecords uint64 `yaml:"max_records"` // cap on live records (0 = unlimited)
+	MaxBytes   uint64 `yaml:"max_bytes"`   // cap on total segment bytes (0 = unlimited)
+}
+
 // Config holds all server configuration, loaded from CLI flags → env vars →
 // config file, in priority order.
 type Config struct {
@@ -95,6 +102,12 @@ type Config struct {
 	// record carrying the principal, RPC method, target, and outcome.
 	AuditLog string `yaml:"audit_log"` // path to the append-only audit NDJSON file (empty = disabled)
 
+	// Per-collection quotas (S4, config-file only — a flat flag cannot express a
+	// per-collection map). Maps a collection name to its max_records/max_bytes
+	// budget; the write path refuses a new record past either limit with
+	// ResourceExhausted. Omitted collections are unlimited.
+	Quotas map[string]QuotaConfig `yaml:"quotas"`
+
 	// Observability
 	SlowQueryMs int `yaml:"slow_query_ms"` // Find slower than this many ms is logged at WARN (0 = disabled)
 
@@ -160,7 +173,25 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		// A node started with --replicate-from opens in the follower role so the
 		// read-only guard rejects writes until an operator promotes it (R3).
 		Follower: c.ReplicateFrom != "",
+
+		// Per-collection quotas (S4): the engine overlays the matching entry onto
+		// each collection at open time. Nil when none are configured, so unlimited
+		// collections pay nothing.
+		Quotas: c.engineQuotas(),
 	}
+}
+
+// engineQuotas converts the server's per-collection quota config into the
+// engine's name→Quota map, or nil when no quotas are configured.
+func (c Config) engineQuotas() map[string]engine.Quota {
+	if len(c.Quotas) == 0 {
+		return nil
+	}
+	out := make(map[string]engine.Quota, len(c.Quotas))
+	for name, q := range c.Quotas {
+		out[name] = engine.Quota{MaxRecords: q.MaxRecords, MaxBytes: q.MaxBytes}
+	}
+	return out
 }
 
 // fileConfig mirrors Config but uses a string for CompactInterval so yaml.v3
@@ -194,6 +225,8 @@ type fileConfig struct {
 	LogFormat           string `yaml:"log_format"`
 	AuditLog            string `yaml:"audit_log"`
 	SlowQueryMs         int    `yaml:"slow_query_ms"`
+
+	Quotas map[string]QuotaConfig `yaml:"quotas"`
 
 	MaxConcurrentStreams uint32  `yaml:"max_concurrent_streams"`
 	MaxInflight          int     `yaml:"max_inflight"`
@@ -244,6 +277,8 @@ func LoadConfigFile(path string) (Config, error) {
 		LogFormat:   defaults.LogFormat,
 		AuditLog:    defaults.AuditLog,
 		SlowQueryMs: defaults.SlowQueryMs,
+
+		Quotas: defaults.Quotas,
 
 		MaxConcurrentStreams: defaults.MaxConcurrentStreams,
 		MaxInflight:          defaults.MaxInflight,
@@ -309,6 +344,8 @@ func LoadConfigFile(path string) (Config, error) {
 		LogFormat:   fc.LogFormat,
 		AuditLog:    fc.AuditLog,
 		SlowQueryMs: fc.SlowQueryMs,
+
+		Quotas: fc.Quotas,
 
 		MaxConcurrentStreams: fc.MaxConcurrentStreams,
 		MaxInflight:          fc.MaxInflight,

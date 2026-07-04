@@ -110,6 +110,24 @@ func WithCollectionWatchBufferSize(n int) CollectionOption {
 	return func(o *collectionOptions) { o.cfg.WatchBufferSize = n }
 }
 
+// WithMaxRecords caps this collection at n live records (S4): an insert, keyed
+// insert, inserting upsert, batch, or transaction that would create a record
+// beyond the cap is refused with engine.ErrResourceExhausted, before anything is
+// written. An in-place update or a delete is never refused. Zero (the default)
+// leaves the record count unlimited.
+func WithMaxRecords(n uint64) CollectionOption {
+	return func(o *collectionOptions) { o.cfg.MaxRecords = n }
+}
+
+// WithMaxBytes caps this collection's on-disk footprint at n bytes (S4, the
+// summed size of its segment files): once the budget is reached, a write that
+// would create a new record is refused with engine.ErrResourceExhausted. Like
+// WithMaxRecords it gates only new-record creation, so a tenant at its limit can
+// still update or delete to recover. Zero (the default) leaves it unlimited.
+func WithMaxBytes(n uint64) CollectionOption {
+	return func(o *collectionOptions) { o.cfg.MaxBytes = n }
+}
+
 // WithUniqueIndex ensures a unique secondary index on each named field when the
 // collection is opened (via engine.Collection.EnsureUniqueIndex). Subsequent
 // inserts or updates that would map a field's value to a different live record

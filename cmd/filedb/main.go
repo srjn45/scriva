@@ -306,6 +306,7 @@ func serve(cfg server.Config, configFile string) error {
 				Name:         s.Name,
 				RecordCount:  s.RecordCount,
 				SegmentCount: s.SegmentCount,
+				SizeBytes:    s.SizeBytes,
 			})
 		}
 		return stats
@@ -447,6 +448,8 @@ func serve(cfg server.Config, configFile string) error {
 		server.WithSlowQueryLog(logger, time.Duration(cfg.SlowQueryMs)*time.Millisecond),
 		// R3: the Promote handler enforces this lag ceiling unless the request forces.
 		server.WithPromoteMaxLag(cfg.PromoteMaxLag),
+		// S4: count writes the engine refused on a quota breach, labelled by collection.
+		server.WithQuotaObserver(m.ObserveQuotaReject),
 	}
 	if cfg.SlowQueryMs > 0 {
 		logger.Info("slow-query log enabled", "threshold_ms", cfg.SlowQueryMs)

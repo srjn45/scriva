@@ -93,6 +93,35 @@ type CollectionConfig struct {
 	// leader. A leader (the default) accepts writes immediately. DB-wide, read
 	// once at Open.
 	Follower bool
+
+	// MaxRecords caps the number of live records in the collection (S4). A write
+	// that would create a new record beyond this limit is refused with
+	// ErrResourceExhausted before anything is appended. 0 (the default) means
+	// unlimited. Only the record-adding write paths are gated (Insert,
+	// InsertMany, InsertWithKey, an inserting Upsert, and tx inserts); an
+	// in-place Update, CAS, or Delete is never refused, so a tenant at its limit
+	// can still edit or delete to recover.
+	MaxRecords uint64
+	// MaxBytes caps the collection's on-disk footprint — the summed size of all
+	// its segment files (S4). A write that would create a new record once this
+	// budget is reached is refused with ErrResourceExhausted. 0 (the default)
+	// means unlimited. Like MaxRecords it gates only new-record creation.
+	MaxBytes uint64
+	// Quotas, when non-nil, maps a collection name to its per-collection limits.
+	// It is DB-wide: OpenCollection overlays the entry matching the collection's
+	// own name onto MaxRecords/MaxBytes at open time, so the server can configure
+	// distinct budgets per collection from one base config. Unlisted collections
+	// stay unlimited. The embedded façade sets MaxRecords/MaxBytes directly and
+	// leaves this nil.
+	Quotas map[string]Quota
+}
+
+// Quota is a single collection's write-path resource budget. A zero field means
+// that dimension is unlimited. It is the per-collection value carried in
+// CollectionConfig.Quotas.
+type Quota struct {
+	MaxRecords uint64
+	MaxBytes   uint64
 }
 
 func defaultConfig() CollectionConfig {
@@ -189,6 +218,13 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 	if cfg.WatchBufferSize <= 0 {
 		cfg.WatchBufferSize = DefaultWatchBufferSize
+	}
+	// Overlay a per-collection quota (S4) if one is configured for this name.
+	// Quotas is DB-wide (the server builds it from config); the embedded façade
+	// instead sets MaxRecords/MaxBytes directly and leaves Quotas nil.
+	if q, ok := cfg.Quotas[name]; ok {
+		cfg.MaxRecords = q.MaxRecords
+		cfg.MaxBytes = q.MaxBytes
 	}
 
 	c := &Collection{
@@ -443,7 +479,15 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 	e.Rev = 1 // a fresh record starts at revision 1
 	e.ExpiresAt = expiresAt
 
+	qBytes := c.entryQuotaBytes(e)
+
 	c.mu.Lock()
+	// Enforce the collection's quota before writing so a refused insert appends
+	// nothing and mutates no index (S4).
+	if err := c.checkQuotaLocked(1, qBytes); err != nil {
+		c.mu.Unlock()
+		return 0, time.Time{}, err
+	}
 	// Enforce unique indexes before writing so a rejected insert appends nothing
 	// and mutates no index.
 	if err := c.sidxCheckUnique(id, data); err != nil {
@@ -476,6 +520,88 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 	// crash between writes cannot cause id reuse.
 	c.emit(WatchEvent{Op: store.OpInsert, ID: id, Data: data, Ts: ts})
 	return id, ts, nil
+}
+
+// InsertMany appends a batch of keyless records atomically. The collection's
+// quota is checked against the whole batch up front, so a batch that would
+// breach MaxRecords/MaxBytes is refused with ErrResourceExhausted and nothing is
+// written (S4); unique secondary indexes are likewise pre-validated across the
+// batch, so a duplicate anywhere in it rejects the whole batch. All records
+// share the resolved expiry derived from expiresAt (zero = the collection's
+// DefaultTTL, if any). A record that sets the reserved _key field is rejected
+// with ErrReservedField. It returns the assigned ids (in input order) and the
+// shared insert timestamp.
+func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) ([]uint64, time.Time, error) {
+	if len(records) == 0 {
+		return nil, time.Time{}, nil
+	}
+	for _, d := range records {
+		if _, ok := d[KeyField]; ok {
+			return nil, time.Time{}, reservedFieldErr()
+		}
+	}
+	exp := c.resolveInsertExpiry(expiresAt)
+	ts := time.Now().UTC()
+
+	// Build every entry with a freshly-assigned id before taking the lock, and
+	// tally the batch's on-disk footprint for the quota check.
+	ids := make([]uint64, len(records))
+	entries := make([]store.Entry, len(records))
+	ops := make([]txOp, len(records))
+	var newBytes int64
+	for i, d := range records {
+		id := c.idSeq.Add(1)
+		e := store.NewInsert(id, d)
+		e.Ts = ts
+		e.Rev = 1
+		e.ExpiresAt = exp
+		ids[i] = id
+		entries[i] = e
+		ops[i] = txOp{kind: txOpInsert, id: id, data: d, ts: ts}
+		newBytes += c.entryQuotaBytes(e)
+	}
+
+	c.mu.Lock()
+	// Atomic budget gate for the whole batch — refuse before any append.
+	if err := c.checkQuotaLocked(uint64(len(records)), newBytes); err != nil {
+		c.mu.Unlock()
+		return nil, time.Time{}, err
+	}
+	// Pre-validate uniqueness across the batch and against committed data so a
+	// violating batch writes nothing (reuses the transaction batch checker).
+	if err := c.txCheckUnique(ops); err != nil {
+		c.mu.Unlock()
+		return nil, time.Time{}, err
+	}
+	for i, e := range entries {
+		offset, err := c.active.Append(e)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
+		}
+		c.index.Set(ids[i], IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp})
+		c.sidxIndexEntry(ids[i], records[i])
+	}
+	if err := c.syncActiveLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
+	}
+	for _, e := range entries {
+		c.publishCommit(e)
+	}
+	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
+	c.mu.Unlock()
+
+	if needRotate {
+		if err := c.rotateSegment(); err != nil {
+			return ids, ts, fmt.Errorf("collection: rotate after insertMany: %w", err)
+		}
+	}
+
+	for i := range entries {
+		c.emit(WatchEvent{Op: store.OpInsert, ID: ids[i], Data: records[i], Ts: ts})
+	}
+	return ids, ts, nil
 }
 
 // Update overwrites the data for an existing record. Data that sets the
@@ -840,6 +966,33 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	if err := c.txCheckUnique(ops); err != nil {
 		c.mu.Unlock()
 		return err
+	}
+
+	// Quota pre-check (S4): reject the whole commit atomically if its inserts
+	// would breach the collection's record/byte budget, before any op is applied.
+	// Only inserts create new records; updates and deletes never widen the count.
+	if c.quotaEnabled() {
+		var newRecords uint64
+		var newBytes int64
+		for _, op := range ops {
+			if op.kind != txOpInsert {
+				continue
+			}
+			newRecords++
+			if c.cfg.MaxBytes > 0 {
+				e := store.NewInsert(op.id, op.data)
+				e.Ts = op.ts
+				e.Rev = 1
+				e.ExpiresAt = c.resolveInsertExpiry(time.Time{})
+				newBytes += c.entryQuotaBytes(e)
+			}
+		}
+		if newRecords > 0 {
+			if err := c.checkQuotaLocked(newRecords, newBytes); err != nil {
+				c.mu.Unlock()
+				return err
+			}
+		}
 	}
 
 	// Apply all ops sequentially.

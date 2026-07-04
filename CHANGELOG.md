@@ -33,6 +33,40 @@ embedding-specific contract.
 
 ### Added
 
+- **S4 — per-tenant quotas & limits.** A collection can now carry an **optional
+  write-path budget** so a single tenant cannot consume unbounded disk or record
+  count. It is **opt-in** and fully backward compatible: a collection with no
+  quota is unlimited, exactly as before.
+  - New config-file `quotas:` section mapping a collection name to a
+    `max_records` and/or `max_bytes` budget (either may be `0`/omitted for
+    unlimited). It is **config-file only** — a per-collection map does not fit a
+    flat flag. The embedded façade gets matching `filedb.WithMaxRecords` /
+    `filedb.WithMaxBytes` collection options for parity.
+  - **Enforcement lives in the engine, on the write path**, before the durable
+    append — so a refused write persists nothing and mutates no index. A write
+    that would push the collection past either budget is rejected with a new
+    typed `engine.ErrResourceExhausted`, which the server maps to gRPC
+    **`ResourceExhausted`**. `max_bytes` is measured against the collection's
+    total on-disk segment size (the same figure `CollectionStats.SizeBytes`
+    reports).
+  - **Quotas gate the creation of new records only** — `Insert`, `InsertMany`,
+    keyed insert, an *inserting* `Upsert`, and transaction inserts. An in-place
+    `Update`/`UpdateByKey`, a compare-and-swap, an `Upsert` that *replaces*, and
+    a `Delete` are **never refused**, so a tenant sitting at its limit can still
+    edit or delete to recover. `InsertMany` and `CommitTx` are checked as a
+    **whole batch atomically**: a batch that would breach the budget writes
+    nothing. (`InsertMany` is now a genuinely atomic engine operation.)
+  - **Observability:** a new `filedb_quota_rejected_total{collection}` counter
+    tracks refused writes, and the per-collection gauges gain
+    `filedb_collection_bytes{collection}` alongside the existing record/segment
+    gauges, so consumption and the rejections it triggers are both visible. The
+    metric is wired via a server-side observer hook — the engine still imports no
+    metrics package. No proto/API change.
+  - **Per-key quotas are deferred:** the engine has no key identity on the write
+    path, so this ships per-collection only (which satisfies the tenancy budget
+    goal). See [`docs/getting-started.md`](docs/getting-started.md#per-collection-quotas)
+    for a YAML example and [`docs/architecture.md`](docs/architecture.md#quotas)
+    for how write-path enforcement works.
 - **S3 — per-collection ACLs on scoped keys.** An API key can now be **confined
   to a named set of collections** instead of reaching every collection. It is
   **opt-in** and fully backward compatible: a key with no allow-list keeps

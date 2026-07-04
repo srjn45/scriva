@@ -340,6 +340,60 @@ interceptors are ordered.
 
 ---
 
+## Per-collection quotas
+
+Backpressure caps *request* rate; **quotas** cap *storage*. Give a collection an
+optional write budget — a maximum live-record count and/or a maximum on-disk
+size — so one tenant cannot grow without bound. Quotas are **opt-in and
+config-file only** (a per-collection map does not fit a flat flag); a collection
+with no entry stays unlimited, exactly as before.
+
+```yaml
+# filedb.yaml
+quotas:
+  users:
+    max_records: 100000        # at most 100k live records
+    max_bytes:   52428800      # …and at most 50 MiB on disk
+  events:
+    max_bytes:   1073741824    # 1 GiB, no record-count cap
+  # collections not listed here are unlimited
+```
+
+- Either field may be `0` or omitted to leave **that** dimension unlimited.
+  `max_bytes` is measured against the collection's **total segment size** on
+  disk (the same figure `CollectionStats.SizeBytes` and the
+  `filedb_collection_bytes` metric report), so it accounts for un-compacted
+  history too.
+- A write that would push the collection past either budget is refused with gRPC
+  **`ResourceExhausted`** (HTTP `429` via REST). The check runs **before** the
+  durable append, so a refused write persists nothing.
+- **Quotas gate new records only.** `Insert`, `InsertMany`, a keyed insert, an
+  *inserting* `Upsert`, and transaction inserts are subject to the budget. An
+  in-place `Update`/`UpdateByKey`, a compare-and-swap, an `Upsert` that
+  *replaces* an existing key, and a `Delete` are **never** refused — so a tenant
+  sitting at its limit can still edit or delete to recover. `InsertMany` and a
+  transaction commit are checked as a **whole batch**: a batch that would breach
+  the budget is rejected atomically, writing nothing.
+- Consumption is observable at `:9090/metrics`:
+  `filedb_collection_records_total`, `filedb_collection_bytes`, and the
+  refusal counter `filedb_quota_rejected_total{collection}`.
+
+Embedding the engine directly? The `filedb` façade exposes the same budget per
+collection:
+
+```go
+users := db.MustCollection("users",
+    filedb.WithMaxRecords(100_000),
+    filedb.WithMaxBytes(50<<20))
+// an over-budget write returns engine.ErrResourceExhausted
+```
+
+Per-**key** quotas are deferred: the engine has no key identity on the write
+path, so budgets are per-collection. See
+[architecture.md](architecture.md#quotas) for how enforcement works.
+
+---
+
 ## Slow-query log
 
 A query that scans the whole collection because no index can serve its filter is
