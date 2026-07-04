@@ -60,6 +60,8 @@ All flags and their defaults:
 | `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled) |
 | `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key` | *(none)* | Path to TLS private key PEM file |
+| `--tls-client-ca` | *(none)* | Path to PEM CA bundle that signs trusted client certs (enables mTLS) |
+| `--tls-client-auth` | `off` | Client-certificate policy: `off`, `require`, or `verify-if-given` |
 | `--segment-size` | `4194304` | Max segment file size in bytes (4 MiB) |
 | `--compact-interval` | `5m` | Compaction interval |
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
@@ -110,6 +112,8 @@ otlp_endpoint: ""           # OTLP/gRPC collector address (empty = tracing disab
 otlp_sample_ratio: 1.0      # fraction of traces sampled when tracing is enabled
 # tls_cert: /etc/filedb/cert.pem
 # tls_key:  /etc/filedb/key.pem
+# tls_client_ca: /etc/filedb/client-ca.pem   # enables mTLS (see below)
+# tls_client_auth: off                        # off | require | verify-if-given
 ```
 
 ```bash
@@ -166,6 +170,70 @@ restarting:
 ```bash
 kill -HUP $(pgrep -f 'filedb serve')
 ```
+
+### Mutual TLS (client-certificate auth)
+
+On top of server TLS, FileDB can verify **client** certificates against a CA and
+authenticate a caller by its certificate — a cryptographic identity that does
+not depend on the `x-api-key` header. It is **off by default** and requires
+server TLS (`--tls-cert`/`--tls-key`) to be enabled.
+
+Two settings control it:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `--tls-client-ca` (`tls_client_ca`) | path to a PEM CA bundle | The CA that signs client certs you trust |
+| `--tls-client-auth` (`tls_client_auth`) | `off` · `require` · `verify-if-given` | `require` mandates a valid client cert on every connection; `verify-if-given` accepts one when presented but does not require it; `off` disables mTLS |
+
+```bash
+filedb serve --data ./data \
+  --tls-cert server.crt --tls-key server.key \
+  --tls-client-ca client-ca.pem \
+  --tls-client-auth require
+```
+
+**How it composes with API keys.** A valid `x-api-key` always wins and its scope
+is enforced as usual. A request that carries **no** API key but presents a
+certificate **verified against `--tls-client-ca`** is authenticated as the
+certificate's principal — its subject **Common Name**, or the first **SAN** if
+there is no CN — with **read-write** scope. (A CA-signed client cert is treated
+as an operator-issued, trusted identity, mirroring how `--api-key` registers a
+`read-write` `default` principal; per-certificate scoping is a later milestone.)
+A **presented-but-invalid** API key is still rejected outright rather than
+falling back to the certificate.
+
+This means you can run mTLS three ways:
+
+- **Cert only** — set `--tls-client-auth require` and configure no API keys;
+  every client authenticates by certificate.
+- **Cert or key** — set `--tls-client-auth verify-if-given` alongside `keys:`;
+  a client may present either credential.
+- **Server TLS only** — leave `--tls-client-auth off` (the default); behaviour
+  is exactly as before.
+
+Generate a throwaway CA and a client cert for testing:
+
+```bash
+# CA
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out client-ca.pem \
+  -days 365 -subj "/CN=filedb-client-ca"
+# Client key + CSR + signed cert (CN becomes the principal name)
+openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=svc-backend"
+openssl x509 -req -in client.csr -CA client-ca.pem -CAkey ca.key -CAcreateserial \
+  -out client.crt -days 365
+```
+
+Then point a client at the server with its certificate (e.g. with `grpcurl`):
+
+```bash
+grpcurl -cacert server-ca.pem -cert client.crt -key client.key \
+  localhost:5433 filedb.v1.FileDB/ListCollections
+```
+
+> **REST gateway under `require`:** because the built-in REST bridge dials gRPC
+> over loopback without a client certificate, under `--tls-client-auth require`
+> the server routes that internal hop over the local Unix socket so REST keeps
+> working. Keep the Unix socket enabled (the default) when using `require`.
 
 ---
 

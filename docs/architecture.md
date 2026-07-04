@@ -859,8 +859,8 @@ admin ACLs land in S3.
 └───────────────────────────────────────────────┘
 ```
 
-- **TCP gRPC listener** — optional TLS via `--tls-cert` / `--tls-key`. When both flags are set, `credentials.NewTLS()` is used; otherwise `insecure.NewCredentials()`.
-- **REST gateway** — dials the TCP gRPC server on the internal loopback. Uses `InsecureSkipVerify` for this internal hop (the cert may be self-signed).
+- **TCP gRPC listener** — optional TLS via `--tls-cert` / `--tls-key`. `server.ServerTLSConfig` builds the `*tls.Config`: when both flags are set, `credentials.NewTLS()` is used; otherwise `insecure.NewCredentials()`. When `--tls-client-ca` and a non-`off` `--tls-client-auth` are also set, it adds the client-CA pool and the `tls.ClientAuthType` (**mutual TLS**, S1) — see [Mutual TLS](#mutual-tls-s1).
+- **REST gateway** — dials the TCP gRPC server on the internal loopback. Uses `InsecureSkipVerify` for this internal hop (the cert may be self-signed). Under `--tls-client-auth require` the TCP server would reject this certless loopback dial, so the gateway is routed over the Unix socket (`NewRESTGatewayUnix`) instead.
 - **Unix socket** — always uses `insecure.NewCredentials()`. The CLI auto-detects this socket and prefers it for zero-overhead local connections.
 - **Metrics HTTP server** — serves Prometheus exposition format at `/metrics`. Disabled when `--metrics-addr` is empty.
 
@@ -873,6 +873,16 @@ All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors 
 **Key sources.** Keys come from the config file's `keys:` list (`{key, name, scope}` entries). The legacy single `--api-key` / `FILEDB_API_KEY` still works and is registered as an additional `read-write` key named `default`, so existing single-key and no-auth (empty) deployments are unchanged.
 
 **Rotation.** The active key set lives behind an `atomic.Pointer`; sending the server `SIGHUP` re-reads the config file and swaps in the new set atomically, with in-flight requests finishing against the set they started on. Keys can therefore be added, removed, or re-scoped without a restart.
+
+#### Mutual TLS (S1)
+
+When `auth.WithCertAuth(true)` is enabled (the server sets it from `ServerTLSConfig` whenever a client-CA and a non-`off` client-auth mode are configured), the same `Authenticator` accepts a **verified client certificate** as an alternative credential. The composition inside `authorize` is deliberate and backward compatible:
+
+1. If key auth is configured and the request carries an `x-api-key`, the key is validated as before — a valid key resolves the principal (and its scope), an **invalid** key is rejected outright with `Unauthenticated` (no silent fallback to the certificate).
+2. Only when **no** API key is presented does it fall back to the peer certificate. `principalFromPeerCert` reads `credentials.TLSInfo` from the gRPC `peer` and inspects `ConnectionState.VerifiedChains`. That field is populated **only after** the TLS stack has chained the leaf up to a configured `ClientCA` (`RequireAndVerifyClientCert` or `VerifyClientCertIfGiven`), so a non-empty verified chain *is* proof of trust — an untrusted or unsigned cert fails the handshake and never reaches the interceptor.
+3. The cert principal's name is the leaf's subject **Common Name**, falling back to the first DNS/email/URI **SAN**; its scope is **read-write**. A CA-signed client cert is treated as an operator-issued trusted identity (mirroring how `--api-key` becomes a `read-write` `default` principal). Per-certificate scoping and per-collection ACLs are deferred to S3; the resolved principal flows onto the request context exactly like an API-key principal, so that future work composes uniformly.
+
+The two `--tls-client-auth` modes differ only at the transport: `require` (`RequireAndVerifyClientCert`) rejects any connection without a valid client cert during the handshake; `verify-if-given` (`VerifyClientCertIfGiven`) lets certless clients connect (authenticating by API key) while still verifying a cert when one is presented. mTLS is **off by default** and requires server TLS — `ServerTLSConfig` fails loudly if a client-CA or a non-`off` mode is set without `--tls-cert`/`--tls-key`.
 
 ### Interceptor pipeline
 

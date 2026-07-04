@@ -18,6 +18,8 @@ grpc_addr: :9000
 rest_addr: :9001
 unix_socket: /tmp/mydb.sock
 api_key: secret
+tls_client_ca: /etc/filedb/client-ca.pem
+tls_client_auth: require
 segment_max_size: 1048576
 compact_interval: 10m
 compact_dirty_pct: 0.5
@@ -48,6 +50,12 @@ default_ttl: 24h
 		}
 		if cfg.APIKey != "secret" {
 			t.Errorf("APIKey = %q, want secret", cfg.APIKey)
+		}
+		if cfg.TLSClientCA != "/etc/filedb/client-ca.pem" {
+			t.Errorf("TLSClientCA = %q, want /etc/filedb/client-ca.pem", cfg.TLSClientCA)
+		}
+		if cfg.TLSClientAuth != "require" {
+			t.Errorf("TLSClientAuth = %q, want require", cfg.TLSClientAuth)
 		}
 		if cfg.SegmentMaxSize != 1048576 {
 			t.Errorf("SegmentMaxSize = %d, want 1048576", cfg.SegmentMaxSize)
@@ -96,6 +104,9 @@ default_ttl: 24h
 		}
 		if cfg.CompactInterval != defaults.CompactInterval {
 			t.Errorf("CompactInterval = %v, want %v", cfg.CompactInterval, defaults.CompactInterval)
+		}
+		if cfg.TLSClientAuth != "off" {
+			t.Errorf("TLSClientAuth = %q, want off (default)", cfg.TLSClientAuth)
 		}
 	})
 
