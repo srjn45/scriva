@@ -1394,7 +1394,7 @@
         "leaderLsn": {
           "type": "string",
           "format": "uint64",
-          "description": "The highest LSN the leader has committed and assigned."
+          "description": "The highest LSN the leader has committed and assigned. 0 when queried on a\nfollower (which assigns no LSNs of its own)."
         },
         "followers": {
           "type": "array",
@@ -1402,6 +1402,11 @@
             "type": "object",
             "$ref": "#/definitions/v1FollowerStatus"
           }
+        },
+        "appliedLsn": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The highest LSN this node has durably applied as a follower (R2). 0 on a\nleader. A read-replica client bounds its staleness by comparing this against\nthe leader's leader_lsn: the difference is the follower's replication lag."
         }
       }
     },

@@ -362,7 +362,7 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 
 **v0.8.0 — Replication & HA**
 - [x] R1 — leader→follower segment/log replication
-- [ ] R2 — read replicas & follower reads
+- [x] R2 — read replicas & follower reads
 - [ ] R3 — manual failover & role management
 
 **v0.9.0 — Security & tenancy depth**

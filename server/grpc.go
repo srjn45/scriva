@@ -796,7 +796,9 @@ func sendReplRecord(stream pb.FileDB_ReplicateServer, rs *engine.ReplicationStre
 // ReplicationStatus returns the leader's current LSN and per-follower progress.
 func (s *GRPCServer) ReplicationStatus(_ context.Context, _ *pb.ReplicationStatusRequest) (*pb.ReplicationStatusResponse, error) {
 	st := s.db.ReplicationStatus()
-	resp := &pb.ReplicationStatusResponse{LeaderLsn: st.LeaderLSN}
+	// applied_lsn is this node's follower watermark (0 on a leader). It lets a
+	// read-replica client bound staleness by diffing it against the leader's LSN.
+	resp := &pb.ReplicationStatusResponse{LeaderLsn: st.LeaderLSN, AppliedLsn: s.db.AppliedLSN()}
 	for _, f := range st.Followers {
 		resp.Followers = append(resp.Followers, &pb.FollowerStatus{
 			FollowerId:  f.FollowerID,
