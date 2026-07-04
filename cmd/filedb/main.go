@@ -361,6 +361,16 @@ func serve(cfg server.Config, configFile string) error {
 	}
 	unaryInts = append(unaryInts, authUnary)
 	streamInts = append(streamInts, authStream)
+	// Follower mode (R2): once authenticated, refuse write RPCs so this node
+	// serves reads only and clients are told to write to the leader. The guard is
+	// installed solely when replicating from a leader, so its presence *is* the
+	// read-only role — see server.ReadOnlyInterceptors.
+	if cfg.ReplicateFrom != "" {
+		roUnary, roStream := server.ReadOnlyInterceptors()
+		unaryInts = append(unaryInts, roUnary)
+		streamInts = append(streamInts, roStream)
+		logger.Info("read-only replica mode: writes rejected, reads served from applied state")
+	}
 	if limiter.Enabled() {
 		limUnary, limStream := limiter.Interceptors()
 		unaryInts = append(unaryInts, limUnary)

@@ -628,9 +628,14 @@ message ReplicationRecord {
 message ReplicationStatusRequest {}
 
 message ReplicationStatusResponse {
-  // The highest LSN the leader has committed and assigned.
+  // The highest LSN the leader has committed and assigned. 0 when queried on a
+  // follower (which assigns no LSNs of its own).
   uint64 leader_lsn = 1;
   repeated FollowerStatus followers = 2;
+  // The highest LSN this node has durably applied as a follower (R2). 0 on a
+  // leader. A read-replica client bounds its staleness by comparing this against
+  // the leader's leader_lsn: the difference is the follower's replication lag.
+  uint64 applied_lsn = 3;
 }
 
 message FollowerStatus {

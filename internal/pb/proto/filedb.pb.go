@@ -3415,9 +3415,14 @@ func (*ReplicationStatusRequest) Descriptor() ([]byte, []int) {
 
 type ReplicationStatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The highest LSN the leader has committed and assigned.
-	LeaderLsn     uint64            `protobuf:"varint,1,opt,name=leader_lsn,json=leaderLsn,proto3" json:"leader_lsn,omitempty"`
-	Followers     []*FollowerStatus `protobuf:"bytes,2,rep,name=followers,proto3" json:"followers,omitempty"`
+	// The highest LSN the leader has committed and assigned. 0 when queried on a
+	// follower (which assigns no LSNs of its own).
+	LeaderLsn uint64            `protobuf:"varint,1,opt,name=leader_lsn,json=leaderLsn,proto3" json:"leader_lsn,omitempty"`
+	Followers []*FollowerStatus `protobuf:"bytes,2,rep,name=followers,proto3" json:"followers,omitempty"`
+	// The highest LSN this node has durably applied as a follower (R2). 0 on a
+	// leader. A read-replica client bounds its staleness by comparing this against
+	// the leader's leader_lsn: the difference is the follower's replication lag.
+	AppliedLsn    uint64 `protobuf:"varint,3,opt,name=applied_lsn,json=appliedLsn,proto3" json:"applied_lsn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3464,6 +3469,13 @@ func (x *ReplicationStatusResponse) GetFollowers() []*FollowerStatus {
 		return x.Followers
 	}
 	return nil
+}
+
+func (x *ReplicationStatusResponse) GetAppliedLsn() uint64 {
+	if x != nil {
+		return x.AppliedLsn
+	}
+	return 0
 }
 
 type FollowerStatus struct {
@@ -3788,11 +3800,13 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\n" +
 	"expires_at\x18\a \x01(\x03R\texpiresAt\x12*\n" +
 	"\x02ts\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\"\x1a\n" +
-	"\x18ReplicationStatusRequest\"s\n" +
+	"\x18ReplicationStatusRequest\"\x94\x01\n" +
 	"\x19ReplicationStatusResponse\x12\x1d\n" +
 	"\n" +
 	"leader_lsn\x18\x01 \x01(\x04R\tleaderLsn\x127\n" +
-	"\tfollowers\x18\x02 \x03(\v2\x19.filedb.v1.FollowerStatusR\tfollowers\"\x9f\x01\n" +
+	"\tfollowers\x18\x02 \x03(\v2\x19.filedb.v1.FollowerStatusR\tfollowers\x12\x1f\n" +
+	"\vapplied_lsn\x18\x03 \x01(\x04R\n" +
+	"appliedLsn\"\x9f\x01\n" +
 	"\x0eFollowerStatus\x12\x1f\n" +
 	"\vfollower_id\x18\x01 \x01(\tR\n" +
 	"followerId\x12\x1b\n" +

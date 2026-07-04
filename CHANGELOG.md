@@ -56,6 +56,26 @@ embedding-specific contract.
   - New on-disk file `replication.json` at the data-dir root holds the leader LSN
     and follower applied-LSN watermarks (additive; absent on non-replicated DBs).
 
+- **R2 — read replicas & follower reads.** A node started with
+  `--replicate-from` now serves read RPCs (`Find`, `FindById`, `FindByKey`,
+  `Aggregate`, plus `CollectionStats`/`ListCollections`/`ListIndexes`/`Watch`)
+  from its applied state, so reads scale horizontally across followers.
+  - **Writes are refused on a follower** with a typed `FAILED_PRECONDITION` and
+    the message `read-only replica; write to the leader`. The guard covers every
+    mutating RPC — `Insert`/`InsertMany`/`Update`/`Delete`, the keyed and
+    compare-and-swap writes (`Upsert`/`UpdateByKey`/`DeleteByKey`/`UpdateIfRev`),
+    `CreateCollection`/`DropCollection`, `EnsureIndex`/`DropIndex`, the
+    transaction RPCs, and `Compact`. It is a single pair of gRPC interceptors
+    installed only in follower mode, keyed on the generated method names, so the
+    read-only contract lives in one auditable place.
+  - **Observable staleness bound.** `ReplicationStatusResponse` gains an additive
+    `applied_lsn` field: query a follower's `ReplicationStatus`
+    (`GET /v1/replication/status`) for its applied LSN and diff it against the
+    leader's `leader_lsn` to bound how stale a follower read may be. `applied_lsn`
+    is 0 on a leader.
+  - The embeddable `engine` package is unchanged — role/routing lives entirely in
+    the server layer; the engine only exposes the existing `DB.AppliedLSN()`.
+
 ## [0.7.0] — 2026-07-04
 
 This release rolls up the operability/observability and network-API-parity work

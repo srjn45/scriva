@@ -739,15 +739,40 @@ Replication is **asynchronous** (bounded lag). The leader tracks, per connected
 follower, the highest LSN it has shipped; `ReplicationStatus` reports the leader
 LSN and each follower's shipped LSN and lag. A follower that falls further behind
 than the ring can hold — or whose consumer stalls and overflows its buffer — is
-told to re-bootstrap with `FAILED_PRECONDITION`. The shipped-LSN tracking is the
-seam a future follower-acknowledged LSN (R2) plugs into.
+told to re-bootstrap with `FAILED_PRECONDITION`.
 
-> **Scope.** R1 is replication and observability only. Serving reads from a
-> follower and rejecting writes to it (R2), and promoting a follower to leader
-> after a leader loss (R3), are separate follow-ons. A leader restart keeps LSNs
-> monotonic (the last-assigned LSN is persisted) but its in-memory ring starts
-> empty, so a follower that was mid-catch-up may need to re-bootstrap — automatic
-> leader election remains explicitly out of scope.
+### Read replicas & follower reads (R2)
+
+A follower serves **read RPCs** — `Find`, `FindById`, `FindByKey`, `Aggregate`,
+and the read-only observability RPCs (`CollectionStats`, `ListCollections`,
+`ListIndexes`, `Watch`) — directly from its applied state, so read traffic scales
+horizontally: point read clients at any follower and writes at the leader.
+
+Role-aware routing lives entirely in the **server layer**, not the engine. When a
+node is started as a follower (`--replicate-from`), the server installs a single
+pair of gRPC interceptors (`server.ReadOnlyInterceptors`) that refuse every
+mutating RPC with `FAILED_PRECONDITION` and the message *"read-only replica; write
+to the leader"*. The guard is keyed on the generated method-name constants and
+centralised in one place — adding a new write RPC is a one-line addition to its
+`writeMethods` set — and its very presence *is* the read-only role (it is wired
+only in follower mode), so there is no per-call role lookup. The engine stays
+free of any gRPC/protobuf dependency; it only exposes the applied-LSN watermark
+the server already had (`DB.AppliedLSN()`).
+
+Because replication is asynchronous, a follower read may be **stale** by the
+follower's current lag. That bound is *observable*: `ReplicationStatusResponse`
+carries an additive `applied_lsn` field (the node's follower watermark; 0 on a
+leader). A client bounds staleness by reading a follower's `applied_lsn` and
+diffing it against the leader's `leader_lsn` — the gap is the maximum number of
+committed writes the follower has not yet applied. Records themselves never go
+backwards: apply is idempotent by revision, and each applied entry advances the
+persisted watermark monotonically.
+
+> **Scope.** Promoting a follower to leader after a leader loss (R3) is a separate
+> follow-on. A leader restart keeps LSNs monotonic (the last-assigned LSN is
+> persisted) but its in-memory ring starts empty, so a follower that was
+> mid-catch-up may need to re-bootstrap — automatic leader election remains
+> explicitly out of scope.
 
 ---
 

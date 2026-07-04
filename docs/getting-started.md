@@ -886,6 +886,41 @@ the follower, it **resumes from the last entry it applied** (persisted in
 `replication.json`) — no re-copy, no gaps, no duplicates. Writes to the leader
 show up on the follower within the replication lag.
 
+### Reading from a follower (read replicas)
+
+A follower **serves reads** — point read traffic at it and writes at the leader to
+scale reads horizontally:
+
+```bash
+# Reads work against the follower (its own gRPC/REST address):
+curl -s -H 'x-api-key: dev-key' http://localhost:9080/v1/users/find -d '{}'
+
+# Writes are refused — a follower is read-only:
+curl -s -H 'x-api-key: dev-key' http://localhost:9080/v1/users -d '{"data":{"name":"x"}}'
+# gRPC status FAILED_PRECONDITION: "read-only replica; write to the leader"
+```
+
+The refusal covers every mutating RPC (`Insert`/`InsertMany`/`Update`/`Delete`,
+the keyed and compare-and-swap writes, `CreateCollection`/`DropCollection`,
+`EnsureIndex`/`DropIndex`, the transaction RPCs, and `Compact`); read RPCs
+(`Find`/`FindById`/`FindByKey`/`Aggregate`/`CollectionStats`/`ListCollections`/
+`ListIndexes`/`Watch`) pass through.
+
+**Bounding staleness.** Replication is asynchronous, so a follower read may trail
+the leader by the follower's current lag. Query the follower's own
+`ReplicationStatus` for its `appliedLsn` and diff it against the leader's
+`leaderLsn`:
+
+```bash
+# On the follower: how far it has applied.
+curl -s -H 'x-api-key: dev-key' http://localhost:9080/v1/replication/status
+# {"appliedLsn":"1230", ...}
+# On the leader: the newest committed LSN.
+curl -s -H 'x-api-key: dev-key' http://localhost:8080/v1/replication/status
+# {"leaderLsn":"1234","followers":[{"followerId":"host-b","ackedLsn":"1234","lag":"0",...}]}
+# staleness ≤ leaderLsn - appliedLsn = 4 committed writes
+```
+
 Check replication health from the leader:
 
 ```bash
@@ -902,16 +937,16 @@ Flags (all optional):
 | `--replicate-id <id>` | `follower_id` | Label reported to the leader in `ReplicationStatus` (default: hostname). |
 | `--replication-ring-size <n>` | `replication_ring_size` | Leader's in-memory buffer of recent entries for follower resume (default 8192; 0 disables replication). |
 
-Notes and current scope (R1):
+Notes and current scope (R1–R2):
 
 - The follower authenticates to the leader with its `--api-key`; replication is a
   read-level operation, so a read-scoped key suffices.
 - The replication link uses the plain gRPC transport; run it inside a trusted
   network (mutual TLS for the link is a later milestone).
-- **R1 ships leader→follower replication only.** Serving reads from a follower and
-  rejecting writes to it, and promoting a follower after a leader loss, are the
-  next milestones (R2, R3). Until then, treat a follower as a warm standby: query
-  the leader, and re-bootstrap a follower (wipe its data dir and restart) if it
+- A follower is **read-only** (R2): serve reads from it, send writes to the
+  leader. **Promoting** a follower to leader after a leader loss is the next
+  milestone (R3); until then, a leader loss is handled by re-pointing writers at a
+  rebuilt leader. Re-bootstrap a follower (wipe its data dir and restart) if it
   ever reports it has fallen too far behind.
 
 ---
