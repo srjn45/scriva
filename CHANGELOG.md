@@ -73,6 +73,15 @@ embedding-specific contract.
     gRPC over the Unix socket so REST keeps working.
   - See [`docs/getting-started.md`](docs/getting-started.md#mutual-tls-client-certificate-auth)
     for a full CA/cert setup walkthrough.
+
+## [0.8.0] — 2026-07-04
+
+Replication & high availability — a node can follow a leader, serve reads from
+its applied state, and be promoted on failover — plus a compaction/shutdown
+crash-consistency fix.
+
+### Added
+
 - **R1 — leader→follower replication (log shipping).** A follower node tails a
   new server-streaming `Replicate` RPC that ships every committed segment entry
   (post-fsync) tagged with a monotonic **global LSN**, and applies it through the
