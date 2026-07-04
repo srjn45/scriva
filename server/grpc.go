@@ -33,6 +33,12 @@ type GRPCServer struct {
 	slowQuery time.Duration                            // 0 = slow-query log disabled
 	onScan    func(collection string, rowsScanned int) // nil = no scan metric
 
+	// onQuotaReject is invoked with the collection name each time a write is
+	// refused because it would breach that collection's quota (S4). It lets the
+	// server layer feed the metrics counter without the engine importing a
+	// metrics package. nil = no quota-rejection metric.
+	onQuotaReject func(collection string)
+
 	// promoteMaxLag is the R3 promotion lag ceiling: a follower whose replication
 	// lag exceeds it is refused promotion unless the request forces it. Defaults
 	// to engine.DefaultPromoteMaxLag (0 = must be fully caught up).
@@ -57,6 +63,13 @@ func WithSlowQueryLog(logger *slog.Logger, threshold time.Duration) GRPCOption {
 // histogram without the engine importing a metrics package.
 func WithScanObserver(fn func(collection string, rowsScanned int)) GRPCOption {
 	return func(s *GRPCServer) { s.onScan = fn }
+}
+
+// WithQuotaObserver registers a hook invoked with the collection name whenever a
+// write is refused by that collection's quota (S4), so the server can increment
+// the rejected-write metric without the engine depending on a metrics package.
+func WithQuotaObserver(fn func(collection string)) GRPCOption {
+	return func(s *GRPCServer) { s.onQuotaReject = fn }
 }
 
 // WithPromoteMaxLag sets the R3 promotion lag ceiling: a follower whose
@@ -154,7 +167,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 		}
 		id, ts, err := col.InsertWithKey(req.Key, req.Data.AsMap())
 		if err != nil {
-			return nil, keyedErr(err)
+			return nil, s.keyedWriteErr(req.Collection, err)
 		}
 		return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Key: req.Key, Rev: 1}, nil
 	}
@@ -178,7 +191,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	data := req.Data.AsMap()
 	id, ts, err := col.InsertWithExpiry(data, ttlDeadline(req.TtlSeconds))
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "insert: %v", err)
+		return nil, s.writeErr(req.Collection, "insert", err)
 	}
 	// A fresh, keyless insert always starts at revision 1 and carries no key.
 	return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Rev: 1}, nil
@@ -193,13 +206,15 @@ func (s *GRPCServer) InsertMany(_ context.Context, req *pb.InsertManyRequest) (*
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 	deadline := ttlDeadline(req.TtlSeconds)
-	ids := make([]uint64, 0, len(req.Records))
-	for _, r := range req.Records {
-		id, _, err := col.InsertWithExpiry(r.AsMap(), deadline)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "insertMany: %v", err)
-		}
-		ids = append(ids, id)
+	records := make([]map[string]any, len(req.Records))
+	for i, r := range req.Records {
+		records[i] = r.AsMap()
+	}
+	// InsertMany is atomic: the batch is quota-checked as a whole, so a batch
+	// that would breach the collection's budget is refused with nothing written.
+	ids, _, err := col.InsertMany(records, deadline)
+	if err != nil {
+		return nil, s.writeErr(req.Collection, "insertMany", err)
 	}
 	return &pb.InsertManyResponse{Ids: ids}, nil
 }
@@ -441,7 +456,7 @@ func (s *GRPCServer) Upsert(_ context.Context, req *pb.UpsertRequest) (*pb.Upser
 	}
 	rec, err := col.Upsert(req.Key, req.Data.AsMap())
 	if err != nil {
-		return nil, keyedErr(err)
+		return nil, s.keyedWriteErr(req.Collection, err)
 	}
 	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, rec.Data, rec.Ts)
 	if err != nil {
@@ -931,6 +946,12 @@ func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.C
 	ops := tx.Snapshot()
 	s.txMgr.Remove(req.TxId)
 	if err := col.CommitTx(ops); err != nil {
+		if errors.Is(err, engine.ErrResourceExhausted) {
+			if s.onQuotaReject != nil {
+				s.onQuotaReject(tx.Collection)
+			}
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, status.Errorf(codes.Aborted, "commit failed: %v", err)
 	}
 	return &pb.CommitTxResponse{Ok: true}, nil
@@ -979,6 +1000,20 @@ func keyOf(data map[string]any) string {
 	return k
 }
 
+// writeErr maps an engine write error onto a gRPC status. A quota breach becomes
+// ResourceExhausted (and bumps the rejected-write metric for collection); every
+// other error falls back to Internal, tagged with action for context. Used by
+// the keyless write paths (Insert/InsertMany/tx commit).
+func (s *GRPCServer) writeErr(collection, action string, err error) error {
+	if errors.Is(err, engine.ErrResourceExhausted) {
+		if s.onQuotaReject != nil {
+			s.onQuotaReject(collection)
+		}
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+	return status.Errorf(codes.Internal, "%s: %v", action, err)
+}
+
 // keyedErr maps the typed engine errors surfaced by the keyed operations onto
 // gRPC status codes: a missing key is NOT_FOUND, a duplicate key is
 // ALREADY_EXISTS, and an attempt to set the reserved _key field via data is
@@ -991,9 +1026,21 @@ func keyedErr(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, engine.ErrReservedField):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, engine.ErrResourceExhausted):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
+}
+
+// keyedWriteErr is keyedErr for the keyed write paths (InsertWithKey, Upsert):
+// it additionally bumps the quota-rejection metric for collection when the
+// engine refused the write on a quota breach, then maps the code as keyedErr.
+func (s *GRPCServer) keyedWriteErr(collection string, err error) error {
+	if errors.Is(err, engine.ErrResourceExhausted) && s.onQuotaReject != nil {
+		s.onQuotaReject(collection)
+	}
+	return keyedErr(err)
 }
 
 func protoFilterToQuery(f *pb.Filter) (query.Filter, error) {

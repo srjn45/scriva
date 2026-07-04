@@ -127,6 +127,34 @@ func TestPerCollectionSyncAlwaysOverride(t *testing.T) {
 	}
 }
 
+func TestPerCollectionQuotaOptions(t *testing.T) {
+	t.Parallel()
+	db, err := filedb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	capped := db.MustCollection("capped", filedb.WithMaxRecords(1), filedb.WithMaxBytes(4096))
+	if cfg := capped.Config(); cfg.MaxRecords != 1 || cfg.MaxBytes != 4096 {
+		t.Fatalf("capped quota cfg = {%d, %d}, want {1, 4096}", cfg.MaxRecords, cfg.MaxBytes)
+	}
+
+	// The cap is enforced through the embedded write path.
+	if _, _, err := capped.Insert(map[string]any{"n": float64(1)}); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	_, _, err = capped.Insert(map[string]any{"n": float64(2)})
+	if !errors.Is(err, engine.ErrResourceExhausted) {
+		t.Fatalf("over-quota insert: got %v, want ErrResourceExhausted", err)
+	}
+
+	// A sibling with no quota option stays unlimited.
+	if cfg := db.MustCollection("free").Config(); cfg.MaxRecords != 0 || cfg.MaxBytes != 0 {
+		t.Fatalf("sibling quota cfg = {%d, %d}, want {0, 0}", cfg.MaxRecords, cfg.MaxBytes)
+	}
+}
+
 func TestOpenOptionOverridesDefault(t *testing.T) {
 	t.Parallel()
 	db, err := filedb.Open(t.TempDir(), filedb.WithSyncMode(engine.SyncModeNone))

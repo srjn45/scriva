@@ -138,6 +138,16 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 	e.Rev = rev
 	e.ExpiresAt = exp
 
+	// Quota gate (S4): only an inserting upsert creates a new record, so only it
+	// is subject to the collection's budget. A replace edits in place and is
+	// never refused. Checked before the append so a refused insert writes nothing.
+	if op == store.OpInsert {
+		if err := c.checkQuotaLocked(1, c.entryQuotaBytes(e)); err != nil {
+			c.mu.Unlock()
+			return Record{}, err
+		}
+	}
+
 	// Enforce unique indexes before writing so a rejected upsert appends nothing
 	// and mutates no index. The _key index never conflicts here (insert: no live
 	// record holds key; replace: the key maps to id itself), but other unique

@@ -369,5 +369,5 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] S1 — mutual TLS (client-cert auth)
 - [x] S2 — audit log
 - [x] S3 — per-collection ACLs on scoped keys
-- [ ] S4 — per-tenant quotas & limits
+- [x] S4 — per-tenant quotas & limits
 - [ ] v1.0.0 — surface freeze

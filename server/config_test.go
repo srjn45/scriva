@@ -80,6 +80,50 @@ default_ttl: 24h
 		}
 	})
 
+	t.Run("quotas parse and thread into EngineConfig", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "filedb*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.WriteString(`
+data_dir: /tmp/q
+quotas:
+  users:
+    max_records: 1000
+    max_bytes: 1048576
+  events:
+    max_bytes: 5242880
+`)
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := LoadConfigFile(f.Name())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := cfg.Quotas["users"]; got.MaxRecords != 1000 || got.MaxBytes != 1048576 {
+			t.Errorf("Quotas[users] = %+v, want {1000, 1048576}", got)
+		}
+		if got := cfg.Quotas["events"]; got.MaxRecords != 0 || got.MaxBytes != 5242880 {
+			t.Errorf("Quotas[events] = %+v, want {0, 5242880}", got)
+		}
+
+		ec := cfg.EngineConfig()
+		if q := ec.Quotas["users"]; q.MaxRecords != 1000 || q.MaxBytes != 1048576 {
+			t.Errorf("EngineConfig.Quotas[users] = %+v, want {1000, 1048576}", q)
+		}
+		if q := ec.Quotas["events"]; q.MaxBytes != 5242880 {
+			t.Errorf("EngineConfig.Quotas[events].MaxBytes = %d, want 5242880", q.MaxBytes)
+		}
+	})
+
+	t.Run("no quotas yields nil engine map", func(t *testing.T) {
+		if got := DefaultConfig().EngineConfig().Quotas; got != nil {
+			t.Errorf("EngineConfig.Quotas = %v, want nil when unconfigured", got)
+		}
+	})
+
 	t.Run("partial config uses defaults", func(t *testing.T) {
 		f, err := os.CreateTemp(t.TempDir(), "filedb*.yaml")
 		if err != nil {
