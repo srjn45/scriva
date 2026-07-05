@@ -61,33 +61,38 @@ meet it:
 
 ### Stability and versioning
 
-This is FileDB's **first embeddable release**, and it follows standard pre-1.0
-semver. In practice, for anyone taking `go get` on the packages above:
+As of **v1.0.0 the embedding API is frozen.** The `engine`, `filedb`, `store`,
+and `query` packages — their import paths and the exported surface documented
+here — are stable and covered by the usual semver guarantee: **no breaking
+changes without a major (v2) bump.** For anyone taking `go get` on the packages
+above, that means:
 
 - **The import paths are stable.** `engine`, `store`, `query`, and `filedb`
   are public and will not move back under `internal/` — the whole point of the
   embedding milestone was to promote them (see the roadmap's EMB-1).
-- **Pin a version.** `go get github.com/srjn45/filedbv2/engine@v0.x.0` and let
-  your `go.mod` hold the line. Do not track `main`; the embedding surface is
-  supported at tagged releases, not between them.
-- **Minor bumps may break until v1.0.0.** Under semver a `0.y.z` project makes
-  no compatibility promise across minor (`0.y`) bumps, and FileDB uses that
-  latitude deliberately while the API settles. A breaking change to any type or
-  signature documented here will land in a **minor** bump (`v0.(x+1).0`), never
-  a patch, and will always be called out in [`CHANGELOG.md`](../CHANGELOG.md)
-  with a migration note. Patch releases (`v0.x.(z+1)`) are bug-fix only and
-  never change the documented surface.
-- **"Stable enough to depend on" means:** the surface below is intentional,
-  tested (race detector on), and won't churn gratuitously — but it is not yet
-  frozen. Depend on it the way you'd depend on any actively-developed `0.x`
-  library: pin the version, read the changelog before upgrading, and expect the
-  occasional mechanical migration on a minor bump. When the surface has proven
-  itself in real embedders it will be frozen under a `v1.0.0` tag, after which
-  the usual "no breaking changes without a major bump" guarantee applies.
+- **No breaking changes without a major bump.** A change to any exported type or
+  signature documented here — a rename, a removed method, a changed parameter or
+  return — will only ever land in a new **major** version (`v2.0.0`). Within the
+  `v1` line, minor bumps (`v1.(y+1).0`) are **additive only** (new methods,
+  options, or types) and patch bumps (`v1.y.(z+1)`) are bug-fix only. Neither
+  breaks code that compiles against the surface below.
+- **Pin a version anyway.** `go get github.com/srjn45/filedbv2/engine@v1` and let
+  your `go.mod` hold the line. Additive minor releases are safe to take, and any
+  behavioural change worth knowing about is still called out in
+  [`CHANGELOG.md`](../CHANGELOG.md).
+- **The on-disk segment format stays additive.** New fields are `omitempty`, so
+  a newer engine reads older segments without migration — the format is not
+  reset by the 1.0 line and older data keeps working across `v1` upgrades.
+
+A future breaking revision of this API would ship as a **separate, explicitly
+versioned major** (`.../engine/v2`), leaving `v1` importers untouched. Depend on
+the surface below the way you would depend on any stable Go library.
 
 The standalone server, its gRPC/REST API, its CLI, and the on-disk segment
-format have their own compatibility story and are **not** covered by this
-contract — this section is strictly about the embedded Go API.
+format share this same 1.0 guarantee (see
+[`CHANGELOG.md`](../CHANGELOG.md#versioning--stability-policy) for the
+project-wide policy), but they are documented elsewhere — this section is the
+authoritative contract for the embedded Go API.
 
 ---
 

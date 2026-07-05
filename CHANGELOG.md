@@ -6,30 +6,64 @@ All notable changes to FileDB v2 are documented here. The format is based on
 
 ## Versioning & stability policy
 
-FileDB is **pre-1.0**. Per semver, a `0.y.z` project makes no compatibility
-promise across minor (`0.y`) bumps, and FileDB uses that latitude deliberately
-while the API settles:
+As of **v1.0.0 the public surface is frozen.** FileDB follows semver, and the
+1.0 release establishes the guarantee that had been deferred through the `0.x`
+line: **no breaking changes without a major (v2) bump.** This covers all three
+public surfaces:
 
-- **Minor bumps (`v0.(y+1).0`) may include breaking changes** — to the Go
-  embedding API, the gRPC/REST surface, or the CLI. Every such change is called
-  out in this file with a migration note.
-- **Patch bumps (`v0.y.(z+1)`) are bug-fix only** and never change a documented
+- the **gRPC/REST API** (`proto/filedb.proto` — RPCs, message fields, enum
+  values, and the REST routes generated from them);
+- the **CLI** (`filedb` and `filedb-cli` commands, flags, and config-file keys);
+- the **Go embedding API** (`engine`, `filedb`, `store`, `query` — import paths
+  and exported types/signatures).
+
+Concretely, within the `v1` line:
+
+- **Major bumps (`v2.0.0`) are the only place breaking changes may land** — a
+  removed/renamed RPC, message field, flag, exported type, or signature. A future
+  breaking Go revision ships under a separate import path (`.../engine/v2`),
+  leaving `v1` importers untouched.
+- **Minor bumps (`v1.(y+1).0`) are additive only** — new RPCs, message fields,
+  flags, methods, or options that don't break code or clients built against
+  `v1.0`. Every addition is noted here.
+- **Patch bumps (`v1.y.(z+1)`) are bug-fix only** and never change a documented
   API or the on-disk format.
-- **Import paths for the embedding packages are stable.** `engine`, `store`,
-  `query`, and `filedb` are public and will not move back under `internal/`.
 - **The on-disk segment format is additive.** New fields are `omitempty`, so a
   newer engine reads older segments without migration.
 
-Depend on a tagged version (`go get …@v0.y.0`), read this changelog before
-upgrading, and expect the occasional mechanical migration on a minor bump. When
-the surface has proven itself, it will be frozen under `v1.0.0`, after which the
-usual "no breaking changes without a major bump" guarantee applies. See
+Depend on a tagged version (`go get …@v1`), and read this changelog before
+upgrading — but within `v1` no upgrade requires a code or client migration. See
 [`docs/embedding.md`](docs/embedding.md#stability-and-versioning) for the
 embedding-specific contract.
 
 ---
 
 ## [Unreleased]
+
+### Stability
+
+- **v1.0.0 — public API freeze.** This release freezes FileDB's public surface
+  under the "no breaking changes without a major (v2) bump" guarantee — see the
+  [Versioning & stability policy](#versioning--stability-policy) above. The three
+  surfaces now covered are the **gRPC/REST API** (`proto/filedb.proto`), the
+  **CLI**, and the **Go embedding API** (`engine`/`filedb`/`store`/`query`).
+  - **Surface audit.** The full gRPC/REST surface and the ~291 exported symbols
+    of the embedding packages were audited for the freeze. The surface was found
+    **consistent and intentional — no symbols were renamed, removed, or
+    unexported**, so this is a zero-migration release: code and clients built
+    against the S1–S4 line keep compiling and calling unchanged. The wire surface
+    (proto) is byte-for-byte unchanged, so no client SDK regeneration is needed.
+  - **Quotas scope decision.** `engine.CollectionConfig.Quotas` (the DB-wide
+    `map[string]Quota` overlaid onto a collection's `MaxRecords`/`MaxBytes` at
+    open time) was **deliberately kept as-is**. It is consistent with the existing
+    DB-wide-setting-on-`CollectionConfig` precedent (`ReplicationRingSize`,
+    `Follower`), and the alternative — a separate DB-level config type and a
+    changed `engine.Open` signature — would be a larger breaking change than the
+    mixed-scope wart it removes. The embedded façade continues to set
+    `MaxRecords`/`MaxBytes` directly and leave `Quotas` nil.
+  - **Stability docs flipped to 1.0.** `docs/embedding.md` and this file now state
+    the frozen-surface guarantee instead of the former pre-1.0 "minor bumps may
+    break" framing.
 
 ### Added
 

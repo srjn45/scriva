@@ -370,4 +370,4 @@ updates `ROADMAP.md`, `docs/`, `README.md`, and `CHANGELOG.md` per CLAUDE.md.
 - [x] S2 — audit log
 - [x] S3 — per-collection ACLs on scoped keys
 - [x] S4 — per-tenant quotas & limits
-- [ ] v1.0.0 — surface freeze
+- [x] v1.0.0 — surface freeze
