@@ -40,6 +40,17 @@ embedding-specific contract.
 
 ## [Unreleased]
 
+_Nothing yet — 1.0 is out; further work resumes here._
+
+## [1.0.0] — 2026-07-05
+
+FileDB's **1.0** release and public-API freeze. It rolls up the v0.9.0 Security
+wave — mutual TLS (S1), audit logging (S2), per-collection ACLs (S3), and
+per-tenant quotas (S4) — and establishes the stability guarantee: the gRPC/REST
+surface, the CLI, and the `engine`/`filedb`/`store`/`query` embedding API will
+not break without a major (v2) bump. No migration from v0.8.0 — the wire and
+on-disk formats are unchanged.
+
 ### Stability
 
 - **v1.0.0 — public API freeze.** This release freezes FileDB's public surface
