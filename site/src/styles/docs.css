@@ -1,0 +1,11 @@
+/* Tune Starlight's accent to FileDB's violet so docs match the landing page. */
+:root {
+  --sl-color-accent-low: #241245;
+  --sl-color-accent: #7c3aed;
+  --sl-color-accent-high: #ddd6fe;
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #1c1033;
+  --sl-color-accent: #a78bfa;
+  --sl-color-accent-high: #ede9fe;
+}
