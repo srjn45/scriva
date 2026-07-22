@@ -1,4 +1,4 @@
-# FileDBv2 — Project Roadmap & Status
+# ScrivaDB — Project Roadmap & Status
 
 ## What This Is
 
@@ -70,9 +70,26 @@ follower to leader, guarded against promoting a lagging replica — see
 [docs/operations.md](docs/operations.md)). Automatic leader election stays out
 of scope.
 
+The **v1.0.0 ScrivaDB rebrand** is complete: the project formerly known as
+FileDB v2 is now **ScrivaDB** (slug `scriva`). The Go module moved to
+`github.com/srjn45/scriva`, binaries are `scriva`/`scriva-cli`, the proto wire
+package is `scriva.v1` (service `Scriva`), env vars are `SCRIVA_*`, and metrics
+carry the `scriva_*` prefix. Binaries ship via Homebrew/Scoop/apt/rpm/AUR and
+multi-arch signed Docker images on GHCR + Docker Hub, and all seven client SDKs
+publish under their new registry names. See [CHANGELOG.md](CHANGELOG.md) for the
+full breaking-change and migration notes.
+
 ---
 
 ## What Is Done ✅
+
+### Rebrand to ScrivaDB — shipped
+- [x] Renamed FileDB v2 → **ScrivaDB** across the Go core, website, client SDKs, and release tooling
+  - Go module `github.com/srjn45/filedbv2` → `github.com/srjn45/scriva`; root façade package `scriva` (`scriva.Open`)
+  - Proto wire package `filedb.v1` → `scriva.v1`, service `FileDB` → `Scriva`; regenerated stubs + OpenAPI (`docs/openapi/scriva.swagger.json`)
+  - Binaries `filedb`/`filedb-cli` → `scriva`/`scriva-cli`; env `FILEDB_*` → `SCRIVA_*`; socket `/tmp/scriva.sock`; metrics `filedb_*` → `scriva_*`
+  - New distribution channels: Homebrew/Scoop/apt/rpm/AUR + multi-arch signed Docker on `ghcr.io/srjn45/scriva` and Docker Hub
+  - All seven client SDKs renamed and wired to publish workflows (see CHANGELOG for registry names)
 
 ### Durability, benchmarks & OpenAPI — shipped
 - [x] Configurable durability policy (`--sync none|always|interval`, `--sync-interval`)
@@ -81,7 +98,7 @@ of scope.
   - Zero-value `CollectionConfig` is now normalized to safe defaults
   - Tests in `engine/durability_test.go` (CRUD + reopen under every mode)
 - [x] Engine benchmark suite (`engine/bench_test.go`, `make bench`) — insert per sync mode, FindByID, full vs indexed scan
-- [x] OpenAPI/Swagger spec generated from proto (`docs/openapi/filedb.swagger.json`, `make openapi`) — universal client-generation path
+- [x] OpenAPI/Swagger spec generated from proto (`docs/openapi/scriva.swagger.json`, `make openapi`) — universal client-generation path
 - [x] `LICENSE` file added (MIT)
 
 ### Web admin UI — shipped
@@ -96,13 +113,13 @@ of scope.
 
 ### Phase 1 — Project Scaffold
 - [x] Directory structure: `internal/`, `server/`, `cmd/`, `clients/`, `docs/`, `.github/`
-- [x] Go module: `github.com/srjn45/filedbv2` (Go 1.22+)
+- [x] Go module: `github.com/srjn45/scriva` (Go 1.22+)
 - [x] `Makefile` with targets: `build`, `test`, `proto`, `lint`, `run`, `cli`, `release`, `clean`
 - [x] `buf.yaml` + `buf.gen.yaml` for proto code generation via [buf](https://buf.build)
 
 ### Phase 2 — Proto API Contract
-- [x] `proto/filedb.proto` — defines all 15+ RPCs
-- [x] Generated: `internal/pb/proto/filedb.pb.go`, `filedb_grpc.pb.go`, `filedb.pb.gw.go`
+- [x] `proto/scriva.proto` — defines all 15+ RPCs
+- [x] Generated: `internal/pb/proto/scriva.pb.go`, `scriva_grpc.pb.go`, `scriva.pb.gw.go`
 - [x] Full REST annotations via `google/api/annotations.proto`
 
 **RPCs implemented:**
@@ -128,20 +145,20 @@ BeginTx  CommitTx  RollbackTx
 ### Phase 4 — Server
 - [x] `internal/auth/apikey.go` — gRPC unary + stream interceptors, `crypto/subtle.ConstantTimeCompare`
 - [x] `server/config.go` — Config struct with defaults, `EngineConfig()` converter
-- [x] `server/grpc.go` — Full `FileDBServer` implementation, proto↔engine mapping, filter conversion
+- [x] `server/grpc.go` — Full `ScrivaServer` implementation, proto↔engine mapping, filter conversion
 - [x] `server/rest.go` — grpc-gateway bridge (TCP + Unix socket variants)
-- [x] `cmd/filedb/main.go` — `cobra` CLI, `serve` subcommand, TCP + Unix socket + REST listeners, graceful shutdown
+- [x] `cmd/scriva/main.go` — `cobra` CLI, `serve` subcommand, TCP + Unix socket + REST listeners, graceful shutdown
 
 ### Phase 5 — CLI Client
-- [x] `cmd/filedb-cli/main.go` — Connection management (Unix socket auto-detect → TCP fallback), auth context
-- [x] `cmd/filedb-cli/commands.go` — All commands: collections, create-collection, drop-collection, insert, find, get, update, delete, stats, export, import
-- [x] `cmd/filedb-cli/repl.go` — Interactive REPL with readline history, tab-completion scaffold, `use <collection>` context
-- [x] `cmd/filedb-cli/batch.go` — `.fql` script runner + stdin pipe support
+- [x] `cmd/scriva-cli/main.go` — Connection management (Unix socket auto-detect → TCP fallback), auth context
+- [x] `cmd/scriva-cli/commands.go` — All commands: collections, create-collection, drop-collection, insert, find, get, update, delete, stats, export, import
+- [x] `cmd/scriva-cli/repl.go` — Interactive REPL with readline history, tab-completion scaffold, `use <collection>` context
+- [x] `cmd/scriva-cli/batch.go` — `.fql` script runner + stdin pipe support
 
 ### Phase 6 — Build Pipeline
 - [x] `.github/workflows/ci.yml` — Lint + race tests + build on every push/PR
 - [x] `.github/workflows/release.yml` — GoReleaser on `v*` tag push, publishes to GitHub Releases + GHCR
-- [x] `.goreleaser.yml` — Cross-compile: linux/darwin/windows × amd64/arm64, Docker image to `ghcr.io/srjn45/filedbv2`
+- [x] `.goreleaser.yml` — Cross-compile: linux/darwin/windows × amd64/arm64, Docker image to `ghcr.io/srjn45/scriva`
 - [x] `Dockerfile` — Multi-stage, Alpine, non-root user
 
 ### Phase 7 — Documentation
@@ -171,7 +188,7 @@ BeginTx  CommitTx  RollbackTx
 The proto file is ready. Two strategies, used together:
 
 - **Universal (cheap):** generate clients from the checked-in OpenAPI spec
-  (`docs/openapi/filedb.swagger.json`) with `openapi-generator` — covers nearly
+  (`docs/openapi/scriva.swagger.json`) with `openapi-generator` — covers nearly
   every language with zero hand-written code.
 - **Ergonomic (curated):** hand-written SDKs for the highest-value languages
   where an idiomatic wrapper is worth the maintenance. Seven are scoped — see
@@ -180,18 +197,18 @@ The proto file is ready. Two strategies, used together:
 
 | Client | Package manager | Status |
 |---|---|---|
-| `clients/python/` | PyPI: `pip install filedbv2` | ✅ Done |
-| `clients/js/` | npm: `npm install filedbv2` | ✅ Done |
-| `clients/php/` | Packagist: `composer require srjn45/filedbv2` | ✅ Done |
-| `clients/java/` | Maven Central: `com.srjn45:filedbv2-client` | ✅ Done |
-| `clients/ruby/` | RubyGems: `gem install filedbv2` | ✅ Done |
-| `clients/rust/` | crates.io: `filedbv2` | ✅ Done |
-| `clients/csharp/` | NuGet: `FileDBv2.Client` | ✅ Done |
+| `clients/python/` | PyPI: `pip install scriva` | ✅ Done |
+| `clients/js/` | npm: `npm install scriva` | ✅ Done |
+| `clients/php/` | Packagist: `composer require srjn45/scriva` | ✅ Done |
+| `clients/java/` | Maven Central: `com.srjn45:scriva-client` | ✅ Done |
+| `clients/ruby/` | RubyGems: `gem install scriva` | ✅ Done |
+| `clients/rust/` | crates.io: `scriva` | ✅ Done |
+| `clients/csharp/` | NuGet: `Scriva.Client` | ✅ Done |
 
 Each client needs:
 1. Proto stub generation (language-specific `protoc` plugin or `buf` remote plugin)
 2. Package scaffolding (manifest + directory structure)
-3. `FileDB` class wrapper — all RPCs with ergonomic method names
+3. `Scriva` class wrapper — all RPCs with ergonomic method names
 4. Connection setup (host, port, API key, optional TLS CA cert; Unix socket for Python/Node)
 5. Runnable example program in `examples/`
 6. `README.md` + update to `docs/getting-started.md`
@@ -220,14 +237,14 @@ Optional TLS on the TCP gRPC listener via `--tls-cert` / `--tls-key` server flag
 - Unix socket server always uses `insecure.NewCredentials()` (local-only transport)
 - CLI `--tls-ca <pem>` builds a `x509.CertPool` and dials with `credentials.NewTLS()`; omit for insecure (or Unix socket auto-detect)
 
-#### ~~5. Config file (`filedb.yaml`)~~ ✅ Done
+#### ~~5. Config file (`scriva.yaml`)~~ ✅ Done
 `server/config.go` — `LoadConfigFile(path)` reads a YAML config file via `gopkg.in/yaml.v3`, falling back to defaults for omitted fields. `--config` flag on the `serve` command loads it before applying CLI flag overrides (CLI always wins).
 
 #### ~~6. Metrics / observability~~ ✅ Done
 `internal/metrics/metrics.go` — Prometheus instrumentation via `github.com/prometheus/client_golang`.
-- `filedb_collection_records_total` / `filedb_collection_segments_total` — per-collection gauges via a custom `DBCollector` (sampled at scrape time)
-- `filedb_compaction_runs_total` / `filedb_compaction_duration_seconds` — counter + histogram per collection (via `OnCompaction` hook in `CollectionConfig`)
-- `filedb_grpc_request_duration_seconds` — histogram by method + status code (via unary interceptor)
+- `scriva_collection_records_total` / `scriva_collection_segments_total` — per-collection gauges via a custom `DBCollector` (sampled at scrape time)
+- `scriva_compaction_runs_total` / `scriva_compaction_duration_seconds` — counter + histogram per collection (via `OnCompaction` hook in `CollectionConfig`)
+- `scriva_grpc_request_duration_seconds` — histogram by method + status code (via unary interceptor)
 - Served at `--metrics-addr` (default `:9090`) on `/metrics`; set to empty string to disable
 
 ---
@@ -251,15 +268,15 @@ files, tests, and acceptance criteria in
 
 | File | Purpose |
 |---|---|
-| [proto/filedb.proto](proto/filedb.proto) | Single source of truth for all APIs — edit here first |
+| [proto/scriva.proto](proto/scriva.proto) | Single source of truth for all APIs — edit here first |
 | [engine/collection.go](engine/collection.go) | Core read/write logic, RWMutex, Watch |
 | [engine/compactor.go](engine/compactor.go) | Background compaction goroutine |
 | [engine/index.go](engine/index.go) | In-memory index, checksum, rebuild |
 | [engine/segment.go](engine/segment.go) | NDJSON file I/O, crash recovery |
 | [server/grpc.go](server/grpc.go) | gRPC handlers — proto → engine mapping |
-| [cmd/filedb/main.go](cmd/filedb/main.go) | Server binary, startup, graceful shutdown |
-| [cmd/filedb-cli/repl.go](cmd/filedb-cli/repl.go) | Interactive REPL |
-| [cmd/filedb-cli/commands.go](cmd/filedb-cli/commands.go) | All CLI subcommands |
+| [cmd/scriva/main.go](cmd/scriva/main.go) | Server binary, startup, graceful shutdown |
+| [cmd/scriva-cli/repl.go](cmd/scriva-cli/repl.go) | Interactive REPL |
+| [cmd/scriva-cli/commands.go](cmd/scriva-cli/commands.go) | All CLI subcommands |
 | [Makefile](Makefile) | All dev tasks |
 
 ---
@@ -267,7 +284,7 @@ files, tests, and acceptance criteria in
 ## How to Pick This Up
 
 ```bash
-cd FileDBv2
+cd scriva
 
 # Build
 make build
@@ -276,7 +293,7 @@ make build
 make test
 
 # Start server
-make run          # serves on :5433 (gRPC), :8080 (REST), /tmp/filedb.sock
+make run          # serves on :5433 (gRPC), :8080 (REST), /tmp/scriva.sock
 
 # Use CLI
 make cli          # connects to local socket automatically

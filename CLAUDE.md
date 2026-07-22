@@ -1,6 +1,6 @@
-# CLAUDE.md — FileDB v2 Developer Guide
+# CLAUDE.md — ScrivaDB Developer Guide
 
-This file is read by Claude Code at the start of every session. It documents how to build, test, run, and distribute FileDB v2, and records the conventions to follow when implementing new features.
+This file is read by Claude Code at the start of every session. It documents how to build, test, run, and distribute ScrivaDB, and records the conventions to follow when implementing new features.
 
 ---
 
@@ -8,8 +8,8 @@ This file is read by Claude Code at the start of every session. It documents how
 
 ```
 cmd/
-  filedb/           # server binary (cobra: "filedb serve")
-  filedb-cli/       # CLI client binary (cobra subcommands + REPL)
+  scriva/           # server binary (cobra: "scriva serve")
+  scriva-cli/       # CLI client binary (cobra subcommands + REPL)
 engine/             # public: storage engine — segments, index, compactor, secondary indexes, db
 scriva.go           # public: embedded façade (root package) — scriva.Open + per-collection options, embedded durability defaults
 store/              # public: NDJSON entry encoding/decoding (store.Entry)
@@ -20,10 +20,10 @@ internal/
   pb/proto/         # generated gRPC stubs (do not edit by hand)
 server/
   config.go         # Config struct, defaults, YAML loader
-  grpc.go           # FileDBServer — proto ↔ engine mapping
+  grpc.go           # ScrivaServer — proto ↔ engine mapping
   rest.go           # grpc-gateway REST bridge
 proto/
-  filedb.proto      # single source of truth for the API — edit here first
+  scriva.proto      # single source of truth for the API — edit here first
 docs/
   getting-started.md
   architecture.md
@@ -34,7 +34,7 @@ docs/
 ## Build
 
 ```bash
-make build        # compiles bin/filedb and bin/filedb-cli
+make build        # compiles bin/scriva and bin/scriva-cli
 make clean        # removes bin/, coverage.out, dist/
 ```
 
@@ -77,8 +77,8 @@ Install golangci-lint: https://golangci-lint.run/usage/install/
 ## Run locally
 
 ```bash
-make run          # builds + starts: bin/filedb serve --data ./data --api-key dev-key
-make cli          # builds + starts: bin/filedb-cli --api-key dev-key (REPL)
+make run          # builds + starts: bin/scriva serve --data ./data --api-key dev-key
+make cli          # builds + starts: bin/scriva-cli --api-key dev-key (REPL)
 ```
 
 Default ports:
@@ -87,7 +87,7 @@ Default ports:
 |---|---|
 | gRPC (TCP) | `:5433` |
 | REST gateway | `:8080` |
-| Unix socket | `/tmp/filedb.sock` |
+| Unix socket | `/tmp/scriva.sock` |
 | Prometheus metrics | `:9090/metrics` |
 
 ---
@@ -100,7 +100,7 @@ make proto        # runs: buf generate
 
 Requirements: [buf](https://buf.build/docs/installation) CLI.
 
-Always edit `proto/filedb.proto` first, then regenerate. Never edit files under `internal/pb/proto/` by hand.
+Always edit `proto/scriva.proto` first, then regenerate. Never edit files under `internal/pb/proto/` by hand.
 
 ---
 
@@ -126,16 +126,16 @@ git push origin v0.x.y
 The `.github/workflows/release.yml` CI job triggers on `v*` tags and:
 1. Runs `goreleaser release`
 2. Publishes tarballs to GitHub Releases
-3. Pushes the Docker image to `ghcr.io/srjn45/filedbv2`
+3. Pushes the Docker image to `ghcr.io/srjn45/scriva`
 
 ### Docker image (manual)
 
 ```bash
-docker build -t ghcr.io/srjn45/filedbv2:dev .
+docker build -t ghcr.io/srjn45/scriva:dev .
 docker run -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
-  -e FILEDB_API_KEY=dev-key \
-  ghcr.io/srjn45/filedbv2:dev serve --data /data
+  -e SCRIVA_API_KEY=dev-key \
+  ghcr.io/srjn45/scriva:dev serve --data /data
 ```
 
 ---
@@ -143,11 +143,11 @@ docker run -p 5433:5433 -p 8080:8080 \
 ## Conventions
 
 ### API changes
-1. Edit `proto/filedb.proto` — add the RPC and message types.
+1. Edit `proto/scriva.proto` — add the RPC and message types.
 2. Run `make proto` to regenerate stubs.
 3. Implement the handler in `server/grpc.go`.
 4. Add the engine method to `engine/collection.go` (or `db.go`).
-5. Add a CLI command in `cmd/filedb-cli/commands.go` and register it in `rootCmd()`.
+5. Add a CLI command in `cmd/scriva-cli/commands.go` and register it in `rootCmd()`.
 6. Write tests: engine unit tests + `server/grpc_integration_test.go`.
 
 ### Documentation
@@ -167,7 +167,7 @@ docker run -p 5433:5433 -p 8080:8080 \
 2. Add it to `fileConfig` (the YAML intermediate struct) in `server/config.go`.
 3. Add it to `DefaultConfig()`.
 4. Wire it in `LoadConfigFile()` (decode → convert → return).
-5. Add the cobra flag in `serveCmd()` in `cmd/filedb/main.go`.
+5. Add the cobra flag in `serveCmd()` in `cmd/scriva/main.go`.
 6. Handle the CLI override in the `cmd.Flags().Visit(...)` block.
 
 ### Metrics

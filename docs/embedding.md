@@ -1,10 +1,10 @@
-# Embedding FileDB
+# Embedding ScrivaDB
 
-FileDB's storage engine is a plain Go library. The `engine`, `store`, and
+ScrivaDB's storage engine is a plain Go library. The `engine`, `store`, and
 `query` packages are public, so you can open a database, read and write records,
 and watch for changes **entirely in-process** — no server, no gRPC, and no
 network. This is the right choice when your program is the only writer and you
-want the durability and query model of FileDB without running a separate
+want the durability and query model of ScrivaDB without running a separate
 daemon.
 
 ```go
@@ -31,7 +31,7 @@ default (see `engine.DefaultWatchBufferSize`, `engine.SyncModeNone`, …).
 
 ## The stable embedding surface
 
-Embedding FileDB means depending on three public packages. Everything an
+Embedding ScrivaDB means depending on three public packages. Everything an
 embedded program needs is reachable from them:
 
 | Package | Import path | What it gives you |
@@ -530,7 +530,7 @@ There is also an `Example_watch` in the `engine` package
 ## Migrating an existing JSON store
 
 When you already have data on disk — a directory of per-entity JSON files, an
-append log, a `context.json` — you migrate it into FileDB by **streaming NDJSON
+append log, a `context.json` — you migrate it into ScrivaDB by **streaming NDJSON
 into `Collection.LoadJSONL`**. One reader, one call per collection:
 
 ```go
@@ -574,16 +574,16 @@ worrying about double-inserting the rows that preceded it.
 
 ### The division of labour
 
-**The importer is warden-side, not FileDB's job.** FileDB does not know the shape
+**The importer is warden-side, not ScrivaDB's job.** ScrivaDB does not know the shape
 of your old store — where the files live, how a session file maps to records, or
 which field is the natural key. That translation is the migration script's
-responsibility. FileDB provides the **destination contract**: `LoadJSONL`, the
+responsibility. ScrivaDB provides the **destination contract**: `LoadJSONL`, the
 keyed/unkeyed choice, and the atomic error semantics above. A migration tool
 walks the old layout, emits NDJSON, and streams it into the right collection.
 
 ### Worked example: the warden layout
 
-warden's on-disk store maps onto a handful of FileDB collections. For each, the
+warden's on-disk store maps onto a handful of ScrivaDB collections. For each, the
 importer produces an NDJSON stream and picks a `keyField`:
 
 **Per-file sessions → a `sessions` collection, keyed by session id.** Each
@@ -605,7 +605,7 @@ n, err = events.LoadJSONL(eventsNDJSON, "event_id")
 
 **Mailbox files → a `messages` collection.** Each queued message is one line.
 Messages usually carry their own id, so key on it; if a message has no natural
-identity, load unkeyed (`""`) and let FileDB assign the `uint64` id:
+identity, load unkeyed (`""`) and let ScrivaDB assign the `uint64` id:
 
 ```go
 messages := db.MustCollection("messages")
@@ -627,4 +627,4 @@ n, err := context.LoadJSONL(contextNDJSON, "key")
 Producing those NDJSON streams (walking the directories, splitting `Events`,
 choosing the key fields, stamping idempotent ids) is the warden-side importer's
 work. Everything below the `LoadJSONL` call — indexing, uniqueness enforcement,
-durability, Watch delivery, and the all-or-nothing guarantee — is FileDB's.
+durability, Watch delivery, and the all-or-nothing guarantee — is ScrivaDB's.

@@ -1,12 +1,12 @@
-# FileDB — v0.6+ Roadmap & Implementation Plan
+# ScrivaDB — v0.6+ Roadmap & Implementation Plan
 
 The post-v0.1.0 plan ([`roadmap-v0.2.md`](roadmap-v0.2.md), milestones v0.2.0–
 v0.5.0) has fully shipped: durability hardening, query-at-scale, TTL /
 snapshot / on-demand compaction, scoped rotatable API keys, an embeddable Go
-engine, and full API parity across all seven client SDKs. FileDB is now a
+engine, and full API parity across all seven client SDKs. ScrivaDB is now a
 correct, embeddable, feature-complete **single node**.
 
-This document plans the next arc: **making FileDB operable, observable, and
+This document plans the next arc: **making ScrivaDB operable, observable, and
 survivable as a real service — and closing the gap between what the embedded
 engine can do and what the network API exposes — on the road to a frozen
 `v1.0.0`.**
@@ -41,14 +41,14 @@ security story before the API is frozen at 1.0.
 ## v0.6.0 — Operability & observability
 
 Today the server is a black box to operators. It logs with the stdlib `log`
-package from exactly one place (`cmd/filedb/main.go:7`), exposes **no
+package from exactly one place (`cmd/scriva/main.go:7`), exposes **no
 health/readiness probe** and **no gRPC health service**, has **no tracing**, and
 applies **no backpressure** — a single client can open unbounded concurrent
-streams. These are the table-stakes for running FileDB behind a load balancer or
+streams. These are the table-stakes for running ScrivaDB behind a load balancer or
 in Kubernetes.
 
 ### O1 — structured, leveled logging — **S/M**
-- **Problem:** the only logging is stdlib `log` in `cmd/filedb/main.go`; the
+- **Problem:** the only logging is stdlib `log` in `cmd/scriva/main.go`; the
   engine and gRPC layers log nothing. There is no request log, no level control,
   no machine-parseable output.
 - **Approach:** adopt `log/slog` (stdlib, zero new deps). A configured
@@ -60,7 +60,7 @@ in Kubernetes.
 - **API/flags:** `--log-level` and `--log-format` (Config + YAML + flag, per the
   CLAUDE.md flag checklist).
 - **Files:** `server/logging.go` (new), `server/grpc.go`, `server/config.go`,
-  `cmd/filedb/main.go`, `internal/metrics/`-style hook wiring.
+  `cmd/scriva/main.go`, `internal/metrics/`-style hook wiring.
 - **Tests:** interceptor emits one structured record per call with the right
   fields; level filtering works; engine hook fires without importing slog into
   the engine package (keep `make deps-check` green).
@@ -74,9 +74,9 @@ in Kubernetes.
   mark `SERVING` once listeners are up. Add `GET /healthz` (process alive) and
   `GET /readyz` (DB open, data dir writable) to the REST mux. Flip to
   `NOT_SERVING` during graceful shutdown so in-flight drains cleanly.
-- **API:** standard gRPC health proto (no change to `filedb.proto`); two REST
+- **API:** standard gRPC health proto (no change to `scriva.proto`); two REST
   routes registered directly on the gateway mux.
-- **Files:** `server/health.go` (new), `server/rest.go`, `cmd/filedb/main.go`.
+- **Files:** `server/health.go` (new), `server/rest.go`, `cmd/scriva/main.go`.
 - **Tests:** integration — health returns SERVING when up, NOT_SERVING during
   shutdown; `/readyz` fails when the data dir is unwritable.
 - **Acceptance:** a k8s-style readiness probe correctly gates traffic on startup
@@ -93,7 +93,7 @@ in Kubernetes.
 - **API/flags:** `--max-concurrent-streams`, `--max-inflight`, `--rate-limit`
   (per-key rps).
 - **Files:** `server/limits.go` (new), `server/grpc.go`, `internal/auth/`
-  (expose principal to the limiter), `server/config.go`, `cmd/filedb/main.go`.
+  (expose principal to the limiter), `server/config.go`, `cmd/scriva/main.go`.
 - **Tests:** saturate the semaphore → excess calls get `RESOURCE_EXHAUSTED`;
   rate limiter throttles one key without affecting another.
 - **Acceptance:** under a flood, the server sheds load with a typed error instead
@@ -108,7 +108,7 @@ in Kubernetes.
   visible. Keep the engine package dependency-free — the engine emits timing
   through the existing hook, the server owns the OTel SDK.
 - **API/flags:** `--otlp-endpoint`, `--otlp-sample-ratio`.
-- **Files:** `server/tracing.go` (new), `server/grpc.go`, `cmd/filedb/main.go`,
+- **Files:** `server/tracing.go` (new), `server/grpc.go`, `cmd/scriva/main.go`,
   engine hook call sites.
 - **Tests:** interceptor creates a span per RPC with method/status attributes
   (in-memory exporter); disabled path adds no measurable overhead.
@@ -150,9 +150,9 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
   straight onto the existing engine methods; return the typed engine errors
   (`ErrDuplicateKey`, `ErrKeyNotFound`) as gRPC status codes
   (`AlreadyExists`/`NotFound`).
-- **Proto/API:** new messages + RPCs in `proto/filedb.proto`; add `string key`
+- **Proto/API:** new messages + RPCs in `proto/scriva.proto`; add `string key`
   and `uint64 rev` to record-bearing responses. Regenerate stubs.
-- **Files:** `proto/filedb.proto`, `server/grpc.go`, `cmd/filedb-cli/`, docs; and
+- **Files:** `proto/scriva.proto`, `server/grpc.go`, `cmd/scriva-cli/`, docs; and
   a follow-on parity pass across the 7 SDKs (one PR each, as with the TTL sweep).
 - **Tests:** `grpc_integration_test.go` — upsert insert-then-replace; CAS with a
   stale rev fails cleanly; duplicate key → `AlreadyExists`.
@@ -167,7 +167,7 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
   keys before it hits the wire (id/key/rev always included). Empty = full record
   (backward compatible).
 - **Proto/API:** `repeated string fields` on the read requests.
-- **Files:** `proto/filedb.proto`, `engine/scan.go`, `server/grpc.go`, CLI
+- **Files:** `proto/scriva.proto`, `engine/scan.go`, `server/grpc.go`, CLI
   `--fields`, docs, SDK follow-on.
 - **Tests:** projection returns only requested fields + id/key/rev; empty =
   full; unknown field is silently absent.
@@ -175,7 +175,7 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
 
 ### N3 — keyset (cursor) pagination + multi-field order_by — **M**
 - **Problem:** pagination is offset-only (`FindRequest.offset`,
-  `proto/filedb.proto:242`) — O(offset) to skip — and `order_by` is a single
+  `proto/scriva.proto:242`) — O(offset) to skip — and `order_by` is a single
   field (`engine/scan.go:28`). Deep pagination and tie-broken ordering are
   expensive/ambiguous.
 - **Approach:** add an opaque `page_token` (encodes the last (sort-key, id) seen)
@@ -185,7 +185,7 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
 - **Proto/API:** `string page_token` on request/response; `repeated OrderBy
   {field, desc}` (deprecate the scalar `order_by`/`order_dir` with a migration
   note — a legitimate minor-bump break per the semver policy).
-- **Files:** `proto/filedb.proto`, `engine/scan.go`, `server/grpc.go`, CLI, docs,
+- **Files:** `proto/scriva.proto`, `engine/scan.go`, `server/grpc.go`, CLI, docs,
   SDK follow-on.
 - **Tests:** cursor paginate a large collection with no dupes/gaps under
   concurrent inserts; multi-field sort tie-breaks deterministically.
@@ -198,7 +198,7 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
   per-group `count`/`sum`/`avg`/`min`/`max` over a numeric field, honoring the
   same `Filter`. Streams groups. Uses indexes for grouped-eq where available.
 - **Proto/API:** new `Aggregate` RPC + request/response messages.
-- **Files:** `proto/filedb.proto`, `engine/aggregate.go` (new), `server/grpc.go`,
+- **Files:** `proto/scriva.proto`, `engine/aggregate.go` (new), `server/grpc.go`,
   CLI, docs, SDK follow-on.
 - **Tests:** count matches `Find` length; group-by sums equal a manual reduction;
   filter is honored.
@@ -209,7 +209,7 @@ paginate without O(offset) cost. This milestone closes those gaps — mostly
 
 ## v0.8.0 — Replication & high availability
 
-The flagship arc. FileDB is single-node: a lost disk or crashed process is an
+The flagship arc. ScrivaDB is single-node: a lost disk or crashed process is an
 outage and a potential data loss beyond the last snapshot. The append-only
 segment design is *already a write-ahead log*, which makes leader→follower log
 shipping the natural HA primitive.
@@ -228,7 +228,7 @@ shipping the natural HA primitive.
   (leader LSN, per-follower applied LSN, lag).
 - **Files:** `engine/replication.go` (new), `engine/collection.go` (emit
   committed entries with LSN — reuse the Watch fan-out plumbing),
-  `proto/filedb.proto`, `server/grpc.go`, `cmd/filedb/main.go` (`--replicate-from`
+  `proto/scriva.proto`, `server/grpc.go`, `cmd/scriva/main.go` (`--replicate-from`
   follower mode), docs.
 - **Tests:** a follower started against a live leader converges to identical
   query results; kill+resume the follower resumes from its LSN without gaps;
@@ -244,7 +244,7 @@ shipping the natural HA primitive.
   clients can bound staleness.
 - **Proto/API:** reuse existing read RPCs; writes on a follower return a typed
   error; expose lag via `ReplicationStatus`.
-- **Files:** `server/grpc.go` (role-aware routing), `cmd/filedb/main.go`, docs,
+- **Files:** `server/grpc.go` (role-aware routing), `cmd/scriva/main.go`, docs,
   optional SDK helper for "read from any replica".
 - **Tests:** a follower answers reads consistent with its LSN; a write to a
   follower is refused with the documented code.
@@ -258,7 +258,7 @@ shipping the natural HA primitive.
   promote a lagging replica beyond a threshold. Document the operator runbook;
   leave automatic leader election (consensus) explicitly out of scope for now.
 - **Proto/API:** `Promote` admin RPC (scoped to an admin key from A1/S3).
-- **Files:** `engine/replication.go`, `server/grpc.go`, `cmd/filedb-cli/`, docs
+- **Files:** `engine/replication.go`, `server/grpc.go`, `cmd/scriva-cli/`, docs
   (`docs/operations.md`).
 - **Tests:** promote a caught-up follower → it accepts writes; promoting a
   lagging follower is refused unless forced.
@@ -278,7 +278,7 @@ finer-grained authorization, and resource fairness, then freezes the surface.
 - **Approach:** optional mTLS — verify client certs against a CA and map the
   cert subject/SAN to a principal (compose with, or as an alternative to, API
   keys). Off by default.
-- **Files:** `internal/auth/`, `server/grpc.go`, `cmd/filedb/main.go`, docs.
+- **Files:** `internal/auth/`, `server/grpc.go`, `cmd/scriva/main.go`, docs.
 - **Tests:** a valid client cert authenticates; an untrusted cert is rejected.
 - **Acceptance:** clients can authenticate by certificate; server-only TLS still
   works unchanged.

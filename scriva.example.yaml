@@ -38,7 +38,7 @@ tls_key: ""
 # --- Auth -------------------------------------------------------------------
 
 # Single API key required from clients. Empty disables authentication.
-# Prefer the FILEDB_API_KEY environment variable in production. When set, this
+# Prefer the SCRIVA_API_KEY environment variable in production. When set, this
 # key is treated as a read-write key named "default".
 api_key: ""
 

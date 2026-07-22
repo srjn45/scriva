@@ -1,4 +1,4 @@
-# FileDB — Post-v0.1.0 Roadmap & Implementation Plan
+# ScrivaDB — Post-v0.1.0 Roadmap & Implementation Plan
 
 v0.1.0 shipped the feature-complete core (storage engine, gRPC+REST, 7 client
 SDKs, web UI, durability modes, metrics, TLS). This document plans the next arc:
@@ -89,9 +89,9 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
 - **Approach:** track per-watcher drops; when a drop occurs, set an "overflowed"
   flag and deliver a sentinel `WatchEvent{Op: OpOverflow}` (new op) once the
   channel drains, so the client knows to resync. Make buffer size configurable.
-- **Proto/API:** add `OVERFLOW` to the `WatchEvent` op enum in `proto/filedb.proto`;
+- **Proto/API:** add `OVERFLOW` to the `WatchEvent` op enum in `proto/scriva.proto`;
   regenerate stubs; map in `server/grpc.go` + `server/watch_rest.go`.
-- **Files:** `proto/filedb.proto`, `engine/collection.go`,
+- **Files:** `proto/scriva.proto`, `engine/collection.go`,
   `server/grpc.go`, `server/watch_rest.go`, web UI feed handling.
 - **Tests:** `collection_test.go` — slow subscriber receives an overflow sentinel
   rather than silently missing events.
@@ -121,7 +121,7 @@ back the `--sync` feature), then D3/D4/D6 as follow-ups.
   TTL (default 5m). Expose `--tx-timeout` (Config + YAML + flag, per the
   "Adding a new server flag" checklist in CLAUDE.md).
 - **Files:** `engine/txmanager.go`, `server/config.go`,
-  `cmd/filedb/main.go`.
+  `cmd/scriva/main.go`.
 - **Tests:** new `txmanager_test.go` — idle tx is reaped after TTL; active tx is
   not; reaped tx commit fails cleanly.
 - **Acceptance:** abandoned transactions are bounded in number and memory.
@@ -166,7 +166,7 @@ so `Find ... limit 10` still reads the whole collection.
   and sort share one code path.
 - **Proto/API:** add `string order_dir = 6;` (or reuse a `-`-prefix) to
   `FindRequest`; regenerate.
-- **Files:** `proto/filedb.proto`, `query/filter.go` (export a
+- **Files:** `proto/scriva.proto`, `query/filter.go` (export a
   `Compare`), `server/grpc.go`, CLI `find` flag, clients/docs.
 - **Tests:** `filter_test.go` + integration — numeric vs string ordering, desc.
 - **Acceptance:** `order_by age` sorts 2 < 10; `desc` reverses correctly.
@@ -181,7 +181,7 @@ so `Find ... limit 10` still reads the whole collection.
 - **Proto/API:** optionally extend `EnsureIndex` with an index-type hint
   (`hash` | `ordered`); default `ordered` so it serves both eq and range.
 - **Files:** `engine/secondary_index.go` (or new `ordered_index.go`),
-  `collection.go` (planner), `proto/filedb.proto`, `server/grpc.go`, CLI, docs.
+  `collection.go` (planner), `proto/scriva.proto`, `server/grpc.go`, CLI, docs.
 - **Tests:** `secondary_index_test.go` — range lookups match full-scan results;
   survives update/delete/compaction; persistence round-trips.
 - **Acceptance:** a `gt`/`lt` query on an indexed field reads O(matches), not
@@ -222,7 +222,7 @@ so `Find ... limit 10` still reads the whole collection.
   engine and the server-wide `--default-ttl`.
 - **Files:** `store/ndjson.go`, `engine/index.go`, `engine/collection.go`,
   `engine/ttl.go`, `engine/compactor.go`, `engine/keys.go`, `engine/scan.go`,
-  `server/config.go`, `cmd/filedb/main.go`, docs.
+  `server/config.go`, `cmd/scriva/main.go`, docs.
 - **Tests:** `engine/ttl_test.go` — hidden after deadline, visible before,
   default-TTL applied, sticky across update, override, reaped, reclaimed by
   compaction, survives reopen, excluded from secondary-index lookups;
@@ -232,7 +232,7 @@ so `Find ... limit 10` still reads the whole collection.
 
 ### F2 — backup / snapshot — **S/M** ✅
 - **Why:** high perceived value, cheap given append-only files.
-- **Approach:** `filedb-cli backup <dest>` + a streaming `Snapshot` RPC that
+- **Approach:** `scriva-cli backup <dest>` + a streaming `Snapshot` RPC that
   produces a consistent gzip tarball of the data dir. Restore is just untar into
   `--data`.
 - **Delivered:** `DB.SnapshotTo(io.Writer)` writes a gzip-compressed tar of every
@@ -243,13 +243,13 @@ so `Find ... limit 10` still reads the whole collection.
   segment paths and a self-only checksum, so the restored collection rebuilds it
   from segments on open; secondary indexes (path-independent value→id maps) are
   refreshed and included. Streaming `Snapshot` RPC (gRPC-only; binary streaming
-  does not map cleanly onto REST) sends 64 KiB gzip chunks. `filedb-cli backup
+  does not map cleanly onto REST) sends 64 KiB gzip chunks. `scriva-cli backup
   <dest>` writes the stream to a `.tar.gz` and prints the restore command; REPL
   `backup` verb added.
 - **Proto/API:** new streaming `Snapshot` RPC.
 - **Files:** `engine/snapshot.go`, `engine/db.go` (via `SnapshotTo`),
-  `proto/filedb.proto`, `server/grpc.go`, `cmd/filedb-cli/commands.go`,
-  `cmd/filedb-cli/main.go`, `cmd/filedb-cli/repl.go`, docs.
+  `proto/scriva.proto`, `server/grpc.go`, `cmd/scriva-cli/commands.go`,
+  `cmd/scriva-cli/main.go`, `cmd/scriva-cli/repl.go`, docs.
 - **Tests:** `engine/snapshot_test.go` — round-trip (multi-segment, update +
   delete + secondary index) restores to identical query results, empty-DB
   archive; `server/grpc_integration_test.go` `TestIntegration_Snapshot` — stream
@@ -263,19 +263,19 @@ so `Find ... limit 10` still reads the whole collection.
   want to force it (e.g. before backup).
 - **Approach:** add a `Compact(collection)` RPC that runs a synchronous,
   forced compaction pass and returns only after it completes;
-  `filedb-cli compact <collection>`.
+  `scriva-cli compact <collection>`.
 - **Delivered:** `Collection.CompactNow()` runs a forced pass (bypassing the
   dirty-ratio gate) and `DB.Compact(name)` wraps it. Background and on-demand
   passes serialize via a new `compactMu` so they never race the sealed-segment
   swap; `compact(force bool)` skips the dirty gate when forced. New `Compact`
   RPC (`POST /v1/{collection}/compact`), `server/grpc.go` handler, and
-  `filedb-cli compact <collection>` (plus a REPL `compact` verb). A closed
+  `scriva-cli compact <collection>` (plus a REPL `compact` verb). A closed
   collection refuses to compact.
 - **Proto/API:** new `Compact` RPC.
-- **Files:** `proto/filedb.proto`, `engine/compactor.go` (synchronous forced
+- **Files:** `proto/scriva.proto`, `engine/compactor.go` (synchronous forced
   entry + serialization), `engine/collection.go`, `engine/db.go`,
-  `server/grpc.go`, `cmd/filedb-cli/commands.go`, `cmd/filedb-cli/main.go`,
-  `cmd/filedb-cli/repl.go`, docs.
+  `server/grpc.go`, `cmd/scriva-cli/commands.go`, `cmd/scriva-cli/main.go`,
+  `cmd/scriva-cli/repl.go`, docs.
 - **Tests:** `engine/compact_ondemand_test.go` — forces a merge below the dirty
   threshold and reduces segment count, refuses on a closed collection;
   `server/grpc_integration_test.go` `TestIntegration_Compact` — RPC round-trip,
@@ -294,7 +294,7 @@ so `Find ... limit 10` still reads the whole collection.
   scope per RPC. Support hot-reload for rotation. Keep single-key + no-auth modes
   for backward compatibility.
 - **Proto/API:** no proto change; config schema gains a `keys:` list.
-- **Files:** `internal/auth/`, `server/config.go`, `cmd/filedb/main.go`, docs.
+- **Files:** `internal/auth/`, `server/config.go`, `cmd/scriva/main.go`, docs.
 - **Tests:** `auth` unit tests — scope enforcement, unknown key rejected,
   reload picks up new keys; constant-time compare preserved.
 - **Acceptance:** a read-scoped key is rejected on writes; keys rotate without
@@ -342,7 +342,7 @@ conventions.
 
 **v0.4.0 — Features**
 - [x] F1 — TTL / expiring records (engine + config; per-record `ttl_seconds` + per-collection `default_ttl_seconds` surfaced on the RPCs & CLI)
-- [x] F2 — backup / snapshot (streaming `Snapshot` RPC + `filedb-cli backup`)
+- [x] F2 — backup / snapshot (streaming `Snapshot` RPC + `scriva-cli backup`)
 - [x] F3 — on-demand compaction (RPC + CLI)
 
 **v0.5.0 — Auth**
