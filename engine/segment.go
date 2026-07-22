@@ -14,6 +14,21 @@ import (
 // sealed and a new active segment is created (4 MiB).
 const DefaultSegmentMaxSize int64 = 4 * 1024 * 1024
 
+// maxScanTokenSize is the largest single NDJSON record the segment scanners
+// will read (16 MiB). All scan paths — ReadAt, ScanAll and ScanFrom — must use
+// this same limit; if they diverge, a record within the larger limit becomes
+// writable and visible to full scans but unreadable by offset (issue #78).
+const maxScanTokenSize = 16 * 1024 * 1024
+
+// newSegmentScanner returns a bufio.Scanner over r configured with the segment
+// line-size limit. Use this everywhere a segment is scanned so the three read
+// paths cannot drift apart on their buffer sizes.
+func newSegmentScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxScanTokenSize)
+	return scanner
+}
+
 // Segment represents one NDJSON file in a collection's data directory.
 // Sealed segments are immutable; only the active segment accepts appends.
 type Segment struct {
@@ -159,7 +174,7 @@ func (s *Segment) ReadAt(offset int64) (store.Entry, error) {
 		return store.Entry{}, fmt.Errorf("segment: seek offset %d in %q: %w", offset, s.path, err)
 	}
 
-	scanner := bufio.NewScanner(f)
+	scanner := newSegmentScanner(f)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return store.Entry{}, fmt.Errorf("segment: scan %q at %d: %w", s.path, offset, err)
@@ -183,9 +198,7 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 	defer func() { _ = f.Close() }()
 
 	var entries []store.Entry
-	scanner := bufio.NewScanner(f)
-	// Allow lines up to 16 MiB (large records).
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner := newSegmentScanner(f)
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -218,9 +231,7 @@ func (s *Segment) ScanFrom(yield func(offset int64, e store.Entry) error) error 
 	}
 	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	// Allow lines up to 16 MiB (large records).
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner := newSegmentScanner(f)
 
 	var off int64
 	lineNum := 0
