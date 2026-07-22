@@ -5,7 +5,7 @@ description: Choose an fsync policy, understand crash safety and checksums, and 
 
 ## Durability modes
 
-FileDB lets you trade write throughput against your crash-loss window with the
+ScrivaDB lets you trade write throughput against your crash-loss window with the
 `--sync` flag:
 
 | Mode | Behaviour | Trade-off |
@@ -29,11 +29,11 @@ middle ground for in-process use.
 
 ## Online backup
 
-`filedb-cli backup` streams a **consistent gzip snapshot** of the live database
+`scriva-cli backup` streams a **consistent gzip snapshot** of the live database
 — no need to stop the server:
 
 ```bash
-filedb-cli backup --out filedb-$(date +%F).tar.gz --api-key dev-key
+scriva-cli backup --out scriva-$(date +%F).tar.gz --api-key dev-key
 ```
 
 ### Restore
@@ -41,8 +41,8 @@ filedb-cli backup --out filedb-$(date +%F).tar.gz --api-key dev-key
 Restore is deliberately boring — it's just a tarball:
 
 ```bash
-tar xzf filedb-2026-07-10.tar.gz -C ./restored-data
-filedb serve --data ./restored-data --api-key dev-key
+tar xzf scriva-2026-07-10.tar.gz -C ./restored-data
+scriva serve --data ./restored-data --api-key dev-key
 ```
 
 ## Compaction
@@ -53,11 +53,11 @@ reclaiming space from superseded and expired records. It kicks in on an interval
 `--compact-dirty` (default `0.30`). Operators can also force a synchronous pass:
 
 ```bash
-filedb-cli compact users --api-key dev-key
+scriva-cli compact users --api-key dev-key
 ```
 
 ## Next
 
-- [Replication & failover](/FileDBv2/guides/replication/) — scale reads and
+- [Replication & failover](/scriva/guides/replication/) — scale reads and
   survive a leader loss.
-- [Configuration](/FileDBv2/reference/configuration/) — every server flag.
+- [Configuration](/scriva/reference/configuration/) — every server flag.

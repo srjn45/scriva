@@ -1,20 +1,20 @@
 ---
 title: Install
-description: Install the FileDB v2 server and CLI — prebuilt binary, Docker, package managers, or build from source.
+description: Install the ScrivaDB server and CLI — prebuilt binary, Docker, package managers, or build from source.
 ---
 
-FileDB v2 ships two binaries: **`filedb`** (server) and **`filedb-cli`**
+ScrivaDB ships two binaries: **`scriva`** (server) and **`scriva-cli`**
 (client). Pick whichever install path fits your environment.
 
 ## Option 1 — Download a binary
 
-Prebuilt archives are attached to every [GitHub Release](https://github.com/srjn45/FileDBv2/releases)
+Prebuilt archives are attached to every [GitHub Release](https://github.com/srjn45/scriva/releases)
 for linux, darwin, and windows on amd64/arm64.
 
 ```bash
 # Linux amd64
-curl -L https://github.com/srjn45/filedbv2/releases/latest/download/filedbv2_linux_amd64.tar.gz | tar xz
-sudo mv filedb filedb-cli /usr/local/bin/
+curl -L https://github.com/srjn45/scriva/releases/latest/download/scriva_linux_amd64.tar.gz | tar xz
+sudo mv scriva scriva-cli /usr/local/bin/
 ```
 
 ## Option 2 — Docker
@@ -23,27 +23,27 @@ sudo mv filedb filedb-cli /usr/local/bin/
 docker run -d \
   -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
-  -e FILEDB_API_KEY=my-secret-key \
-  ghcr.io/srjn45/filedbv2:latest serve --data /data
+  -e SCRIVA_API_KEY=my-secret-key \
+  ghcr.io/srjn45/scriva:latest serve --data /data
 ```
 
 Or with Compose:
 
 ```bash
-FILEDB_API_KEY=dev-key docker compose up -d
+SCRIVA_API_KEY=dev-key docker compose up -d
 ```
 
 gRPC is exposed on `:5433`, REST on `:8080`, and data persists in a named
-`filedb-data` volume.
+`scriva-data` volume.
 
 ## Option 3 — Build from source
 
 Requires **Go 1.22+**.
 
 ```bash
-git clone https://github.com/srjn45/filedbv2
-cd filedbv2
-make build          # produces bin/filedb and bin/filedb-cli
+git clone https://github.com/srjn45/scriva
+cd scriva
+make build          # produces bin/scriva and bin/scriva-cli
 make test           # run the suite with the race detector
 ```
 
@@ -53,17 +53,17 @@ If you only want the database inside a Go program, you don't install anything �
 just add the module:
 
 ```bash
-go get github.com/srjn45/filedbv2/filedb   # ergonomic façade (recommended)
-go get github.com/srjn45/filedbv2/engine   # lower-level storage engine
+go get github.com/srjn45/scriva/filedb   # ergonomic façade (recommended)
+go get github.com/srjn45/scriva/engine   # lower-level storage engine
 ```
 
-See the [Embedding guide](/FileDBv2/guides/embedding/).
+See the [Embedding guide](/scriva/guides/embedding/).
 
 ## Verify
 
 ```bash
-filedb --version
-filedb-cli --version
+scriva --version
+scriva-cli --version
 ```
 
-Continue to the [Quickstart](/FileDBv2/start/quickstart/).
+Continue to the [Quickstart](/scriva/start/quickstart/).

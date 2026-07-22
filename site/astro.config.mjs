@@ -1,31 +1,31 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// GitHub Pages project site lives at https://srjn45.github.io/FileDBv2
+// GitHub Pages project site lives at https://srjn45.github.io/scriva
 export default defineConfig({
   site: 'https://srjn45.github.io',
-  base: '/FileDBv2/',
+  base: '/scriva/',
   integrations: [
     starlight({
-      title: 'FileDB v2',
+      title: 'ScrivaDB',
       description: 'A lightweight, append-only, file-based document database. Human-readable NDJSON storage, gRPC + REST from one binary, and an embeddable Go engine.',
       logo: {
-        light: './src/assets/filedb-wordmark-light.svg',
-        dark: './src/assets/filedb-wordmark-dark.svg',
+        light: './src/assets/scriva-wordmark-light.svg',
+        dark: './src/assets/scriva-wordmark-dark.svg',
         replacesTitle: true,
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/docs.css'],
       head: [
-        { tag: 'meta', attrs: { property: 'og:image', content: 'https://srjn45.github.io/FileDBv2/og-image.svg' } },
+        { tag: 'meta', attrs: { property: 'og:image', content: 'https://srjn45.github.io/scriva/og-image.svg' } },
         { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
       ],
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/srjn45/FileDBv2' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/srjn45/scriva' },
       ],
       sidebar: [
         { label: 'Start here', items: [
-          { label: 'What is FileDB?', slug: 'start/what-is-filedb' },
+          { label: 'What is ScrivaDB?', slug: 'start/what-is-scriva' },
           { label: 'Install', slug: 'start/install' },
           { label: 'Quickstart', slug: 'start/quickstart' },
         ]},

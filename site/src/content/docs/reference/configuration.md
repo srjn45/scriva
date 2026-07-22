@@ -3,13 +3,13 @@ title: Configuration
 description: Server flags, the YAML config file, environment variables, TLS, scoped API keys, and operational limits.
 ---
 
-FileDB is configured by CLI flags, an optional YAML file, and a few environment
+ScrivaDB is configured by CLI flags, an optional YAML file, and a few environment
 variables. **CLI flags always win** over the config file.
 
 ## Starting the server
 
 ```bash
-filedb serve \
+scriva serve \
   --data ./data \
   --api-key my-secret-key \
   --grpc-addr :5433 \
@@ -19,11 +19,11 @@ filedb serve \
 Or via a config file:
 
 ```bash
-filedb serve --config filedb.yaml
+scriva serve --config scriva.yaml
 ```
 
 See the fully commented
-[`filedb.example.yaml`](https://github.com/srjn45/FileDBv2/blob/main/filedb.example.yaml).
+[`filedb.example.yaml`](https://github.com/srjn45/scriva/blob/main/filedb.example.yaml).
 
 ## Core flags
 
@@ -32,8 +32,8 @@ See the fully commented
 | `--data` | `./data` | Data directory. |
 | `--grpc-addr` | `:5433` | TCP gRPC listen address. |
 | `--rest-addr` | `:8080` | REST gateway listen address. |
-| `--socket` | `/tmp/filedb.sock` | Unix domain socket path. |
-| `--api-key` | `$FILEDB_API_KEY` | API key (empty = no auth). |
+| `--socket` | `/tmp/scriva.sock` | Unix domain socket path. |
+| `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth). |
 | `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled). |
 | `--segment-size` | `4194304` | Max segment file size in bytes (4 MiB). |
 | `--compact-interval` | `5m` | Compaction interval. |
@@ -77,5 +77,5 @@ for rotation without a restart.
 
 ## Next
 
-- [Durability & backup](/FileDBv2/guides/durability-and-backup/)
-- [API & OpenAPI](/FileDBv2/reference/api/)
+- [Durability & backup](/scriva/guides/durability-and-backup/)
+- [API & OpenAPI](/scriva/reference/api/)

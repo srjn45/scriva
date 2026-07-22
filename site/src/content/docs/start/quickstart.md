@@ -3,22 +3,22 @@ title: Quickstart
 description: Start the server, insert your first record, query it, and open the REPL — in under a minute.
 ---
 
-Once you've [installed](/FileDBv2/start/install/) `filedb` and `filedb-cli`,
+Once you've [installed](/scriva/start/install/) `scriva` and `scriva-cli`,
 you're ready to go.
 
 ## 1. Start the server
 
 ```bash
-filedb serve --data ./data --api-key dev-key
+scriva serve --data ./data --api-key dev-key
 ```
 
 This opens gRPC on `:5433`, the REST gateway on `:8080`, and a Unix socket at
-`/tmp/filedb.sock` (which the CLI prefers when it's local).
+`/tmp/scriva.sock` (which the CLI prefers when it's local).
 
 ## 2. Insert a record
 
 ```bash
-filedb-cli insert users '{"name":"alice","age":30}' --api-key dev-key
+scriva-cli insert users '{"name":"alice","age":30}' --api-key dev-key
 ```
 
 Every record comes back with an `id`, a caller-visible `key`, and a monotonic
@@ -29,8 +29,8 @@ Every record comes back with an `id`, a caller-visible `key`, and a monotonic
 Filters are small JSON objects (`field` / `op` / `value`):
 
 ```bash
-filedb-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key dev-key
-filedb-cli find users '{"field":"age","op":"gt","value":18}'       --api-key dev-key
+scriva-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key dev-key
+scriva-cli find users '{"field":"age","op":"gt","value":18}'       --api-key dev-key
 ```
 
 ## 4. Use the REST gateway
@@ -48,14 +48,14 @@ curl -H "x-api-key: dev-key" \
 For interactive exploration:
 
 ```bash
-filedb-cli repl --api-key dev-key
+scriva-cli repl --api-key dev-key
 ```
 
 ```
-filedb> use users
-filedb> insert {"name":"carol","age":27}
-filedb> find {"field":"age","op":"lt","value":30}
-filedb> aggregate --field age --aggs count,avg
+scriva> use users
+scriva> insert {"name":"carol","age":27}
+scriva> find {"field":"age","op":"lt","value":30}
+scriva> aggregate --field age --aggs count,avg
 ```
 
 ## What just happened
@@ -63,6 +63,6 @@ filedb> aggregate --field age --aggs count,avg
 Your data now lives in `./data/users/` as append-only NDJSON — go ahead and
 `cat` it. From here:
 
-- Understand [keys, revisions, and CAS](/FileDBv2/guides/data-model/).
-- Learn [queries, indexes, and aggregations](/FileDBv2/guides/queries/).
-- Tune [durability and set up backups](/FileDBv2/guides/durability-and-backup/).
+- Understand [keys, revisions, and CAS](/scriva/guides/data-model/).
+- Learn [queries, indexes, and aggregations](/scriva/guides/queries/).
+- Tune [durability and set up backups](/scriva/guides/durability-and-backup/).

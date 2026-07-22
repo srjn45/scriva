@@ -1,9 +1,9 @@
 ---
 title: Roadmap
-description: What's shipped in FileDB v2 and where it's headed.
+description: What's shipped in ScrivaDB and where it's headed.
 ---
 
-FileDB v2 reached its **v1.0.0 API freeze** — the gRPC/REST surface is stable
+ScrivaDB reached its **v1.0.0 API freeze** — the gRPC/REST surface is stable
 and backwards compatibility is maintained from here.
 
 ## Shipped
@@ -31,8 +31,8 @@ and backwards compatibility is maintained from here.
 ## Direction
 
 The authoritative, always-current roadmap lives in the repo at
-[`ROADMAP.md`](https://github.com/srjn45/FileDBv2/blob/main/ROADMAP.md). Because
+[`ROADMAP.md`](https://github.com/srjn45/scriva/blob/main/ROADMAP.md). Because
 the v1 API is frozen, ongoing work focuses on performance, operability, and the
 client ecosystem rather than breaking API changes.
 
-Have a use case that isn't covered? [Open an issue](https://github.com/srjn45/FileDBv2/issues).
+Have a use case that isn't covered? [Open an issue](https://github.com/srjn45/scriva/issues).

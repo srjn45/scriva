@@ -15,7 +15,7 @@ Supported operators include `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, plus
 composition for multi-condition queries.
 
 ```bash
-filedb-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key dev-key
+scriva-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key dev-key
 ```
 
 ## Streaming Find
@@ -26,7 +26,7 @@ engine** — so a limited query is bounded by the page size, not the collection
 size, and it honours client cancellation.
 
 ```bash
-filedb-cli find users '{"field":"age","op":"gte","value":21}' \
+scriva-cli find users '{"field":"age","op":"gte","value":21}' \
   --limit 50 --order-by age --api-key dev-key
 ```
 
@@ -41,7 +41,7 @@ row exactly once, with no duplicates or gaps.
 Return only the fields you need (`id`, `key`, and `rev` are always included):
 
 ```bash
-filedb-cli find users '{"field":"age","op":"gt","value":18}' \
+scriva-cli find users '{"field":"age","op":"gt","value":18}' \
   --fields name,age --api-key dev-key
 ```
 
@@ -53,7 +53,7 @@ restarts, alongside the in-memory `id` index (which provides O(1) lookup by id
 and is checksummed for fast restart).
 
 When a query can use an index, the engine scans only matching rows instead of
-the whole collection. Turn on the [slow-query log](/FileDBv2/reference/configuration/)
+the whole collection. Turn on the [slow-query log](/scriva/reference/configuration/)
 (`--slow-query-ms`) to surface unindexed hot queries — it reports the filter
 shape, rows scanned vs returned, and whether an index was used.
 
@@ -66,7 +66,7 @@ number of distinct groups, not the number of rows, and clients total server-side
 instead of pulling the whole collection.
 
 ```bash
-filedb-cli aggregate users \
+scriva-cli aggregate users \
   --group-by country \
   --field age \
   --aggs count,sum,avg,min,max \
@@ -81,6 +81,6 @@ receives an explicit `OVERFLOW` signal rather than blocking writers.
 
 ## Next
 
-- [Durability & backup](/FileDBv2/guides/durability-and-backup/)
-- [Architecture](/FileDBv2/concepts/architecture/) — how the read/write paths
+- [Durability & backup](/scriva/guides/durability-and-backup/)
+- [Architecture](/scriva/concepts/architecture/) — how the read/write paths
   and compaction actually work.

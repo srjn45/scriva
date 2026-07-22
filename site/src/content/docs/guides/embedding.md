@@ -1,24 +1,24 @@
 ---
 title: Embedding (Go library)
-description: Run FileDB in-process as a Go library — keyed CRUD, compare-and-swap, secondary indexes, and in-process Watch, with zero heavy dependencies.
+description: Run ScrivaDB in-process as a Go library — keyed CRUD, compare-and-swap, secondary indexes, and in-process Watch, with zero heavy dependencies.
 ---
 
-FileDB v2's storage engine is a plain Go library, so you can skip the server
+ScrivaDB's storage engine is a plain Go library, so you can skip the server
 entirely and run the database **in-process** — no gRPC, no network, no separate
 daemon. This is the right choice when your program is the only writer and you
-want FileDB's durability and query model directly inside your binary.
+want ScrivaDB's durability and query model directly inside your binary.
 
 ## Install
 
 ```bash
-go get github.com/srjn45/filedbv2/filedb   # the ergonomic façade (recommended)
-go get github.com/srjn45/filedbv2/engine   # the lower-level storage engine
+go get github.com/srjn45/scriva/filedb   # the ergonomic façade (recommended)
+go get github.com/srjn45/scriva/engine   # the lower-level storage engine
 ```
 
 ## Usage
 
 ```go
-import "github.com/srjn45/filedbv2/filedb"
+import "github.com/srjn45/scriva/filedb"
 
 db, _ := filedb.Open("./data")            // embedded durability defaults (fsync ~1s)
 defer db.Close()
@@ -46,7 +46,7 @@ The embedded surface gives you:
 ## Zero heavy dependencies
 
 The `engine` package pulls in **no** gRPC, protobuf, Prometheus, cobra, or
-OpenTelemetry dependencies — a **CI gate enforces this**. Embedding FileDB won't
+OpenTelemetry dependencies — a **CI gate enforces this**. Embedding ScrivaDB won't
 drag a server framework into your binary.
 
 ## Two distribution channels
@@ -60,10 +60,10 @@ Embedding is a distinct channel from the server:
 
 Both build from the same repo. See the full API reference, durability modes, the
 Watch overflow contract, and the versioning/stability policy in
-[`docs/embedding.md`](https://github.com/srjn45/FileDBv2/blob/main/docs/embedding.md).
+[`docs/embedding.md`](https://github.com/srjn45/scriva/blob/main/docs/embedding.md).
 
 ## Next
 
-- [Data model](/FileDBv2/guides/data-model/) — the same keys/revisions/CAS model.
-- [Client SDKs](/FileDBv2/guides/clients/) — if you'd rather talk to a server
+- [Data model](/scriva/guides/data-model/) — the same keys/revisions/CAS model.
+- [Client SDKs](/scriva/guides/clients/) — if you'd rather talk to a server
   from another language.
