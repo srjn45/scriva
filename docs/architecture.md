@@ -37,6 +37,10 @@ Each line is one operation entry:
 
 A segment is **sealed** (made immutable) when its file size exceeds `SegmentMaxSize` (default 4 MiB). After sealing a new active segment is created.
 
+#### Record-size ceiling
+
+All three read paths (`ReadAt`, `ScanAll`, `ScanFrom`) scan segment lines with a shared 16 MiB buffer, so a single record — one NDJSON line including its trailing newline — cannot exceed **16 MiB**. `Append` enforces this bound at write time: a record whose encoded form is larger is rejected with `engine.ErrRecordTooLarge` (surfaced as `INVALID_ARGUMENT` over gRPC) rather than being written to disk where no read path could scan it back. In practice the gRPC surface is bounded well below this by the transport's 4 MiB max-message size; the ceiling matters most for the embedded façade and internal re-append paths (compaction, replication).
+
 #### Per-entry checksums
 
 Every entry carries a `crc` field: a **CRC32C (Castagnoli)** checksum computed over the entry's `id`, `op`, and canonical `data` (the timestamp and the `crc` field itself are excluded, so the value is stable across encode/decode). It is written on `Encode` and verified on `Decode`.

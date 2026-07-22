@@ -2,6 +2,8 @@
 package engine
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +33,38 @@ func TestCollectionInsertFindByID(t *testing.T) {
 	}
 	if data["name"] != "alice" {
 		t.Errorf("expected name=alice, got %v", data["name"])
+	}
+}
+
+// TestCollectionInsertOversizeRecord covers issue #80 on the embedded path: an
+// Insert whose encoded record exceeds the 16 MiB scan-buffer ceiling is
+// rejected with ErrRecordTooLarge, and the collection stays usable afterward.
+// (The gRPC surface can't reach this — its 4 MiB message limit sits below the
+// ceiling — so this guard exists for the embedded façade and internal
+// re-append paths.)
+func TestCollectionInsertOversizeRecord(t *testing.T) {
+	dir := t.TempDir()
+	col, err := OpenCollection("big", dir, testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer col.Close()
+
+	// ~17 MiB value, comfortably over the ceiling once encoded.
+	huge := strings.Repeat("a", 17*1024*1024)
+	if _, _, err := col.Insert(map[string]any{"blob": huge}); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Insert oversize: got %v, want ErrRecordTooLarge", err)
+	}
+
+	// The rejected write left nothing behind: a normal insert still works and
+	// reads back.
+	id, _, err := col.Insert(map[string]any{"name": "ok"})
+	if err != nil {
+		t.Fatalf("Insert after reject: %v", err)
+	}
+	data, _, err := col.FindByID(id)
+	if err != nil || data["name"] != "ok" {
+		t.Fatalf("FindByID after reject: data=%v err=%v", data, err)
 	}
 }
 

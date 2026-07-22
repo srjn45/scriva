@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,13 @@ import (
 
 	"github.com/srjn45/filedbv2/store"
 )
+
+// ErrRecordTooLarge is returned by Append when an encoded record (including its
+// trailing newline) exceeds maxScanTokenSize. Such a record could be written to
+// disk but never read back — the scan paths cap the line buffer at the same
+// limit — so it is rejected at write time rather than left unreadable by offset
+// (issue #80, a follow-up to the ReadAt asymmetry fixed in #78).
+var ErrRecordTooLarge = errors.New("engine: record exceeds maximum size")
 
 // DefaultSegmentMaxSize is the default maximum file size before a segment is
 // sealed and a new active segment is created (4 MiB).
@@ -136,6 +144,14 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 	b, err := store.Encode(e)
 	if err != nil {
 		return 0, err
+	}
+
+	// Reject a record that the scan paths could never read back. b already
+	// includes the trailing newline, and a line is readable iff its length
+	// including that newline is <= maxScanTokenSize (verified against bufio's
+	// buffer-growth boundary), so the ceiling is a simple len(b) comparison.
+	if int64(len(b)) > maxScanTokenSize {
+		return 0, fmt.Errorf("%w: record id=%d encodes to %d bytes, limit is %d", ErrRecordTooLarge, e.ID, len(b), maxScanTokenSize)
 	}
 
 	offset = s.size

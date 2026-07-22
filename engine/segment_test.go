@@ -2,6 +2,7 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -124,6 +125,50 @@ func TestSegmentReadAtLargeRecord(t *testing.T) {
 	}
 	if len(entries) != 3 {
 		t.Errorf("ScanAll: got %d entries, want 3", len(entries))
+	}
+}
+
+// TestSegmentAppendRejectsOversizeRecord covers issue #80: a record whose
+// encoded form exceeds the 16 MiB scan-buffer limit is rejected at Append time
+// (with ErrRecordTooLarge) rather than written to disk where no read path could
+// ever scan it back. The write must be atomic — nothing is appended on reject.
+func TestSegmentAppendRejectsOversizeRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "seg_000001.ndjson")
+
+	seg, err := openActiveSegment(path)
+	if err != nil {
+		t.Fatalf("openActiveSegment: %v", err)
+	}
+	defer seg.Close()
+
+	// A valid small record first, so we can assert the reject leaves the
+	// segment exactly as it was.
+	seg.mustAppend(t, store.NewInsert(1, map[string]any{"x": 1}))
+	sizeBefore := seg.Size()
+
+	// Blob comfortably past the 16 MiB ceiling once encoded.
+	blob := make([]byte, maxScanTokenSize+1024)
+	for i := range blob {
+		blob[i] = 'a' + byte(i%26)
+	}
+
+	_, err = seg.Append(store.NewInsert(2, map[string]any{"blob": string(blob)}))
+	if !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Append oversize: got err %v, want ErrRecordTooLarge", err)
+	}
+
+	// Nothing should have been written: size unchanged, only the first record
+	// scans back.
+	if got := seg.Size(); got != sizeBefore {
+		t.Errorf("segment size changed on rejected append: got %d, want %d", got, sizeBefore)
+	}
+	entries, err := seg.ScanAll()
+	if err != nil {
+		t.Fatalf("ScanAll after reject: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != 1 {
+		t.Errorf("expected only record 1 to survive, got %d entries", len(entries))
 	}
 }
 

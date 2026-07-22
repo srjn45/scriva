@@ -1011,13 +1011,16 @@ func (s *GRPCServer) writeErr(collection, action string, err error) error {
 		}
 		return status.Error(codes.ResourceExhausted, err.Error())
 	}
+	if errors.Is(err, engine.ErrRecordTooLarge) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
 }
 
 // keyedErr maps the typed engine errors surfaced by the keyed operations onto
 // gRPC status codes: a missing key is NOT_FOUND, a duplicate key is
-// ALREADY_EXISTS, and an attempt to set the reserved _key field via data is
-// INVALID_ARGUMENT. Anything else is Internal.
+// ALREADY_EXISTS, and an attempt to set the reserved _key field via data or an
+// oversized record is INVALID_ARGUMENT. Anything else is Internal.
 func keyedErr(err error) error {
 	switch {
 	case errors.Is(err, engine.ErrKeyNotFound):
@@ -1025,6 +1028,8 @@ func keyedErr(err error) error {
 	case errors.Is(err, engine.ErrDuplicateKey):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, engine.ErrReservedField):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, engine.ErrRecordTooLarge):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, engine.ErrResourceExhausted):
 		return status.Error(codes.ResourceExhausted, err.Error())
