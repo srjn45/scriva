@@ -40,7 +40,39 @@ embedding-specific contract.
 
 ## [Unreleased]
 
-_Nothing yet — 1.0 is out; further work resumes here._
+_Nothing yet — further work resumes here._
+
+## [1.1.0] — 2026-07-22
+
+The first release on the frozen `v1` surface: two correctness fixes to the
+segment read/write paths plus one additive engine symbol. Fully backward
+compatible — no wire or on-disk format change and no migration from v1.0.0.
+
+### Fixed
+
+- **`ReadAt` no longer fails with "token too long" on records over 64 KiB.**
+  `Segment.ReadAt` scanned with a default 64 KiB line buffer while the full-scan
+  paths (`ScanAll`/`ScanFrom`) used 16 MiB, so a record between 64 KiB and 16 MiB
+  was writable and visible to scans but **unreadable by offset** — every point
+  lookup (`Get`/`FindById`) that resolved through the index failed. All three
+  read paths now share a single 16 MiB scanner via a common helper so their
+  buffer sizes can't drift apart again. (#78, #79)
+
+### Added
+
+- **Write-time record-size ceiling.** `Segment.Append` now rejects a record whose
+  encoded form (including its trailing newline) exceeds the 16 MiB scan-buffer
+  limit with a new typed **`engine.ErrRecordTooLarge`**, instead of writing a
+  record no read path could ever scan back. The server maps it to gRPC
+  **`InvalidArgument`**. The append stays atomic — a rejected write persists
+  nothing. The gRPC transport's 4 MiB max-message size already sits below this
+  ceiling, so the guard matters most for the embedded façade and internal
+  re-append paths (compaction, replication). (#80, #81)
+
+### Docs
+
+- Added a marketing site and user guide (Astro + Starlight), deployed to GitHub
+  Pages, and a "Record-size ceiling" section to `docs/architecture.md`. (#77)
 
 ## [1.0.0] — 2026-07-05
 
@@ -623,6 +655,7 @@ Initial release: the feature-complete core.
 - Idiomatic client SDKs for Python, JavaScript/TypeScript, PHP, Java, Ruby,
   Rust, and C#/.NET, plus a generated OpenAPI spec and a React web admin UI.
 
+[1.1.0]: https://github.com/srjn45/filedbv2/releases/tag/v1.1.0
 [0.3.0]: https://github.com/srjn45/filedbv2/releases/tag/v0.3.0
 [0.2.1]: https://github.com/srjn45/filedbv2/releases/tag/v0.2.1
 [0.2.0]: https://github.com/srjn45/filedbv2/releases/tag/v0.2.0
