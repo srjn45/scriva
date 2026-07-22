@@ -14,7 +14,7 @@ ScrivaDB lets you trade write throughput against your crash-loss window with the
 | `interval` | fsync on a timer (`--sync-interval`, default `1s`). | Balanced; bounded loss window. |
 | `always` | fsync on every write. | Safest; slowest. |
 
-The embedded façade (`filedb.Open`) defaults to `interval` (~1s) — a sensible
+The embedded façade (`scriva.Open`) defaults to `interval` (~1s) — a sensible
 middle ground for in-process use.
 
 ## Crash safety & integrity

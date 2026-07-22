@@ -1,6 +1,6 @@
-// Package filedb is the embedded façade over the FileDB storage engine. It is
+// Package scriva is the embedded façade over the ScrivaDB storage engine. It is
 // the ergonomic, zero-server entry point for programs that want to compile
-// FileDB in-process and host several collections — each with its own durability
+// ScrivaDB in-process and host several collections — each with its own durability
 // and compaction settings — from a single data directory.
 //
 // It is a thin convenience layer over engine.DB: Open returns a handle, and
@@ -11,7 +11,7 @@
 // # Embedded durability default (OPS-1)
 //
 // Unlike the raw engine — whose default is SyncModeNone (fastest, but a crash
-// can lose recently acknowledged writes) — a DB opened through filedb.Open
+// can lose recently acknowledged writes) — a DB opened through scriva.Open
 // defaults every collection to SyncModeInterval at a 1s cadence. This trades a
 // bounded (~1s) durability window for throughput: a crash can lose at most the
 // last interval's writes, while the append-only, temp-then-rename segment format
@@ -24,7 +24,7 @@
 // WithCollectionSyncMode(engine.SyncModeAlways) — an explicit escape hatch that
 // fsyncs before every write is acknowledged. Every other engine default (segment
 // size, compaction cadence, watch buffer) is left untouched unless overridden.
-package filedb
+package scriva
 
 import (
 	"fmt"
@@ -198,7 +198,7 @@ func (db *DB) Collection(name string, opts ...CollectionOption) (*engine.Collect
 	}
 	for _, field := range co.unique {
 		if err := col.EnsureUniqueIndex(field); err != nil {
-			return nil, fmt.Errorf("filedb: collection %q: ensure unique index %q: %w", name, field, err)
+			return nil, fmt.Errorf("scriva: collection %q: ensure unique index %q: %w", name, field, err)
 		}
 	}
 	db.cols[name] = col
@@ -211,7 +211,7 @@ func (db *DB) Collection(name string, opts ...CollectionOption) (*engine.Collect
 func (db *DB) MustCollection(name string, opts ...CollectionOption) *engine.Collection {
 	col, err := db.Collection(name, opts...)
 	if err != nil {
-		panic(fmt.Sprintf("filedb: MustCollection(%q): %v", name, err))
+		panic(fmt.Sprintf("scriva: MustCollection(%q): %v", name, err))
 	}
 	return col
 }

@@ -1,30 +1,30 @@
-package filedb_test
+package scriva_test
 
 import (
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/srjn45/scriva"
 	"github.com/srjn45/scriva/engine"
-	"github.com/srjn45/scriva/filedb"
 )
 
 // wardenStore stands up the warden-shaped collection set through the façade in a
 // handful of lines — the EMB-2 acceptance shape. It returns the DB and its
 // collections so tests can exercise them.
-func wardenStore(t *testing.T, dir string) (*filedb.DB, map[string]*engine.Collection) {
+func wardenStore(t *testing.T, dir string) (*scriva.DB, map[string]*engine.Collection) {
 	t.Helper()
-	db, err := filedb.Open(dir)
+	db, err := scriva.Open(dir)
 	if err != nil {
-		t.Fatalf("filedb.Open: %v", err)
+		t.Fatalf("scriva.Open: %v", err)
 	}
 	cols := map[string]*engine.Collection{
-		"sessions": db.MustCollection("sessions", filedb.WithUniqueIndex("name")),
+		"sessions": db.MustCollection("sessions", scriva.WithUniqueIndex("name")),
 		"events":   db.MustCollection("events"),
 		"messages": db.MustCollection("messages"),
 		"context":  db.MustCollection("context"),
 		// spend needs an fsync on every write — opt out of the interval default.
-		"spend": db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways)),
+		"spend": db.MustCollection("spend", scriva.WithCollectionSyncMode(engine.SyncModeAlways)),
 	}
 	return db, cols
 }
@@ -90,7 +90,7 @@ func TestOpenCollectionsCRUDReopen(t *testing.T) {
 
 func TestDefaultSyncModeInterval(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir())
+	db, err := scriva.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -108,13 +108,13 @@ func TestDefaultSyncModeInterval(t *testing.T) {
 
 func TestPerCollectionSyncAlwaysOverride(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir())
+	db, err := scriva.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	ledger := db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+	ledger := db.MustCollection("spend", scriva.WithCollectionSyncMode(engine.SyncModeAlways))
 	if got := ledger.Config().SyncMode; got != engine.SyncModeAlways {
 		t.Fatalf("overridden SyncMode = %q, want %q", got, engine.SyncModeAlways)
 	}
@@ -129,13 +129,13 @@ func TestPerCollectionSyncAlwaysOverride(t *testing.T) {
 
 func TestPerCollectionQuotaOptions(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir())
+	db, err := scriva.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	capped := db.MustCollection("capped", filedb.WithMaxRecords(1), filedb.WithMaxBytes(4096))
+	capped := db.MustCollection("capped", scriva.WithMaxRecords(1), scriva.WithMaxBytes(4096))
 	if cfg := capped.Config(); cfg.MaxRecords != 1 || cfg.MaxBytes != 4096 {
 		t.Fatalf("capped quota cfg = {%d, %d}, want {1, 4096}", cfg.MaxRecords, cfg.MaxBytes)
 	}
@@ -157,7 +157,7 @@ func TestPerCollectionQuotaOptions(t *testing.T) {
 
 func TestOpenOptionOverridesDefault(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir(), filedb.WithSyncMode(engine.SyncModeNone))
+	db, err := scriva.Open(t.TempDir(), scriva.WithSyncMode(engine.SyncModeNone))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -170,13 +170,13 @@ func TestOpenOptionOverridesDefault(t *testing.T) {
 
 func TestUniqueIndexAtOpen(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir())
+	db, err := scriva.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	sessions := db.MustCollection("sessions", filedb.WithUniqueIndex("name"))
+	sessions := db.MustCollection("sessions", scriva.WithUniqueIndex("name"))
 	if _, _, err := sessions.Insert(map[string]any{"name": "alpha"}); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -188,16 +188,16 @@ func TestUniqueIndexAtOpen(t *testing.T) {
 
 func TestCollectionFirstCallWinsAndCaches(t *testing.T) {
 	t.Parallel()
-	db, err := filedb.Open(t.TempDir())
+	db, err := scriva.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	first := db.MustCollection("c", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+	first := db.MustCollection("c", scriva.WithCollectionSyncMode(engine.SyncModeAlways))
 	// A second call for the same name returns the cached handle and ignores its
 	// options (first call wins).
-	second := db.MustCollection("c", filedb.WithCollectionSyncMode(engine.SyncModeNone))
+	second := db.MustCollection("c", scriva.WithCollectionSyncMode(engine.SyncModeNone))
 	if first != second {
 		t.Fatal("second Collection call returned a different handle; expected cached")
 	}

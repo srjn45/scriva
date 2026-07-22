@@ -11,7 +11,7 @@ cmd/
   filedb/           # server binary (cobra: "filedb serve")
   filedb-cli/       # CLI client binary (cobra subcommands + REPL)
 engine/             # public: storage engine — segments, index, compactor, secondary indexes, db
-filedb/             # public: embedded façade — filedb.Open + per-collection options, embedded durability defaults
+scriva.go           # public: embedded façade (root package) — scriva.Open + per-collection options, embedded durability defaults
 store/              # public: NDJSON entry encoding/decoding (store.Entry)
 query/              # public: filter types and evaluation (query.Filter)
 internal/

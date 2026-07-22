@@ -106,14 +106,14 @@ daemon. This is the right choice when your program is the only writer and you
 want FileDB's durability and query model directly inside your binary.
 
 ```bash
-go get github.com/srjn45/filedbv2/engine   # the storage engine
-go get github.com/srjn45/filedbv2/filedb   # the ergonomic façade (recommended)
+go get github.com/srjn45/scriva/engine   # the storage engine
+go get github.com/srjn45/scriva         # the ergonomic façade (recommended)
 ```
 
 ```go
-import "github.com/srjn45/filedbv2/filedb"
+import "github.com/srjn45/scriva"
 
-db, _ := filedb.Open("./data")            // embedded durability defaults (fsync ~1s)
+db, _ := scriva.Open("./data")            // embedded durability defaults (fsync ~1s)
 defer db.Close()
 
 sessions := db.MustCollection("sessions")

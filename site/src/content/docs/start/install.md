@@ -53,8 +53,8 @@ If you only want the database inside a Go program, you don't install anything �
 just add the module:
 
 ```bash
-go get github.com/srjn45/scriva/filedb   # ergonomic façade (recommended)
-go get github.com/srjn45/scriva/engine   # lower-level storage engine
+go get github.com/srjn45/scriva         # ergonomic façade (recommended)
+go get github.com/srjn45/scriva/engine  # lower-level storage engine
 ```
 
 See the [Embedding guide](/scriva/guides/embedding/).

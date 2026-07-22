@@ -98,11 +98,11 @@ files."
   config; warden wants a DB that hosts several collections (`sessions`, `events`,
   `messages`, `context`, …) with per-collection config, and a dead-simple
   "open a store rooted at this dir" call.
-- **Approach:** add a thin embedded entrypoint (e.g. `filedb.Open(dir, opts...)`
+- **Approach:** add a thin embedded entrypoint (e.g. `scriva.Open(dir, opts...)`
   returning a handle with `Collection(name, cfg)` / `MustCollection`), defaulting
   sync mode, segment size, and compaction cadence sensibly for a local daemon.
   This is sugar over the existing `DB` — no engine changes.
-- **Files:** new top-level `filedb` package (or `engine.OpenDB` helper), docs.
+- **Files:** root `scriva` package (or `engine.OpenDB` helper), docs.
 - **Tests:** open → create N collections → CRUD → reopen recovers all.
 - **Acceptance:** warden can stand up its full collection set in <10 lines.
 
