@@ -1,0 +1,264 @@
+# Publishes each ScrivaDB client SDK to its language registry.
+#
+# ── When it runs ────────────────────────────────────────────────────────────
+#   • Push of a `clients-v*` tag (e.g. clients-v1.0.0) → every language publishes.
+#     (The tag itself is created in a separate release PR; this workflow only
+#     reacts to it. The published version comes from each package's own metadata
+#     files — all pinned to 1.0.0 — NOT from the tag name.)
+#   • Manual `workflow_dispatch` → pick a single language (or "all") via the
+#     `language` input, so one registry can be (re)published in isolation.
+#
+# ── Safety ──────────────────────────────────────────────────────────────────
+#   Every job builds and runs a dry-run / validate step BEFORE the real publish.
+#
+# ── Secrets the maintainer must create (see PR body for the full checklist) ──
+#   Tier 1: NPM_TOKEN, CARGO_REGISTRY_TOKEN, RUBYGEMS_API_KEY
+#           (PyPI uses OIDC trusted publishing — no secret; Packagist uses a
+#            git webhook — optional PACKAGIST_USERNAME/PACKAGIST_TOKEN)
+#   Tier 2: NUGET_API_KEY,
+#           MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD,
+#           MAVEN_GPG_PRIVATE_KEY, MAVEN_GPG_PASSPHRASE
+
+name: Publish Clients
+
+on:
+  push:
+    tags:
+      - "clients-v*"
+  workflow_dispatch:
+    inputs:
+      language:
+        description: "Which client to publish"
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - python
+          - js
+          - rust
+          - ruby
+          - php
+          - java
+          - csharp
+
+# Least privilege by default; jobs that need more widen it locally.
+permissions:
+  contents: read
+
+# Never run two publishes of the same ref concurrently.
+concurrency:
+  group: publish-clients-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────── PyPI (Python) ─────────────────────────────
+  # Trusted publishing via OIDC — NO token secret. The maintainer must create a
+  # PyPI project named `scriva` and register a Trusted Publisher pointing at this
+  # repo, workflow file `publish-clients.yml`, and environment `pypi`.
+  python:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'python' }}
+    name: PyPI (python)
+    runs-on: ubuntu-latest
+    environment: pypi # must match the Trusted Publisher config on PyPI
+    permissions:
+      id-token: write # REQUIRED for OIDC trusted publishing
+      contents: read
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+      - name: Build sdist + wheel
+        run: python -m build
+      # Validate BEFORE publishing: metadata + long-description render checks.
+      - name: Validate (twine check)
+        run: twine check dist/*
+      - name: Publish to PyPI (trusted publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: clients/python/dist/
+
+  # ───────────────────────────── npm (JS/TS) ───────────────────────────────
+  # Secret: NPM_TOKEN (an npm automation token with publish rights on `scriva`).
+  js:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'js' }}
+    name: npm (js)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # enables `npm publish --provenance` (public repo)
+      contents: read
+    defaults:
+      run:
+        working-directory: clients/js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org" # writes .npmrc using NODE_AUTH_TOKEN
+      - name: Install deps
+        run: npm ci
+      - name: Build (tsc)
+        run: npm run build
+      # Validate BEFORE publishing: shows the exact tarball contents, no upload.
+      - name: Validate (npm publish --dry-run)
+        run: npm publish --dry-run
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ─────────────────────────── crates.io (Rust) ────────────────────────────
+  # Secret: CARGO_REGISTRY_TOKEN (a crates.io API token).
+  # protoc is required: build.rs runs tonic-build against proto/scriva.proto.
+  rust:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'rust' }}
+    name: crates.io (rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # Validate BEFORE publishing: full verify build of the packaged tarball.
+      - name: Validate (cargo publish --dry-run)
+        run: cargo publish --dry-run
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # ─────────────────────────── RubyGems (Ruby) ─────────────────────────────
+  # Secret: RUBYGEMS_API_KEY (read by `gem push` via GEM_HOST_API_KEY).
+  ruby:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'ruby' }}
+    name: RubyGems (ruby)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/ruby
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Build gem
+        run: gem build scriva.gemspec
+      # Validate BEFORE publishing: inspect the built gem's spec.
+      - name: Validate (gem spec)
+        run: gem spec scriva-*.gem --ruby
+      - name: Publish to RubyGems
+        run: gem push scriva-*.gem
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+
+  # ────────────────────────── Packagist (PHP) ──────────────────────────────
+  # Packagist auto-updates when a `clients-v*` tag is pushed to GitHub, PROVIDED
+  # the srjn45/scriva GitHub webhook to Packagist is configured (one-time, done
+  # in the Packagist UI). This job therefore only VALIDATES composer.json and, if
+  # the optional secrets exist, pings the Packagist API to force an immediate
+  # update instead of waiting for the webhook.
+  # Optional secrets: PACKAGIST_USERNAME, PACKAGIST_TOKEN.
+  php:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'php' }}
+    name: Packagist (php)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/php
+    # Job-level env so the notify step's `if:` guard can read PACKAGIST_USERNAME
+    # (a step's own `env:` block is not in scope for that same step's `if:`).
+    env:
+      PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+      PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+      # Validate: composer.json must be well-formed for Packagist to accept it.
+      # (No --strict: composer.json intentionally pins `version`, which --strict
+      # would treat as a warning-level failure.)
+      - name: Validate (composer validate)
+        run: composer validate --no-check-all
+      # Optional explicit update ping (skipped automatically if the secret is empty).
+      - name: Notify Packagist (force update)
+        if: ${{ env.PACKAGIST_USERNAME != '' }}
+        run: |
+          curl -sf -XPOST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/srjn45/scriva"}}'
+
+  # ─────────────────────── Maven Central (Java) ────────────────────────────
+  # Publishes com.srjn45:scriva-client to the Sonatype Central Portal.
+  # Secrets: MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD  (Central Portal token)
+  #          MAVEN_GPG_PRIVATE_KEY  (ASCII-armored GPG private key)
+  #          MAVEN_GPG_PASSPHRASE
+  # The vanniktech maven-publish plugin reads these as ORG_GRADLE_PROJECT_* below.
+  java:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'java' }}
+    name: Maven Central (java)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/java
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # Validate BEFORE publishing: builds signed jar + sources + javadoc + POM
+      # into the local Maven repo (no network push).
+      - name: Validate (publishToMavenLocal)
+        run: ./gradlew publishToMavenLocal --no-daemon
+      - name: Publish to Maven Central Portal
+        run: ./gradlew publishAndReleaseToMavenCentral --no-daemon --no-configuration-cache
+
+  # ───────────────────────────── NuGet (C#) ────────────────────────────────
+  # Secret: NUGET_API_KEY (a nuget.org API key with push rights for Scriva.Client).
+  csharp:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'csharp' }}
+    name: NuGet (csharp)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/csharp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Restore
+        run: dotnet restore Scriva.Client/Scriva.Client.csproj
+      # Validate BEFORE publishing: pack the .nupkg and confirm it was produced.
+      - name: Pack (validate)
+        run: |
+          dotnet pack Scriva.Client/Scriva.Client.csproj \
+            -c Release -o ./artifacts
+          ls -l ./artifacts/*.nupkg
+      - name: Publish to NuGet
+        run: |
+          dotnet nuget push "./artifacts/*.nupkg" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
