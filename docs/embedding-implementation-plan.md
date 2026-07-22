@@ -95,8 +95,8 @@ commit style, one PR per task. Commits must use the
 - **Scope:**
   1. `git mv internal/engine engine`, `git mv internal/store store`,
      `git mv internal/query query`.
-  2. Rewrite imports (`github.com/srjn45/filedbv2/internal/{engine,store,query}`
-     → `github.com/srjn45/filedbv2/{engine,store,query}`) across `server/`,
+  2. Rewrite imports (`github.com/srjn45/scriva/internal/{engine,store,query}`
+     → `github.com/srjn45/scriva/{engine,store,query}`) across `server/`,
      `cmd/`, and all `_test.go` files. Mechanical — sed/gofmt, no logic edits.
   3. Zero behavior change. Do not refactor anything else in the same PR.
 - **Notes for the agent:**
@@ -108,7 +108,7 @@ commit style, one PR per task. Commits must use the
 - **Acceptance:**
   - `make test` and `make lint` pass unchanged.
   - A scratch module outside the repo can
-    `import "github.com/srjn45/filedbv2/engine"`, call `engine.Open`, and
+    `import "github.com/srjn45/scriva/engine"`, call `engine.Open`, and
     build (verify manually with a temp module; the permanent CI check is T2).
 
 ### T2 — EMB-3: dependency-hygiene CI gate
@@ -294,7 +294,7 @@ commit style, one PR per task. Commits must use the
      covering the warden layout — per-file sessions (split embedded `Events`
      into an `events` collection), mailbox files → `messages`,
      `context.json` → keyed `context` records. The importer itself is
-     warden-side; this documents the FileDBv2 half of the contract.
+     warden-side; this documents the ScrivaDB half of the contract.
 - **Tests:** load N lines → N records queryable; malformed line ⇒ error with
   line number, no partial index corruption; keyed load rejects duplicates.
 - **Acceptance:** a documented one-command bulk path exists for the migration.
@@ -323,17 +323,17 @@ commit style, one PR per task. Commits must use the
 
 | Task | Item | Depends on | Status | PR |
 |---|---|---|---|---|
-| T1 | EMB-1 public engine 🔴 | — | ☑ done | [#19](https://github.com/srjn45/FileDBv2/pull/19) |
-| T2 | EMB-3 deps-check CI | T1 | ☑ done | [#23](https://github.com/srjn45/FileDBv2/pull/23) |
-| T3 | KEY-2 unique index | T1 | ☑ done | [#25](https://github.com/srjn45/FileDBv2/pull/25) |
-| T4 | KEY-1 string keys 🔴 | T3 | ☑ done | [#26](https://github.com/srjn45/FileDBv2/pull/26) |
-| T5 | KEY-3 CAS / rev 🔴 | T4 | ☑ done | [#28](https://github.com/srjn45/FileDBv2/pull/28) |
-| T6 | KEY-4 upsert | T4 (after T5) | ☑ done | [#29](https://github.com/srjn45/FileDBv2/pull/29) |
-| T7 | QRY-3 count/exists | T4 (after T6) | ☑ done | [#30](https://github.com/srjn45/FileDBv2/pull/30) |
-| T8 | EMB-2 + OPS-1 façade | T5 | ☑ done | [#31](https://github.com/srjn45/FileDBv2/pull/31) |
-| T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/FileDBv2/pull/22) |
-| T10 | OPS-3 bulk load | T4 | ☑ done | [#33](https://github.com/srjn45/FileDBv2/pull/33) |
-| T11 | EMB-4 semver + docs | T2–T10 | ☑ done | [#35](https://github.com/srjn45/FileDBv2/pull/35) |
+| T1 | EMB-1 public engine 🔴 | — | ☑ done | [#19](https://github.com/srjn45/ScrivaDB/pull/19) |
+| T2 | EMB-3 deps-check CI | T1 | ☑ done | [#23](https://github.com/srjn45/ScrivaDB/pull/23) |
+| T3 | KEY-2 unique index | T1 | ☑ done | [#25](https://github.com/srjn45/ScrivaDB/pull/25) |
+| T4 | KEY-1 string keys 🔴 | T3 | ☑ done | [#26](https://github.com/srjn45/ScrivaDB/pull/26) |
+| T5 | KEY-3 CAS / rev 🔴 | T4 | ☑ done | [#28](https://github.com/srjn45/ScrivaDB/pull/28) |
+| T6 | KEY-4 upsert | T4 (after T5) | ☑ done | [#29](https://github.com/srjn45/ScrivaDB/pull/29) |
+| T7 | QRY-3 count/exists | T4 (after T6) | ☑ done | [#30](https://github.com/srjn45/ScrivaDB/pull/30) |
+| T8 | EMB-2 + OPS-1 façade | T5 | ☑ done | [#31](https://github.com/srjn45/ScrivaDB/pull/31) |
+| T9 | OPS-2 Watch docs | T1 | ☑ done | [#22](https://github.com/srjn45/ScrivaDB/pull/22) |
+| T10 | OPS-3 bulk load | T4 | ☑ done | [#33](https://github.com/srjn45/ScrivaDB/pull/33) |
+| T11 | EMB-4 semver + docs | T2–T10 | ☑ done | [#35](https://github.com/srjn45/ScrivaDB/pull/35) |
 
 Cross-referenced release-roadmap dependencies (no tasks here): QRY-1 → Q2,
 QRY-2 → Q3, OPS-4 → F2, OPS-5 → F3.

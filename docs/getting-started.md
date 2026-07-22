@@ -6,8 +6,8 @@
 
 ```bash
 # Linux amd64
-curl -L https://github.com/srjn45/filedbv2/releases/latest/download/filedbv2_linux_amd64.tar.gz | tar xz
-sudo mv filedb filedb-cli /usr/local/bin/
+curl -L https://github.com/srjn45/scriva/releases/latest/download/scriva_linux_amd64.tar.gz | tar xz
+sudo mv scriva scriva-cli /usr/local/bin/
 ```
 
 ### Option 2: Docker
@@ -16,17 +16,17 @@ sudo mv filedb filedb-cli /usr/local/bin/
 docker run -d \
   -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
-  -e FILEDB_API_KEY=my-secret-key \
-  ghcr.io/srjn45/filedbv2:latest
+  -e SCRIVA_API_KEY=my-secret-key \
+  ghcr.io/srjn45/scriva:latest
 ```
 
 ### Option 3: Build from source
 
 ```bash
-git clone https://github.com/srjn45/filedbv2
-cd filedbv2
+git clone https://github.com/srjn45/scriva
+cd scriva
 make build
-# binaries: bin/filedb and bin/filedb-cli
+# binaries: bin/scriva and bin/scriva-cli
 ```
 
 ---
@@ -34,7 +34,7 @@ make build
 ## Start the server
 
 ```bash
-filedb serve \
+scriva serve \
   --data ./data \
   --api-key my-secret-key \
   --grpc-addr :5433 \
@@ -44,8 +44,8 @@ filedb serve \
 Environment variable alternative:
 
 ```bash
-export FILEDB_API_KEY=my-secret-key
-filedb serve --data ./data
+export SCRIVA_API_KEY=my-secret-key
+scriva serve --data ./data
 ```
 
 All flags and their defaults:
@@ -55,8 +55,8 @@ All flags and their defaults:
 | `--data` | `./data` | Data directory |
 | `--grpc-addr` | `:5433` | TCP gRPC listen address |
 | `--rest-addr` | `:8080` | REST gateway listen address |
-| `--socket` | `/tmp/filedb.sock` | Unix domain socket path |
-| `--api-key` | `$FILEDB_API_KEY` | API key (empty = no auth) |
+| `--socket` | `/tmp/scriva.sock` | Unix domain socket path |
+| `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth) |
 | `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled) |
 | `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key` | *(none)* | Path to TLS private key PEM file |
@@ -88,11 +88,11 @@ All flags and their defaults:
 You can put all server options in a YAML file and load it with `--config`:
 
 ```yaml
-# filedb.yaml
+# scriva.yaml
 data_dir: ./data
 grpc_addr: :5433
 rest_addr: :8080
-unix_socket: /tmp/filedb.sock
+unix_socket: /tmp/scriva.sock
 api_key: my-secret-key
 metrics_addr: :9090
 segment_max_size: 4194304   # 4 MiB
@@ -112,14 +112,14 @@ rate_limit: 0               # per-API-key requests/sec (0 = disabled)
 slow_query_ms: 0            # log Find slower than this many ms at WARN (0 = disabled)
 otlp_endpoint: ""           # OTLP/gRPC collector address (empty = tracing disabled)
 otlp_sample_ratio: 1.0      # fraction of traces sampled when tracing is enabled
-# tls_cert: /etc/filedb/cert.pem
-# tls_key:  /etc/filedb/key.pem
-# tls_client_ca: /etc/filedb/client-ca.pem   # enables mTLS (see below)
+# tls_cert: /etc/scriva/cert.pem
+# tls_key:  /etc/scriva/key.pem
+# tls_client_ca: /etc/scriva/client-ca.pem   # enables mTLS (see below)
 # tls_client_auth: off                        # off | require | verify-if-given
 ```
 
 ```bash
-filedb serve --config filedb.yaml
+scriva serve --config scriva.yaml
 ```
 
 CLI flags always override the config file. Omitted keys fall back to defaults.
@@ -128,7 +128,7 @@ CLI flags always override the config file. Omitted keys fall back to defaults.
 
 ## Authentication & scoped API keys
 
-The simplest setup is a single key via `--api-key` (or `$FILEDB_API_KEY`);
+The simplest setup is a single key via `--api-key` (or `$SCRIVA_API_KEY`);
 clients send it in the `x-api-key` gRPC metadata header or HTTP header. An empty
 key disables authentication entirely.
 
@@ -141,7 +141,7 @@ config file. Each key has a `name` (used in logs) and a `scope`:
   management, and compaction.
 
 ```yaml
-# filedb.yaml
+# scriva.yaml
 keys:
   - key: reader-secret
     name: analytics
@@ -158,9 +158,9 @@ key named `default`.
 
 ```bash
 # analytics can read…
-filedb-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key reader-secret
+scriva-cli find users '{"field":"name","op":"eq","value":"alice"}' --api-key reader-secret
 # …but not write:
-filedb-cli insert users '{"name":"bob"}' --api-key reader-secret
+scriva-cli insert users '{"name":"bob"}' --api-key reader-secret
 # Error: rpc error: code = PermissionDenied ...
 ```
 
@@ -170,7 +170,7 @@ you can add, remove, or re-scope keys without dropping connections or
 restarting:
 
 ```bash
-kill -HUP $(pgrep -f 'filedb serve')
+kill -HUP $(pgrep -f 'scriva serve')
 ```
 
 ### Per-collection ACLs
@@ -197,9 +197,9 @@ keys:
 
 ```bash
 # billing may write its own collections…
-filedb-cli insert orders '{"total":42}' --api-key billing-secret
+scriva-cli insert orders '{"total":42}' --api-key billing-secret
 # …but is denied on any other collection:
-filedb-cli insert users '{"name":"bob"}' --api-key billing-secret
+scriva-cli insert users '{"name":"bob"}' --api-key billing-secret
 # Error: rpc error: code = PermissionDenied ...
 ```
 
@@ -213,7 +213,7 @@ all collections.
 
 ### Mutual TLS (client-certificate auth)
 
-On top of server TLS, FileDB can verify **client** certificates against a CA and
+On top of server TLS, ScrivaDB can verify **client** certificates against a CA and
 authenticate a caller by its certificate — a cryptographic identity that does
 not depend on the `x-api-key` header. It is **off by default** and requires
 server TLS (`--tls-cert`/`--tls-key`) to be enabled.
@@ -226,7 +226,7 @@ Two settings control it:
 | `--tls-client-auth` (`tls_client_auth`) | `off` · `require` · `verify-if-given` | `require` mandates a valid client cert on every connection; `verify-if-given` accepts one when presented but does not require it; `off` disables mTLS |
 
 ```bash
-filedb serve --data ./data \
+scriva serve --data ./data \
   --tls-cert server.crt --tls-key server.key \
   --tls-client-ca client-ca.pem \
   --tls-client-auth require
@@ -256,7 +256,7 @@ Generate a throwaway CA and a client cert for testing:
 ```bash
 # CA
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out client-ca.pem \
-  -days 365 -subj "/CN=filedb-client-ca"
+  -days 365 -subj "/CN=scriva-client-ca"
 # Client key + CSR + signed cert (CN becomes the principal name)
 openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=svc-backend"
 openssl x509 -req -in client.csr -CA client-ca.pem -CAkey ca.key -CAcreateserial \
@@ -267,7 +267,7 @@ Then point a client at the server with its certificate (e.g. with `grpcurl`):
 
 ```bash
 grpcurl -cacert server-ca.pem -cert client.crt -key client.key \
-  localhost:5433 filedb.v1.FileDB/ListCollections
+  localhost:5433 scriva.v1.Scriva/ListCollections
 ```
 
 > **REST gateway under `require`:** because the built-in REST bridge dials gRPC
@@ -279,12 +279,12 @@ grpcurl -cacert server-ca.pem -cert client.crt -key client.key \
 
 ## Durability
 
-FileDB lets you trade write throughput against how much you can lose on a crash:
+ScrivaDB lets you trade write throughput against how much you can lose on a crash:
 
 ```bash
-filedb serve --data ./data --sync none        # fastest; OS decides when to flush
-filedb serve --data ./data --sync interval --sync-interval 1s  # lose ≤ 1s on power loss
-filedb serve --data ./data --sync always       # fsync every write; lose nothing acknowledged
+scriva serve --data ./data --sync none        # fastest; OS decides when to flush
+scriva serve --data ./data --sync interval --sync-interval 1s  # lose ≤ 1s on power loss
+scriva serve --data ./data --sync always       # fsync every write; lose nothing acknowledged
 ```
 
 | Mode | What it does | You can lose | Speed |
@@ -303,7 +303,7 @@ trade-off on your own hardware with `make bench`.
 
 ## Backpressure & limits
 
-By default FileDB accepts unbounded concurrent work — fine for a trusted
+By default ScrivaDB accepts unbounded concurrent work — fine for a trusted
 embedded or single-tenant deployment, risky behind a public load balancer where
 a greedy or buggy client can exhaust goroutines and file descriptors. Three
 **opt-in, off-by-default** controls let the server shed load with a typed
@@ -319,7 +319,7 @@ unaffected.
 
 ```bash
 # Accept at most 512 concurrent in-flight RPCs and 100 req/s per API key.
-filedb serve --data ./data --max-inflight 512 --rate-limit 100
+scriva serve --data ./data --max-inflight 512 --rate-limit 100
 ```
 
 - **`--max-inflight`** installs a server-wide semaphore. Once the ceiling is
@@ -349,7 +349,7 @@ config-file only** (a per-collection map does not fit a flat flag); a collection
 with no entry stays unlimited, exactly as before.
 
 ```yaml
-# filedb.yaml
+# scriva.yaml
 quotas:
   users:
     max_records: 100000        # at most 100k live records
@@ -362,7 +362,7 @@ quotas:
 - Either field may be `0` or omitted to leave **that** dimension unlimited.
   `max_bytes` is measured against the collection's **total segment size** on
   disk (the same figure `CollectionStats.SizeBytes` and the
-  `filedb_collection_bytes` metric report), so it accounts for un-compacted
+  `scriva_collection_bytes` metric report), so it accounts for un-compacted
   history too.
 - A write that would push the collection past either budget is refused with gRPC
   **`ResourceExhausted`** (HTTP `429` via REST). The check runs **before** the
@@ -375,16 +375,16 @@ quotas:
   transaction commit are checked as a **whole batch**: a batch that would breach
   the budget is rejected atomically, writing nothing.
 - Consumption is observable at `:9090/metrics`:
-  `filedb_collection_records_total`, `filedb_collection_bytes`, and the
-  refusal counter `filedb_quota_rejected_total{collection}`.
+  `scriva_collection_records_total`, `scriva_collection_bytes`, and the
+  refusal counter `scriva_quota_rejected_total{collection}`.
 
-Embedding the engine directly? The `filedb` façade exposes the same budget per
+Embedding the engine directly? The `scriva` façade exposes the same budget per
 collection:
 
 ```go
 users := db.MustCollection("users",
-    filedb.WithMaxRecords(100_000),
-    filedb.WithMaxBytes(50<<20))
+    scriva.WithMaxRecords(100_000),
+    scriva.WithMaxBytes(50<<20))
 // an over-budget write returns engine.ErrResourceExhausted
 ```
 
@@ -402,7 +402,7 @@ silently as data grows. Turn on the slow-query log to catch these:
 
 ```bash
 # Log any Find that takes 50ms or longer, at WARN, with scan stats.
-filedb serve --data ./data --slow-query-ms 50 --log-format json
+scriva serve --data ./data --slow-query-ms 50 --log-format json
 ```
 
 `--slow-query-ms` (default `0` = disabled) sets a duration threshold. Any `Find`
@@ -428,7 +428,7 @@ Read it as follows:
   (`ensureindex`) is usually the fix — re-run and it flips to `true` with a much
   smaller `rows_scanned`.
 
-The same cost is exported as the `filedb_scan_rows_scanned` Prometheus histogram
+The same cost is exported as the `scriva_scan_rows_scanned` Prometheus histogram
 (labelled by `collection`), so you can alert on scan cost without scraping logs.
 See [architecture.md](architecture.md#slow-query-log--scan-stats) for how the
 stats flow from the engine to the log and the metric.
@@ -445,15 +445,15 @@ through routine reads. It is **off by default**; point `--audit-log` at a file t
 enable it:
 
 ```bash
-filedb serve --data ./data --api-key sekret --audit-log /var/log/filedb/audit.log
+scriva serve --data ./data --api-key sekret --audit-log /var/log/scriva/audit.log
 ```
 
 Each line is a self-contained JSON object (NDJSON — one record per line, appended
 never rewritten). A successful keyed insert and a rejected call look like:
 
 ```json
-{"time":"2026-07-04T10:15:04Z","level":"INFO","msg":"audit","method":"/filedb.v1.FileDB/Insert","principal":"writer","outcome":"ok","collection":"users","key":"u42"}
-{"time":"2026-07-04T10:15:07Z","level":"INFO","msg":"audit","method":"/filedb.v1.FileDB/Insert","principal":"unauthenticated","outcome":"Unauthenticated","collection":"users","auth_failure":true}
+{"time":"2026-07-04T10:15:04Z","level":"INFO","msg":"audit","method":"/scriva.v1.Scriva/Insert","principal":"writer","outcome":"ok","collection":"users","key":"u42"}
+{"time":"2026-07-04T10:15:07Z","level":"INFO","msg":"audit","method":"/scriva.v1.Scriva/Insert","principal":"unauthenticated","outcome":"Unauthenticated","collection":"users","auth_failure":true}
 ```
 
 Fields:
@@ -484,7 +484,7 @@ the interceptor captures the principal.
 
 ## Distributed tracing (OpenTelemetry)
 
-FileDB can emit [OpenTelemetry](https://opentelemetry.io/) traces so you can see
+ScrivaDB can emit [OpenTelemetry](https://opentelemetry.io/) traces so you can see
 where a slow request spends its time — across the gateway → gRPC → engine-scan
 hops. Tracing is **opt-in and off by default**: nothing is wired unless you set
 `--otlp-endpoint`, so there is zero overhead on the default path.
@@ -500,7 +500,7 @@ Point the server at any OTLP-compatible collector — the
 
 ```bash
 # Run a local collector, then:
-filedb serve --data ./data \
+scriva serve --data ./data \
   --otlp-endpoint localhost:4317 \
   --otlp-sample-ratio 1.0
 ```
@@ -508,7 +508,7 @@ filedb serve --data ./data \
 What you get per traced request:
 
 - One **server span per RPC**, named after the method (e.g.
-  `/filedb.v1.FileDB/Find`) and tagged with `rpc.method` and the returned
+  `/scriva.v1.Scriva/Find`) and tagged with `rpc.method` and the returned
   `rpc.grpc.status_code`. A failed RPC marks the span as errored.
 - A child **`engine.scan`** span for every `Find`/`Scan`, so you can see which
   query drove a long collection scan, and a **`engine.compaction`** span for
@@ -517,7 +517,7 @@ What you get per traced request:
 The connection to the collector is made in-the-clear (`insecure`) — run the
 collector locally or as a sidecar, or front it with a mesh that provides
 transport security. Sampling is parent-based: if an upstream caller already made
-a sampling decision (via propagated trace context), FileDB honours it, and the
+a sampling decision (via propagated trace context), ScrivaDB honours it, and the
 ratio applies only to traces it roots. See
 [architecture.md](architecture.md#tracing-opentelemetry) for how the interceptor
 and the engine hook fit together.
@@ -529,41 +529,41 @@ and the engine hook fit together.
 ### Interactive REPL
 
 ```bash
-export FILEDB_API_KEY=my-secret-key
-filedb-cli repl
+export SCRIVA_API_KEY=my-secret-key
+scriva-cli repl
 
-filedb> create-collection users
-filedb> use users
-filedb:users> insert {"name":"alice","age":30}
+scriva> create-collection users
+scriva> use users
+scriva:users> insert {"name":"alice","age":30}
 → inserted id:1
 
-filedb:users> find
+scriva:users> find
 → id:1  {"name":"alice","age":30}
 
-filedb:users> find {"field":"name","op":"eq","value":"alice"}
+scriva:users> find {"field":"name","op":"eq","value":"alice"}
 → id:1  {"name":"alice","age":30}
 
-filedb:users> update 1 {"name":"alice","age":31}
+scriva:users> update 1 {"name":"alice","age":31}
 → updated id:1
 
-filedb:users> stats
+scriva:users> stats
 → collection:users  records:1  segments:1  dirty:0  size:89 bytes
 
-filedb:users> delete 1
+scriva:users> delete 1
 → deleted id:1
 ```
 
 ### One-shot commands
 
 ```bash
-filedb-cli create-collection products
-filedb-cli insert products '{"name":"widget","price":9.99}'
-filedb-cli find products '{"field":"price","op":"lte","value":"10.00"}'
-filedb-cli get products 1
-filedb-cli update products 1 '{"name":"widget","price":8.99}'
-filedb-cli delete products 1
-filedb-cli stats products
-filedb-cli compact products
+scriva-cli create-collection products
+scriva-cli insert products '{"name":"widget","price":9.99}'
+scriva-cli find products '{"field":"price","op":"lte","value":"10.00"}'
+scriva-cli get products 1
+scriva-cli update products 1 '{"name":"widget","price":8.99}'
+scriva-cli delete products 1
+scriva-cli stats products
+scriva-cli compact products
 ```
 
 ### Batch script (.fql)
@@ -579,19 +579,19 @@ insert {"name":"carol","email":"carol@example.com"}
 ```
 
 ```bash
-filedb-cli run seed.fql
+scriva-cli run seed.fql
 # or via pipe:
-cat seed.fql | filedb-cli run
+cat seed.fql | scriva-cli run
 ```
 
 ### Export / Import
 
 ```bash
 # Export to NDJSON
-filedb-cli export users > users_backup.ndjson
+scriva-cli export users > users_backup.ndjson
 
 # Import from NDJSON
-cat users_backup.ndjson | filedb-cli import users
+cat users_backup.ndjson | scriva-cli import users
 ```
 
 ### CLI connection flags
@@ -599,8 +599,8 @@ cat users_backup.ndjson | filedb-cli import users
 | Flag | Default | Description |
 |---|---|---|
 | `--host` | `localhost:5433` | gRPC server address |
-| `--socket` | `/tmp/filedb.sock` | Unix socket path (used automatically when the file exists) |
-| `--api-key` | `$FILEDB_API_KEY` | API key |
+| `--socket` | `/tmp/scriva.sock` | Unix socket path (used automatically when the file exists) |
+| `--api-key` | `$SCRIVA_API_KEY` | API key |
 | `--tls-ca` | *(none)* | Path to CA certificate PEM for TLS (enables TLS on TCP) |
 
 ---
@@ -629,18 +629,18 @@ Every record-bearing response (`insert`, `get`/`find`, `find-by-key`, `upsert`,
 
 ```bash
 # Keyed insert (duplicate key → AlreadyExists)
-filedb-cli insert users --key alice '{"name":"Alice","age":30}'
+scriva-cli insert users --key alice '{"name":"Alice","age":30}'
 
 # Upsert: insert-or-replace by key, returns the new rev
-filedb-cli upsert users alice '{"name":"Alice","age":31}'
+scriva-cli upsert users alice '{"name":"Alice","age":31}'
 
 # Read / update / delete by key
-filedb-cli find-by-key users alice
-filedb-cli update-by-key users alice '{"name":"Alice","age":32}'
-filedb-cli delete-by-key users alice
+scriva-cli find-by-key users alice
+scriva-cli update-by-key users alice '{"name":"Alice","age":32}'
+scriva-cli delete-by-key users alice
 
 # Compare-and-swap: only applies if the record is still at rev 2
-filedb-cli update-if-rev users alice 2 '{"name":"Alice","age":33}'
+scriva-cli update-if-rev users alice 2 '{"name":"Alice","age":33}'
 ```
 
 Over REST:
@@ -706,8 +706,8 @@ curl -X DELETE http://localhost:8080/v1/users/records/1 \
 ## OpenAPI spec (use from any language)
 
 The REST gateway is described by an OpenAPI (Swagger 2.0) spec generated from the
-proto, checked in at [`docs/openapi/filedb.swagger.json`](openapi/filedb.swagger.json).
-Regenerate it after changing `proto/filedb.proto`:
+proto, checked in at [`docs/openapi/scriva.swagger.json`](openapi/scriva.swagger.json).
+Regenerate it after changing `proto/scriva.proto`:
 
 ```bash
 make openapi   # requires the buf CLI
@@ -719,7 +719,7 @@ any language without hand-writing one — e.g. with
 
 ```bash
 openapi-generator generate \
-  -i docs/openapi/filedb.swagger.json \
+  -i docs/openapi/scriva.swagger.json \
   -g python \
   -o clients/python-generated
 ```
@@ -813,7 +813,7 @@ On the CLI, pass `--order-by field[:asc|:desc]` once per sort key:
 
 ```bash
 # team ascending, then score descending, then id (implicit)
-filedb-cli find roster --order-by team --order-by score:desc
+scriva-cli find roster --order-by team --order-by score:desc
 ```
 
 #### Keyset (cursor) pagination
@@ -832,12 +832,12 @@ that encodes the `(sort-key tuple, id)` of the last row you saw, so the next pag
 
 ```bash
 # First page
-filedb-cli find feed --order-by created_at:desc --limit 50
+scriva-cli find feed --order-by created_at:desc --limit 50
 # … prints 50 records, then:
 # next-page-token: eyJrIjpbMTcwMDAwMDAwMF0sImkiOjQyfQ
 
 # Next page — paste the token back
-filedb-cli find feed --order-by created_at:desc --limit 50 \
+scriva-cli find feed --order-by created_at:desc --limit 50 \
   --page-token eyJrIjpbMTcwMDAwMDAwMF0sImkiOjQyfQ
 ```
 
@@ -864,11 +864,11 @@ caller asked for:
 
 ```bash
 # Return only name and email, not the whole user document
-filedb-cli find users '{"field":"role","op":"eq","value":"admin"}' --fields name,email
+scriva-cli find users '{"field":"role","op":"eq","value":"admin"}' --fields name,email
 
 # Projection also works on point lookups
-filedb-cli get users 42 --fields name,email
-filedb-cli find-by-key users alice --fields name,email
+scriva-cli get users 42 --fields name,email
+scriva-cli find-by-key users alice --fields name,email
 ```
 
 Rules:
@@ -894,13 +894,13 @@ result per group.
 
 ```bash
 # Count every record (equivalent to len(find), but the engine never ships the rows)
-filedb-cli aggregate orders
+scriva-cli aggregate orders
 
 # Count just the open orders (any find filter works)
-filedb-cli aggregate orders '{"field":"status","op":"eq","value":"open"}'
+scriva-cli aggregate orders '{"field":"status","op":"eq","value":"open"}'
 
 # Per-region count + numeric aggregates over the "amount" field
-filedb-cli aggregate sales --group-by region --field amount --aggs count,sum,avg,min,max
+scriva-cli aggregate sales --group-by region --field amount --aggs count,sum,avg,min,max
 # region=apac count:1 sum:7 avg:7 min:7 max:7
 # region=eu   count:3 sum:35 avg:11.67 min:5 max:25
 # region=us   count:3 sum:60 avg:20 min:10 max:30
@@ -938,21 +938,21 @@ Secondary indexes accelerate equality lookups on any field from O(n) full scan t
 
 ```bash
 # Create an index on the "email" field
-filedb-cli ensure-index users email
+scriva-cli ensure-index users email
 
 # List indexes on a collection
-filedb-cli indexes users
+scriva-cli indexes users
 
 # Drop an index
-filedb-cli drop-index users email
+scriva-cli drop-index users email
 ```
 
 Once an index exists, `find` with a single `eq` **or a single range** (`gt`/`gte`/`lt`/`lte`) filter on that field uses the index automatically — no query hint needed. Range ordering is type-aware: a numeric field compares numerically (`age > 9` matches `10`), a string field lexically.
 
 ```bash
 # Uses the "age" index to read only the matching rows, not the whole collection
-filedb-cli ensure-index users age
-filedb-cli find users '{"field":"age","op":"gte","value":21}'
+scriva-cli ensure-index users age
+scriva-cli find users '{"field":"age","op":"gte","value":21}'
 ```
 
 Indexes are:
@@ -988,17 +988,17 @@ Group multiple operations into an atomic unit. All staged writes are applied on 
 
 ```bash
 # Begin a transaction (prints tx_id)
-TX=$(filedb-cli begin-tx orders)
+TX=$(scriva-cli begin-tx orders)
 
 # Stage writes inside the transaction
-filedb-cli insert orders '{"item":"widget","qty":1}' --tx-id "$TX"
-filedb-cli insert orders '{"item":"gadget","qty":2}' --tx-id "$TX"
+scriva-cli insert orders '{"item":"widget","qty":1}' --tx-id "$TX"
+scriva-cli insert orders '{"item":"gadget","qty":2}' --tx-id "$TX"
 
 # Commit
-filedb-cli commit-tx "$TX"
+scriva-cli commit-tx "$TX"
 
 # Or rollback
-filedb-cli rollback-tx "$TX"
+scriva-cli rollback-tx "$TX"
 ```
 
 Open transactions are held in server memory. If a client disconnects without
@@ -1017,7 +1017,7 @@ also force a pass immediately, for example to reclaim space after a bulk delete
 or to shrink a collection before backing it up:
 
 ```bash
-filedb-cli compact products
+scriva-cli compact products
 ```
 
 The command runs a **synchronous, forced** compaction: it ignores the
@@ -1034,11 +1034,11 @@ curl -H "x-api-key: dev-key" -X POST \
 
 ## Backup & restore
 
-`filedb-cli backup` streams a consistent, gzip-compressed snapshot of the entire
+`scriva-cli backup` streams a consistent, gzip-compressed snapshot of the entire
 database from a running server to a local file:
 
 ```bash
-filedb-cli backup db-$(date +%F).tar.gz
+scriva-cli backup db-$(date +%F).tar.gz
 ```
 
 The snapshot is taken without stopping the server: each collection is captured at
@@ -1050,7 +1050,7 @@ Restore is a plain extract into a data directory — no special import step:
 
 ```bash
 tar xzf db-2026-07-03.tar.gz -C ./data
-filedb serve --data ./data --api-key dev-key
+scriva serve --data ./data --api-key dev-key
 ```
 
 The archive lays files out as `<collection>/<file>`, so it also doubles as a
@@ -1073,7 +1073,7 @@ Start a normal server as the **leader** — no extra flags; every server is
 replication-capable by default:
 
 ```bash
-filedb serve --data ./leader-data --api-key dev-key
+scriva serve --data ./leader-data --api-key dev-key
 ```
 
 Point a **follower** at it with `--replicate-from`. Give the follower its own data
@@ -1081,10 +1081,10 @@ directory and its own listen addresses (so both can run on one machine for a
 demo):
 
 ```bash
-filedb serve \
+scriva serve \
   --replicate-from 127.0.0.1:5433 \
   --data ./follower-data \
-  --grpc-addr :6433 --rest-addr :9080 --socket /tmp/filedb-follower.sock \
+  --grpc-addr :6433 --rest-addr :9080 --socket /tmp/scriva-follower.sock \
   --metrics-addr '' \
   --api-key dev-key
 ```
@@ -1146,7 +1146,7 @@ from its upstream, lifts the read-only guard, and starts accepting writes.
 
 ```bash
 # On the follower, once it has caught up (lag 0):
-filedb-cli --host localhost:6433 --api-key dev-key promote
+scriva-cli --host localhost:6433 --api-key dev-key promote
 # promoted: role=leader lsn=1234 lag=0
 
 # Or over REST:
@@ -1164,7 +1164,7 @@ up). If the leader is unrecoverable and you accept losing its un-replicated tail
 override the guard:
 
 ```bash
-filedb-cli --host localhost:6433 --api-key dev-key promote --force
+scriva-cli --host localhost:6433 --api-key dev-key promote --force
 # or REST: curl ... /v1/replication/promote -d '{"force":true}'
 ```
 
@@ -1207,7 +1207,7 @@ config file). Every inserted record that doesn't carry its own deadline expires
 that long after it was written:
 
 ```bash
-filedb serve --data ./data --default-ttl 24h   # inserts expire after a day
+scriva serve --data ./data --default-ttl 24h   # inserts expire after a day
 ```
 
 A default of `0` (the default) means records never expire.
@@ -1216,15 +1216,15 @@ A default of `0` (the default) means records never expire.
 creation time, overriding the server-wide default and surviving restarts:
 
 ```bash
-filedb-cli create-collection sessions --default-ttl 30m
+scriva-cli create-collection sessions --default-ttl 30m
 ```
 
 **Per-record TTL.** Individual writes can set (or reset) a record's deadline
 with `--ttl`, overriding any collection default:
 
 ```bash
-filedb-cli insert sessions '{"user":"alice"}' --ttl 15m   # expires in 15 min
-filedb-cli update sessions 7 '{"user":"alice"}' --ttl 15m # slide the deadline
+scriva-cli insert sessions '{"user":"alice"}' --ttl 15m   # expires in 15 min
+scriva-cli update sessions 7 '{"user":"alice"}' --ttl 15m # slide the deadline
 ```
 
 Over the API these map to `ttl_seconds` on the `Insert`/`InsertMany`/`Update`
@@ -1242,7 +1242,7 @@ Expiry semantics:
 - Deadlines are **durable**: they survive server restarts.
 
 **Embedded engine.** Finer-grained, per-record deadlines are available through
-the embeddable Go engine (`import "github.com/srjn45/filedbv2/engine"`):
+the embeddable Go engine (`import "github.com/srjn45/scriva/engine"`):
 
 ```go
 // Explicit per-record deadline, overriding any collection default.
@@ -1276,21 +1276,21 @@ openssl req -x509 -newkey rsa:4096 -nodes \
 Start with TLS:
 
 ```bash
-filedb serve --data ./data --api-key my-secret-key \
+scriva serve --data ./data --api-key my-secret-key \
   --tls-cert cert.pem --tls-key key.pem
 ```
 
-Or in `filedb.yaml`:
+Or in `scriva.yaml`:
 
 ```yaml
-tls_cert: /etc/filedb/cert.pem
-tls_key:  /etc/filedb/key.pem
+tls_cert: /etc/scriva/cert.pem
+tls_key:  /etc/scriva/key.pem
 ```
 
 ### CLI with TLS
 
 ```bash
-filedb-cli --tls-ca cert.pem --host localhost:5433 collections
+scriva-cli --tls-ca cert.pem --host localhost:5433 collections
 ```
 
 When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certificate against the provided CA. Without `--tls-ca`, the CLI connects insecurely (or uses the Unix socket if available).
@@ -1299,7 +1299,7 @@ When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certi
 
 ## Web UI
 
-FileDB v2 ships a browser-based admin UI built with React 18, TypeScript, Vite, and Tailwind CSS (dark theme). It connects to the existing REST gateway at `:8080`.
+ScrivaDB ships a browser-based admin UI built with React 18, TypeScript, Vite, and Tailwind CSS (dark theme). It connects to the existing REST gateway at `:8080`.
 
 **Features:** browse and manage collections (create, drop), full CRUD on records with filter/order/pagination, secondary index management, collection stats (auto-refreshes every 30 s), live Watch event feed via streaming, and connection settings (URL + API key) saved to `localStorage`.
 
@@ -1312,7 +1312,7 @@ npm run dev
 # Open http://localhost:5173
 ```
 
-The Vite dev server proxies all `/v1` requests to `http://localhost:8080`, so the FileDB server must be running (`make run`).
+The Vite dev server proxies all `/v1` requests to `http://localhost:8080`, so the ScrivaDB server must be running (`make run`).
 
 ### Production build
 
@@ -1322,27 +1322,27 @@ npm run build
 # Output in clients/web/dist/
 ```
 
-Serve `dist/` with any static file server; point it at a running FileDB REST gateway.
+Serve `dist/` with any static file server; point it at a running ScrivaDB REST gateway.
 
 ---
 
 ## Client SDKs
 
-FileDB ships hand-written, idiomatic client libraries for seven languages. Every
-SDK wraps the same gRPC API (`proto/filedb.proto`), takes the same connection
+ScrivaDB ships hand-written, idiomatic client libraries for seven languages. Every
+SDK wraps the same gRPC API (`proto/scriva.proto`), takes the same connection
 config (`host`, `port`, `api_key`, optional TLS CA cert), and exposes every RPC —
 including the streaming `Find` and `Watch` calls in each language's native
 iterator/stream style.
 
 | Language | Install | Reference |
 |---|---|---|
-| Python | `pip install filedbv2` | [clients/python](../clients/python/README.md) |
-| JavaScript / TypeScript | `npm install filedbv2` | [clients/js](../clients/js/README.md) |
-| PHP | `composer require srjn45/filedbv2` | [clients/php](../clients/php/README.md) |
-| Java | `com.srjn45:filedbv2-client` (Maven Central) | [clients/java](../clients/java/README.md) |
-| Ruby | `gem install filedbv2` | [clients/ruby](../clients/ruby/README.md) |
-| Rust | `cargo add filedbv2` | [clients/rust](../clients/rust/README.md) |
-| C# / .NET | `dotnet add package FileDBv2.Client` | [clients/csharp](../clients/csharp/README.md) |
+| Python | `pip install scriva` | [clients/python](../clients/python/README.md) |
+| JavaScript / TypeScript | `npm install scriva` | [clients/js](../clients/js/README.md) |
+| PHP | `composer require srjn45/scriva` | [clients/php](../clients/php/README.md) |
+| Java | `com.srjn45:scriva-client` (Maven Central) | [clients/java](../clients/java/README.md) |
+| Ruby | `gem install scriva` | [clients/ruby](../clients/ruby/README.md) |
+| Rust | `cargo add scriva` | [clients/rust](../clients/rust/README.md) |
+| C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](../clients/csharp/README.md) |
 
 The per-language sections below cover install and basic usage; each client's
 `README.md` has the full API reference, filter syntax, watch streaming, and
@@ -1355,13 +1355,13 @@ transaction examples.
 Install:
 
 ```bash
-pip install filedbv2
+pip install scriva
 ```
 
 ```python
-from filedbv2 import FileDB
+from scriva import ScrivaDB
 
-db = FileDB("localhost", 5433, "dev-key")
+db = ScrivaDB("localhost", 5433, "dev-key")
 
 db.create_collection("users")
 
@@ -1378,7 +1378,7 @@ db.drop_collection("users")
 db.close()
 ```
 
-`FileDB` is also a context manager (`with FileDB(...) as db:`). Watch returns an
+`ScrivaDB` is also a context manager (`with ScrivaDB(...) as db:`). Watch returns an
 iterator of event dicts:
 
 ```python
@@ -1389,7 +1389,7 @@ for event in db.watch("users"):
 With TLS:
 
 ```python
-db = FileDB("myserver.example.com", 5433, "api-key", tls_ca_cert="/path/to/ca.crt")
+db = ScrivaDB("myserver.example.com", 5433, "api-key", tls_ca_cert="/path/to/ca.crt")
 ```
 
 See [clients/python/README.md](../clients/python/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
@@ -1401,13 +1401,13 @@ See [clients/python/README.md](../clients/python/README.md) for the full API ref
 Install:
 
 ```bash
-npm install filedbv2
+npm install scriva
 ```
 
 ```typescript
-import { FileDB } from 'filedbv2';
+import { ScrivaDB } from 'scriva';
 
-const db = new FileDB('localhost', 5433, 'dev-key');
+const db = new ScrivaDB('localhost', 5433, 'dev-key');
 
 await db.createCollection('users');
 
@@ -1432,12 +1432,12 @@ await db.dropCollection('users');
 db.close();
 ```
 
-CommonJS works too: `const { FileDB } = require('filedbv2')`.
+CommonJS works too: `const { ScrivaDB } = require('scriva')`.
 
 With TLS:
 
 ```typescript
-const db = FileDB.fromTlsCertPath('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+const db = ScrivaDB.fromTlsCertPath('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
 ```
 
 See [clients/js/README.md](../clients/js/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
@@ -1449,16 +1449,16 @@ See [clients/js/README.md](../clients/js/README.md) for the full API reference, 
 Install:
 
 ```bash
-composer require srjn45/filedbv2
+composer require srjn45/scriva
 ```
 
 ```php
 <?php
 require 'vendor/autoload.php';
 
-use FileDBv2\FileDB;
+use ScrivaDB\ScrivaDB;
 
-$db = new FileDB('localhost', 5433, 'dev-key');
+$db = new ScrivaDB('localhost', 5433, 'dev-key');
 
 $db->createCollection('users');
 
@@ -1487,7 +1487,7 @@ foreach ($db->watch('users') as $event) {
 With TLS:
 
 ```php
-$db = new FileDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+$db = new ScrivaDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
 ```
 
 See [clients/php/README.md](../clients/php/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
@@ -1501,16 +1501,16 @@ Add the dependency to your Gradle or Maven project:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.srjn45:filedbv2-client:0.1.0")
+    implementation("com.srjn45:scriva-client:0.1.0")
 }
 ```
 
 ```java
-import com.srjn45.filedbv2.FileDBClient;
+import com.srjn45.scriva.ScrivaDBClient;
 import java.util.List;
 import java.util.Map;
 
-try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
+try (ScrivaDBClient db = new ScrivaDBClient("localhost", 5433, "dev-key")) {
     db.createCollection("users");
 
     long id = db.insert("users", Map.of("name", "Alice", "age", 30));
@@ -1530,7 +1530,7 @@ try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
 With TLS:
 
 ```java
-FileDBClient db = new FileDBClient("myserver.example.com", 5433, "api-key",
+ScrivaDBClient db = new ScrivaDBClient("myserver.example.com", 5433, "api-key",
         new java.io.File("/path/to/ca.crt"));
 ```
 
@@ -1543,19 +1543,19 @@ See [clients/java/README.md](../clients/java/README.md) for the full API referen
 Install:
 
 ```bash
-gem install filedbv2
+gem install scriva
 ```
 
 Or add to your `Gemfile`:
 
 ```ruby
-gem "filedbv2", "~> 0.1"
+gem "scriva", "~> 0.1"
 ```
 
 ```ruby
-require "filedbv2"
+require "scriva"
 
-db = FileDBv2::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
+db = Scriva::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
 
 db.create_collection("users")
 
@@ -1579,7 +1579,7 @@ db.close
 Use `.open` for automatic close:
 
 ```ruby
-FileDBv2::Client.open(host: "localhost", port: 5433, api_key: "dev-key") do |db|
+Scriva::Client.open(host: "localhost", port: 5433, api_key: "dev-key") do |db|
   db.create_collection("orders")
   # ...
 end
@@ -1596,7 +1596,7 @@ end
 With TLS:
 
 ```ruby
-db = FileDBv2::Client.new(
+db = Scriva::Client.new(
   host: "myserver.example.com",
   port: 5433,
   api_key: "api-key",
@@ -1614,7 +1614,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-filedbv2 = "0.1"
+scriva = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -1622,12 +1622,12 @@ serde_json = "1"
 **Requires:** `protoc` on `PATH` at build time (used by `tonic-build` for code generation).
 
 ```rust
-use filedbv2::{FileDB, FilterInput, FilterOp, FindOptions};
+use scriva::{ScrivaDB, FilterInput, FilterOp, FindOptions};
 use futures::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut db = FileDB::connect("localhost", 5433, "dev-key").await?;
+    let mut db = ScrivaDB::connect("localhost", 5433, "dev-key").await?;
 
     db.create_collection("users").await?;
 
@@ -1664,7 +1664,7 @@ With TLS:
 
 ```rust
 let ca_pem = std::fs::read("/path/to/ca.pem")?;
-let mut db = FileDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
+let mut db = ScrivaDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
 ```
 
 See [clients/rust/README.md](../clients/rust/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
@@ -1676,13 +1676,13 @@ See [clients/rust/README.md](../clients/rust/README.md) for the full API referen
 Install:
 
 ```bash
-dotnet add package FileDBv2.Client --version 0.1.0
+dotnet add package Scriva.Client --version 0.1.0
 ```
 
 ```csharp
-using FileDBv2.Client;
+using Scriva.Client;
 
-await using var db = new FileDB("localhost", 5433, "dev-key");
+await using var db = new ScrivaDB("localhost", 5433, "dev-key");
 
 await db.CreateCollectionAsync("users");
 
@@ -1711,7 +1711,7 @@ await db.DeleteAsync("users", id);
 await db.DropCollectionAsync("users");
 ```
 
-`FileDB` implements both `IAsyncDisposable` (`await using`) and `IDisposable` (`using`). Watch returns an `IAsyncEnumerable<WatchEventResult>`:
+`ScrivaDB` implements both `IAsyncDisposable` (`await using`) and `IDisposable` (`using`). Watch returns an `IAsyncEnumerable<WatchEventResult>`:
 
 ```csharp
 using var cts = new CancellationTokenSource();
@@ -1725,7 +1725,7 @@ cts.Cancel(); // stop the stream
 With TLS:
 
 ```csharp
-var db = new FileDB("myserver.example.com", 5433, "api-key", "/path/to/ca.crt");
+var db = new ScrivaDB("myserver.example.com", 5433, "api-key", "/path/to/ca.crt");
 ```
 
 See [clients/csharp/README.md](../clients/csharp/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
@@ -1734,7 +1734,7 @@ See [clients/csharp/README.md](../clients/csharp/README.md) for the full API ref
 
 ## Prometheus metrics
 
-When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
+When `--metrics-addr` is set (default `:9090`), ScrivaDB exposes a `/metrics` endpoint in Prometheus format.
 
 ```bash
 curl http://localhost:9090/metrics
@@ -1744,11 +1744,11 @@ Available metrics:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `filedb_collection_records_total` | Gauge | `collection` | Live record count per collection |
-| `filedb_collection_segments_total` | Gauge | `collection` | Segment file count per collection |
-| `filedb_compaction_runs_total` | Counter | `collection` | Total compaction runs per collection |
-| `filedb_compaction_duration_seconds` | Histogram | `collection` | Compaction run duration |
-| `filedb_grpc_request_duration_seconds` | Histogram | `method`, `code` | gRPC unary request duration by method and status code |
+| `scriva_collection_records_total` | Gauge | `collection` | Live record count per collection |
+| `scriva_collection_segments_total` | Gauge | `collection` | Segment file count per collection |
+| `scriva_compaction_runs_total` | Counter | `collection` | Total compaction runs per collection |
+| `scriva_compaction_duration_seconds` | Histogram | `collection` | Compaction run duration |
+| `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` | gRPC unary request duration by method and status code |
 
 Disable metrics by setting `--metrics-addr ""` (or `metrics_addr: ""` in the config file).
 
@@ -1756,7 +1756,7 @@ Example Prometheus scrape config:
 
 ```yaml
 scrape_configs:
-  - job_name: filedb
+  - job_name: scriva
     static_configs:
       - targets: ['localhost:9090']
 ```
@@ -1764,7 +1764,7 @@ scrape_configs:
 
 ## Structured logging
 
-FileDB logs through the standard library [`log/slog`](https://pkg.go.dev/log/slog).
+ScrivaDB logs through the standard library [`log/slog`](https://pkg.go.dev/log/slog).
 Every gRPC request produces exactly one structured record once it returns,
 carrying the method, the authenticated principal, the wall-clock duration, and
 the gRPC status code. Successful calls log at `info`; failed calls at `error`.
@@ -1778,13 +1778,13 @@ Two flags control output:
 
 ```bash
 # machine-parseable JSON logs at info and above
-filedb serve --data ./data --log-format json --log-level info
+scriva serve --data ./data --log-format json --log-level info
 ```
 
 A JSON request record looks like:
 
 ```json
-{"time":"2026-07-03T12:00:00Z","level":"INFO","msg":"grpc request","method":"/filedb.v1.FileDB/Insert","principal":"default","duration":"412.7µs","code":"OK"}
+{"time":"2026-07-03T12:00:00Z","level":"INFO","msg":"grpc request","method":"/scriva.v1.Scriva/Insert","principal":"default","duration":"412.7µs","code":"OK"}
 ```
 
 The `principal` is the `name` of the API key that authenticated the call (or
@@ -1794,7 +1794,7 @@ The `principal` is the `name` of the API key that authenticated the call (or
 
 ## Health & readiness probes
 
-FileDB exposes both a standard gRPC health service and two HTTP probes so load
+ScrivaDB exposes both a standard gRPC health service and two HTTP probes so load
 balancers and orchestrators (e.g. Kubernetes) can gate traffic.
 
 ### gRPC health

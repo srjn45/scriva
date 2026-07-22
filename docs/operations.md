@@ -1,6 +1,6 @@
 # Operations
 
-Operator runbooks for running FileDB in production. Start with
+Operator runbooks for running ScrivaDB in production. Start with
 [getting-started.md](getting-started.md) for setup and
 [architecture.md](architecture.md) for how the internals work.
 
@@ -8,7 +8,7 @@ Operator runbooks for running FileDB in production. Start with
 
 ## Manual failover (promoting a follower)
 
-FileDB replicates a **leader** to one or more read-only **followers** (see
+ScrivaDB replicates a **leader** to one or more read-only **followers** (see
 [Replication](getting-started.md#replication-leader--follower)). Replication is
 asynchronous and there is **no automatic leader election** — recovering write
 availability after a leader loss is a deliberate operator action: promote a
@@ -55,7 +55,7 @@ observed; the `Promote` call itself reports the lag it measured.
 **3. Promote.**
 
 ```bash
-filedb-cli --host <follower>:5433 --api-key <key> promote
+scriva-cli --host <follower>:5433 --api-key <key> promote
 # promoted: role=leader lsn=1234 lag=0
 ```
 
@@ -105,7 +105,7 @@ When the leader is **unrecoverable** and you accept losing its un-replicated
 tail, force the promotion past the guard:
 
 ```bash
-filedb-cli --host <follower>:5433 --api-key <key> promote --force
+scriva-cli --host <follower>:5433 --api-key <key> promote --force
 # or REST: curl ... /v1/replication/promote -d '{"force":true}'
 ```
 
@@ -171,11 +171,11 @@ response reaches the client.
   and, ideally, append-only/immutable semantics (e.g. a WORM mount or a shipper
   that tails the file into a tamper-evident store). Keeping it off the data
   directory avoids coupling audit retention to database backups.
-- **Rotation.** FileDB opens the path with `O_APPEND` and holds it open for the
+- **Rotation.** ScrivaDB opens the path with `O_APPEND` and holds it open for the
   process lifetime; it does not rotate the file itself. Use `copytruncate`-style
   rotation (e.g. `logrotate --copytruncate`) so the open descriptor keeps writing
   to the same inode, or rotate during a restart. A plain `rename`+`create` leaves
-  FileDB writing to the renamed (still-open) file until the next restart.
+  ScrivaDB writing to the renamed (still-open) file until the next restart.
 - **Volume.** Only mutating/admin RPCs and auth failures are recorded, so a
   read-heavy workload produces a modest, predictable audit volume; a write-heavy
   one produces roughly one line per write. Size retention accordingly.

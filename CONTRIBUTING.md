@@ -1,6 +1,6 @@
-# Contributing to FileDB v2
+# Contributing to ScrivaDB
 
-Thanks for your interest in improving FileDB v2! This guide covers everything
+Thanks for your interest in improving ScrivaDB! This guide covers everything
 you need to build, test, and submit a change. For the full developer reference
 — project layout, distribution, and per-feature conventions — see
 [CLAUDE.md](CLAUDE.md).
@@ -12,7 +12,7 @@ Requirements: **Go 1.22+**.
 ## Build
 
 ```bash
-make build        # compiles bin/filedb and bin/filedb-cli
+make build        # compiles bin/scriva and bin/scriva-cli
 make clean        # removes bin/, coverage.out, dist/
 ```
 
@@ -39,15 +39,15 @@ Install golangci-lint: https://golangci-lint.run/usage/install/
 ## Run locally
 
 ```bash
-make run          # builds + starts: bin/filedb serve --data ./data --api-key dev-key
-make cli          # builds + starts: bin/filedb-cli --api-key dev-key (REPL)
+make run          # builds + starts: bin/scriva serve --data ./data --api-key dev-key
+make cli          # builds + starts: bin/scriva-cli --api-key dev-key (REPL)
 ```
 
 | Service | Address |
 |---|---|
 | gRPC (TCP) | `:5433` |
 | REST gateway | `:8080` |
-| Unix socket | `/tmp/filedb.sock` |
+| Unix socket | `/tmp/scriva.sock` |
 | Prometheus metrics | `:9090/metrics` |
 
 You can also run the server in a container — see the
@@ -77,7 +77,7 @@ Before opening a PR, make sure:
       (usage), `docs/architecture.md` (internals), and `README.md` if the key
       properties change. Mark the relevant item done in `ROADMAP.md`.
 - [ ] New API changes follow the workflow in [CLAUDE.md](CLAUDE.md): edit
-      `proto/filedb.proto` first, run `make proto`, then implement the handler,
+      `proto/scriva.proto` first, run `make proto`, then implement the handler,
       engine method, CLI command, and tests.
 - [ ] Integration tests live in `server/grpc_integration_test.go` and use the
       real in-process gRPC server — never mock the engine.

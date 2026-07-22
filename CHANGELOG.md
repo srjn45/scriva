@@ -1,20 +1,20 @@
 # Changelog
 
-All notable changes to FileDB v2 are documented here. The format is based on
+All notable changes to ScrivaDB (formerly FileDB v2) are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Versioning & stability policy
 
-As of **v1.0.0 the public surface is frozen.** FileDB follows semver, and the
+As of **v1.0.0 the public surface is frozen.** ScrivaDB follows semver, and the
 1.0 release establishes the guarantee that had been deferred through the `0.x`
 line: **no breaking changes without a major (v2) bump.** This covers all three
 public surfaces:
 
-- the **gRPC/REST API** (`proto/filedb.proto` — RPCs, message fields, enum
+- the **gRPC/REST API** (`proto/scriva.proto` — RPCs, message fields, enum
   values, and the REST routes generated from them);
-- the **CLI** (`filedb` and `filedb-cli` commands, flags, and config-file keys);
-- the **Go embedding API** (`engine`, `filedb`, `store`, `query` — import paths
+- the **CLI** (`scriva` and `scriva-cli` commands, flags, and config-file keys);
+- the **Go embedding API** (`engine`, `scriva`, `store`, `query` — import paths
   and exported types/signatures).
 
 Concretely, within the `v1` line:
@@ -38,9 +38,84 @@ embedding-specific contract.
 
 ---
 
-## [Unreleased]
+## v1.0.0 — ScrivaDB (unreleased)
 
-_Nothing yet — further work resumes here._
+**The project formerly known as FileDB v2 is now ScrivaDB.** This is a rename —
+the same storage engine, wire semantics, and on-disk format as FileDB v1.1.0,
+re-baselined to **v1.0.0** under a new name (`scriva`), a new Go module path, and
+new distribution channels. There is **no data migration**: an existing data
+directory opens unchanged. The break is entirely in identifiers — import paths,
+the proto package, binary/env/metric names — so anything that references those
+must be updated. See the [migration note](#formerly-filedb-v2) below.
+
+### ⚠️ Breaking changes (rename)
+
+- **Go module path** — `github.com/srjn45/filedbv2` → **`github.com/srjn45/scriva`**.
+  The embedded façade is the root package `scriva` (`scriva.Open`); the public
+  `engine`, `store`, and `query` packages move with the module. Update every
+  import path.
+- **Proto wire package & service** — the proto package `filedb.v1` → **`scriva.v1`**
+  and the service `FileDB` → **`Scriva`**. Because the fully-qualified service
+  name changed, **every gRPC method path changed** (e.g.
+  `/filedb.v1.FileDB/Insert` → `/scriva.v1.Scriva/Insert`). Regenerate any
+  hand-built stubs; the official SDKs and the checked-in OpenAPI spec
+  (`docs/openapi/scriva.swagger.json`) are already regenerated. The REST routes
+  (`/v1/...`) are **unchanged**.
+- **Binaries** — `filedb`/`filedb-cli` → **`scriva`/`scriva-cli`**.
+- **Environment variable** — `FILEDB_API_KEY` → **`SCRIVA_API_KEY`**. The legacy
+  `FILEDB_API_KEY` name is still honoured as a **deprecated fallback for one
+  release cycle**, printing a one-time deprecation warning to stderr when used;
+  it will be removed in a later release. Switch to `SCRIVA_API_KEY`.
+- **Prometheus metrics** — the `filedb_*` prefix is **renamed outright** to
+  `scriva_*` (`scriva_collection_records_total`, `scriva_collection_segments_total`,
+  `scriva_collection_bytes`, `scriva_compaction_runs_total`,
+  `scriva_compaction_duration_seconds`, `scriva_grpc_request_duration_seconds`,
+  `scriva_scan_rows_scanned`, `scriva_quota_rejected_total`). There is **no dual
+  emission** — **update your dashboards and alerts** to the new names.
+- **Paths** — the default Unix socket `/tmp/filedb.sock` → **`/tmp/scriva.sock`**,
+  the example config file `filedb.yaml` → **`scriva.yaml`**, and the CLI REPL
+  history file `~/.filedb_history` → **`~/.scriva_history`**. The Docker image is
+  now `ghcr.io/srjn45/scriva`.
+
+### Distribution — new install channels
+
+- **Binaries** — Homebrew (cask via the `srjn45/scriva` tap), Scoop, apt/rpm
+  packages, and an AUR package, in addition to the tagged tarball releases.
+- **Docker** — multi-arch (amd64 + arm64), **cosign-signed** images published to
+  both `ghcr.io/srjn45/scriva` and Docker Hub.
+- **Client SDKs** — the seven official clients publish under their new registry
+  names:
+
+  | Language | Install |
+  |---|---|
+  | Python | `pip install scriva` |
+  | JavaScript / TypeScript | `npm i scriva` |
+  | PHP | `composer require srjn45/scriva` |
+  | Java | `com.srjn45:scriva-client` (Maven Central) |
+  | Ruby | `gem install scriva` |
+  | Rust | `cargo add scriva` |
+  | C# / .NET | `dotnet add package Scriva.Client` |
+
+### Formerly FileDB v2
+
+ScrivaDB is a continuation of **FileDB v2**, not a new project — the FileDB v1.1.0
+codebase renamed and re-tagged as ScrivaDB v1.0.0. The two do **not** share a
+module path or a version line, so upgrading is a deliberate migration, not a
+`go get -u`:
+
+- **Existing FileDB importers stay put.** Code that imports
+  `github.com/srjn45/filedbv2` (and its `/engine`, `/store`, `/query`
+  sub-packages) keeps building against the existing FileDB tags (`v1.1.0` and
+  earlier). Those tags are frozen and remain resolvable.
+- **New users adopt ScrivaDB at v1.0.0.** Depend on `github.com/srjn45/scriva`
+  (façade) or `github.com/srjn45/scriva/engine` at `v1.0.0`, install the new
+  binaries/SDKs above, and update the renamed identifiers listed under *Breaking
+  changes*.
+- The on-disk segment/index format is byte-for-byte identical to FileDB v1.1.0,
+  so a data directory written by FileDB opens unchanged under ScrivaDB.
+
+The FileDB v1.1.0 and earlier entries below are preserved verbatim as the
+historical record under the former name.
 
 ## [1.1.0] — 2026-07-22
 

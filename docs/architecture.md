@@ -1,8 +1,8 @@
-# FileDB v2 — Architecture
+# ScrivaDB — Architecture
 
 ## Overview
 
-FileDB v2 is a lightweight, append-only, file-based document database written in Go. It exposes a gRPC API (with a REST gateway) and stores data as human-readable NDJSON files on disk.
+ScrivaDB is a lightweight, append-only, file-based document database written in Go. It exposes a gRPC API (with a REST gateway) and stores data as human-readable NDJSON files on disk.
 
 ---
 
@@ -105,7 +105,7 @@ hot path pays nothing.
 
 Per-collection budgets are supplied two ways that converge on the same
 `CollectionConfig` fields: the embedded façade sets `MaxRecords`/`MaxBytes`
-directly (`filedb.WithMaxRecords`/`WithMaxBytes`), while the server passes a
+directly (`scriva.WithMaxRecords`/`WithMaxBytes`), while the server passes a
 DB-wide `Quotas` name→budget map that `OpenCollection` overlays onto each
 collection by name. Per-**key** quotas are out of scope — the engine has no key
 identity on the write path.
@@ -246,7 +246,7 @@ hooks so the default and embedded paths add nothing:
    `rows_returned`, `index_used`, and `duration`. Logging the shape rather than
    the values makes the line safe to aggregate and keeps record data out of the
    logs.
-2. **Rows-scanned metric.** A `filedb_scan_rows_scanned` Prometheus histogram
+2. **Rows-scanned metric.** A `scriva_scan_rows_scanned` Prometheus histogram
    (labelled by `collection`) records `RowsScanned` for every `Find`, via a
    `WithScanObserver` hook that calls `metrics.ObserveScan`. As with compaction,
    the engine never references the metrics package — the server owns the
@@ -254,7 +254,7 @@ hooks so the default and embedded paths add nothing:
 
 Together an operator can spot an unindexed hot query two ways: a `WARN` line
 showing `index_used=false` with `rows_scanned ≫ rows_returned`, or a rising
-`filedb_scan_rows_scanned` histogram for a collection. The fix — an index on the
+`scriva_scan_rows_scanned` histogram for a collection. The fix — an index on the
 filtered field — flips `index_used` to `true` and collapses `rows_scanned`.
 
 ---
@@ -624,7 +624,7 @@ After compaction, adjacent segments smaller than 10% of `SegmentMaxSize` are mer
 Operators can force a compaction pass without waiting for the dirty-ratio or
 timer trigger — for example to reclaim space immediately or to quiesce a
 collection before a backup. `Collection.CompactNow()` (exposed as the `Compact`
-RPC and `filedb-cli compact <collection>`) runs the same algorithm as the
+RPC and `scriva-cli compact <collection>`) runs the same algorithm as the
 background pass with two differences:
 
 - **The dirty-ratio gate is skipped** (`compact(force=true)`), so the merge runs
@@ -707,24 +707,24 @@ cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that windo
 
 ## Backup / snapshot
 
-`DB.SnapshotTo(io.Writer)` (the `Snapshot` RPC and `filedb-cli backup`) writes a
+`DB.SnapshotTo(io.Writer)` (the `Snapshot` RPC and `scriva-cli backup`) writes a
 **gzip-compressed tar** of the whole database — one entry per collection file,
 named `<collection>/<file>`. Because the on-disk format is just append-only
 NDJSON plus small sidecar files, a backup is a plain file copy; restore is a
 plain extract:
 
 ```bash
-filedb-cli backup db.tar.gz
+scriva-cli backup db.tar.gz
 tar xzf db.tar.gz -C ./data      # then start the server with --data ./data
 ```
 
-**Consistency** is layered to match FileDB's guarantees without a global stop:
+**Consistency** is layered to match ScrivaDB's guarantees without a global stop:
 
 - The DB registry is held read-locked for the whole archive, so no collection is
   created, dropped, or reopened mid-snapshot.
 - Each collection's files are copied while its **own read lock** is held, so no
   write, rotation, or compaction can mutate them during the copy — the archive
-  captures a per-collection point in time. (FileDB has no cross-collection
+  captures a per-collection point in time. (ScrivaDB has no cross-collection
   transactions, so per-collection consistency is the strongest meaningful
   guarantee.)
 - Segments are append-only, so even the active segment is captured at a valid
@@ -747,7 +747,7 @@ because binary streaming does not map cleanly onto the REST gateway.
 
 ## Replication (leader → follower)
 
-FileDB's append-only segment log *is already a write-ahead log*, which makes
+ScrivaDB's append-only segment log *is already a write-ahead log*, which makes
 leader→follower log shipping the natural HA primitive (R1). A follower stays
 consistent with a leader by tailing its committed writes and applying them
 through the normal write path, so its primary index, secondary indexes, keys,
@@ -842,7 +842,7 @@ caught-up follower. The engine owns a `role` flag (leader by default; follower
 when opened with `CollectionConfig.Follower`, which the server sets in
 `--replicate-from` mode) and exposes `DB.Promote(maxLag, force)` as plain Go —
 still no gRPC/protobuf in the engine. The server's admin `Promote` RPC (POST
-`/v1/replication/promote`) maps onto it; the CLI wraps it as `filedb-cli promote`.
+`/v1/replication/promote`) maps onto it; the CLI wraps it as `scriva-cli promote`.
 
 A promotion:
 
@@ -880,7 +880,7 @@ admin ACLs land in S3.
 
 ```
 ┌───────────────────────────────────────────────┐
-│  filedb binary                                │
+│  scriva binary                                │
 │                                               │
 │  ┌────────────────┐   ┌──────────────────────┐│
 │  │ gRPC/TCP :5433 │   │ REST gateway :8080   ││
@@ -888,7 +888,7 @@ admin ACLs land in S3.
 │  └───────┬────────┘   └──────────┬───────────┘│
 │          │                       │             │
 │  ┌───────▼───────────────────────▼───────────┐ │
-│  │ Unix socket /tmp/filedb.sock              │ │
+│  │ Unix socket /tmp/scriva.sock              │ │
 │  │ (local connections, always insecure)      │ │
 │  └───────────────────────┬───────────────────┘ │
 │                          │                     │
@@ -913,7 +913,7 @@ All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors 
 
 **Scoped keys.** A key resolves to a principal with a scope of either `read` or `read-write`. The interceptor classifies each RPC by its method name: mutating RPCs (`Insert`, `Update`, `Delete`, `CreateCollection`, `DropCollection`, `EnsureIndex`, `DropIndex`, `Compact`, and the transaction verbs) require `read-write`; the rest (`Find`, `FindById`, `ListCollections`, `ListIndexes`, `CollectionStats`, `Watch`, `Snapshot`) are reads. A read-scoped key presenting on a write RPC is rejected with `PermissionDenied` (distinct from the `Unauthenticated` returned for a missing/unknown key). Unknown method names are treated as writes, so a read-only key can never slip through a newly added RPC that predates its classification.
 
-**Key sources.** Keys come from the config file's `keys:` list (`{key, name, scope}` entries). The legacy single `--api-key` / `FILEDB_API_KEY` still works and is registered as an additional `read-write` key named `default`, so existing single-key and no-auth (empty) deployments are unchanged.
+**Key sources.** Keys come from the config file's `keys:` list (`{key, name, scope}` entries). The legacy single `--api-key` / `SCRIVA_API_KEY` still works and is registered as an additional `read-write` key named `default`, so existing single-key and no-auth (empty) deployments are unchanged.
 
 **Rotation.** The active key set lives behind an `atomic.Pointer`; sending the server `SIGHUP` re-reads the config file and swaps in the new set atomically, with in-flight requests finishing against the set they started on. Keys can therefore be added, removed, or re-scoped without a restart.
 
@@ -955,17 +955,17 @@ The `Limiter` (`server/limits.go`) provides two independent, opt-in defences aga
 
 - **Per-principal token bucket (`--rate-limit`).** Each API-key principal (the resolved `name` the auth interceptor put on the context) gets its **own** `rate.Limiter`, created lazily on first request and stored in a mutex-guarded map. The rate is the configured requests/sec and the burst is one second's worth of budget (rounded up). Because the buckets are keyed by principal, throttling one key can never consume another key's budget. An unauthenticated deployment funnels every call into a single shared `"anonymous"` bucket.
 
-Both controls default to their zero value (unlimited / disabled). `NewLimiter` reports `Enabled()` only when at least one is active, and `cmd/filedb` chains the limiter interceptors solely in that case — so the common, un-limited deployment pays nothing. `grpc.MaxConcurrentStreams` (`--max-concurrent-streams`) is set directly as a `grpc.ServerOption` on both servers, capping the HTTP/2 streams a single connection may multiplex; it is orthogonal to the server-wide in-flight ceiling.
+Both controls default to their zero value (unlimited / disabled). `NewLimiter` reports `Enabled()` only when at least one is active, and `cmd/scriva` chains the limiter interceptors solely in that case — so the common, un-limited deployment pays nothing. `grpc.MaxConcurrentStreams` (`--max-concurrent-streams`) is set directly as a `grpc.ServerOption` on both servers, capping the HTTP/2 streams a single connection may multiplex; it is orthogonal to the server-wide in-flight ceiling.
 
 ### Tracing (OpenTelemetry)
 
-Distributed tracing (`server/tracing.go`) is **opt-in and off by default**: `cmd/filedb` builds an OTel SDK `TracerProvider` and chains the tracing interceptors only when `--otlp-endpoint` is set. The provider batches spans to an OTLP/gRPC collector, tags them with a `service.name=filedb` resource, and samples with a **parent-based** sampler over `TraceIDRatioBased(--otlp-sample-ratio)` — so an upstream sampling decision propagated on the trace context is honoured, and the ratio governs only the traces FileDB roots. On graceful shutdown the provider is `Shutdown` (with a bounded timeout) to flush any spans still buffered.
+Distributed tracing (`server/tracing.go`) is **opt-in and off by default**: `cmd/scriva` builds an OTel SDK `TracerProvider` and chains the tracing interceptors only when `--otlp-endpoint` is set. The provider batches spans to an OTLP/gRPC collector, tags them with a `service.name=scriva` resource, and samples with a **parent-based** sampler over `TraceIDRatioBased(--otlp-sample-ratio)` — so an upstream sampling decision propagated on the trace context is honoured, and the ratio governs only the traces ScrivaDB roots. On graceful shutdown the provider is `Shutdown` (with a bounded timeout) to flush any spans still buffered.
 
-**Interceptor span.** `TracingInterceptors` (unary **and** stream) starts one span per RPC, named after the full method (`/filedb.v1.FileDB/Find`) with span kind *server*, tagged `rpc.method` and — once the call returns — `rpc.grpc.status_code`; a non-OK result additionally marks the span errored and records the error. For streaming RPCs the interceptor wraps the `ServerStream` so its `Context()` carries the span, exactly as the auth interceptor does for the principal. Chained outermost, the span becomes the parent of everything downstream.
+**Interceptor span.** `TracingInterceptors` (unary **and** stream) starts one span per RPC, named after the full method (`/scriva.v1.Scriva/Find`) with span kind *server*, tagged `rpc.method` and — once the call returns — `rpc.grpc.status_code`; a non-OK result additionally marks the span errored and records the error. For streaming RPCs the interceptor wraps the `ServerStream` so its `Context()` carries the span, exactly as the auth interceptor does for the principal. Chained outermost, the span becomes the parent of everything downstream.
 
-**Engine hook.** The rule that keeps the engine embeddable applies here too: **the `engine`/`store`/`query` packages import no OpenTelemetry code** (`make deps-check` enforces it). Instead, the engine exposes timing through the same `engine.CollectionConfig` hook pattern used for metrics — a new `OnScan(ctx, collection, dur)` hook fired by `ScanStream`, alongside the existing `OnCompaction(collection, dur)`. The **server** owns the SDK and turns those callbacks into spans: `ScanTraceHook` starts an `engine.scan` span parented on the scan's context (which, because the span-bearing context threads down from the interceptor, nests it under the RPC span), and `CompactionTraceHook` records a root `engine.compaction` span (compaction is a background task with no request context). The scan hook receives the scan's `context.Context` precisely so its span can attach to the caller's; the compaction hook takes none, so its span stands alone. Both reconstruct their start/end timestamps from the reported duration so the span's extent matches the real work. The metrics `OnCompaction` hook and the tracing one are **composed** in `cmd/filedb` (metrics first, then tracing) so enabling tracing never displaces Prometheus compaction timing.
+**Engine hook.** The rule that keeps the engine embeddable applies here too: **the `engine`/`store`/`query` packages import no OpenTelemetry code** (`make deps-check` enforces it). Instead, the engine exposes timing through the same `engine.CollectionConfig` hook pattern used for metrics — a new `OnScan(ctx, collection, dur)` hook fired by `ScanStream`, alongside the existing `OnCompaction(collection, dur)`. The **server** owns the SDK and turns those callbacks into spans: `ScanTraceHook` starts an `engine.scan` span parented on the scan's context (which, because the span-bearing context threads down from the interceptor, nests it under the RPC span), and `CompactionTraceHook` records a root `engine.compaction` span (compaction is a background task with no request context). The scan hook receives the scan's `context.Context` precisely so its span can attach to the caller's; the compaction hook takes none, so its span stands alone. Both reconstruct their start/end timestamps from the reported duration so the span's extent matches the real work. The metrics `OnCompaction` hook and the tracing one are **composed** in `cmd/scriva` (metrics first, then tracing) so enabling tracing never displaces Prometheus compaction timing.
 
-The net effect: a slow `Find` produces a trace spanning gateway → gRPC (`/filedb.v1.FileDB/Find`) → `engine.scan`, making it obvious whether the cost was in transport, a saturated limiter, or a large collection scan.
+The net effect: a slow `Find` produces a trace spanning gateway → gRPC (`/scriva.v1.Scriva/Find`) → `engine.scan`, making it obvious whether the cost was in transport, a saturated limiter, or a large collection scan.
 
 ### Keyed CRUD, Upsert & CAS on the wire (N1)
 
@@ -1027,17 +1027,17 @@ A browser-based admin UI lives at `clients/web/` (React 18 + TypeScript + Vite +
 
 ## Observability
 
-FileDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/metrics`):
+ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/metrics`):
 
 | Metric | Type | Labels |
 |---|---|---|
-| `filedb_collection_records_total` | Gauge | `collection` |
-| `filedb_collection_segments_total` | Gauge | `collection` |
-| `filedb_compaction_runs_total` | Counter | `collection` |
-| `filedb_compaction_duration_seconds` | Histogram | `collection` |
-| `filedb_grpc_request_duration_seconds` | Histogram | `method`, `code` |
-| `filedb_scan_rows_scanned` | Histogram | `collection` |
+| `scriva_collection_records_total` | Gauge | `collection` |
+| `scriva_collection_segments_total` | Gauge | `collection` |
+| `scriva_compaction_runs_total` | Counter | `collection` |
+| `scriva_compaction_duration_seconds` | Histogram | `collection` |
+| `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` |
+| `scriva_scan_rows_scanned` | Histogram | `collection` |
 
-Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `filedb_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
+Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `scriva_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
 
 For **distributed tracing** (opt-in OpenTelemetry, `--otlp-endpoint`), which complements these pull-based metrics with per-request spans across the gateway → gRPC → engine-scan hops, see [Tracing (OpenTelemetry)](#tracing-opentelemetry) above.

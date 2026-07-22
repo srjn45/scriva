@@ -1,8 +1,8 @@
-# FileDBv2 — Embedding Roadmap (warden integration)
+# ScrivaDB — Embedding Roadmap (warden integration)
 
 > Scope note: this is a **use-case roadmap**, separate from the release roadmap
 > in [`ROADMAP.md`](ROADMAP.md) / [`docs/roadmap-v0.2.md`](docs/roadmap-v0.2.md).
-> It tracks only the features FileDBv2 needs so that **warden** can adopt it as
+> It tracks only the features ScrivaDB needs so that **warden** can adopt it as
 > an **embedded, in-process store** — no sidecar server, no gRPC, no API key.
 > Items here are sized **S** (≤½ day), **M** (1–2 days), **L** (3+ days) and,
 > where they overlap the release roadmap, cross-reference it instead of
@@ -16,11 +16,11 @@ warden is a **single-user, single-machine, single static binary** daemon. Its
 current store is **embedded in the daemon process** (an `RWMutex`-guarded
 per-file JSON store; the daemon is the only holder). The only architecture that
 preserves warden's single-binary install and zero-sidecar footprint is to
-**compile FileDBv2's engine into warden** and call it in-process:
+**compile ScrivaDB's engine into warden** and call it in-process:
 
 ```
 warden daemon
-  └── import github.com/srjn45/filedbv2/engine   ← in-process, no network
+  └── import github.com/srjn45/scriva/engine   ← in-process, no network
         └── engine.DB  ──►  data/warden/<collection>/seg_*.ndjson
 ```
 
@@ -30,18 +30,18 @@ the **engine** a first-class embeddable library.
 
 The **non-negotiable blocker** is that the engine currently lives in
 `internal/engine`, which Go forbids other modules from importing. Until EMB-1
-lands, warden can only run FileDBv2 as a separate server — which we've ruled out.
+lands, warden can only run ScrivaDB as a separate server — which we've ruled out.
 
 ---
 
 ## Target collection layout (the "separate files" point)
 
 Today warden co-locates or single-files several things that should be their own
-collections. FileDBv2's native model (**one directory per collection, one record
+collections. ScrivaDB's native model (**one directory per collection, one record
 per line, append-only**) gives us that split for free — modeling each concern as
 a collection is what removes the whole-file-rewrite cost.
 
-| warden store (today) | Today's shape | Problem | FileDB collection (target) | Key |
+| warden store (today) | Today's shape | Problem | ScrivaDB collection (target) | Key |
 |---|---|---|---|---|
 | `internal/store` sessions | one JSON file / session, **events embedded as a growing slice** | every status tick rewrites the whole growing file (O(n) write-amp) | `sessions` | session id (string) |
 | — (events) | embedded `Events []Event` in the session file | see above | **`events`** (append-only) | session id (secondary index) + ts |
@@ -90,7 +90,7 @@ files."
 - **Files:** `internal/engine/*` → `engine/*`; update imports in `server/`,
   `cmd/`; `internal/query`, `internal/store` visibility.
 - **Tests:** existing engine + server suites must pass unchanged after the move.
-- **Acceptance:** an external module can `import "github.com/srjn45/filedbv2/engine"`
+- **Acceptance:** an external module can `import "github.com/srjn45/scriva/engine"`
   and open a DB, with no `internal/` reference.
 
 ### EMB-2 — embedded façade / convenience constructor — **S**
@@ -124,14 +124,14 @@ files."
 - **Acceptance:** `go list -deps ./engine` contains no grpc/protobuf/prometheus/cobra.
 
 ### EMB-4 — semver the embedded API + module contract — **S**
-- **Problem:** warden pins `github.com/srjn45/filedbv2` as a library dependency;
+- **Problem:** warden pins `github.com/srjn45/scriva` as a library dependency;
   it needs a stable, versioned API surface, not "whatever main is."
 - **Approach:** document the embedded API as public/stable, tag `v0.x` releases
   that warden can `go get`, and note any breaking change policy. (Distribution for
   this use case is `go get`, **not** brew/apt/GHCR — those stay for the standalone
   server.)
 - **Files:** `README.md` (embedding section), `docs/embedding.md` (new), CHANGELOG.
-- **Acceptance:** `go get github.com/srjn45/filedbv2/engine@vX.Y.Z` works and the
+- **Acceptance:** `go get github.com/srjn45/scriva/engine@vX.Y.Z` works and the
   documented API matches.
 
 ---
@@ -233,7 +233,7 @@ tracked dependency.
   `none` or `interval` (recommend `interval`, ~1s) so warden gets crash-torn-write
   safety without per-write fsync cost; let warden opt into `always` per collection
   (e.g. `spend`) if desired.
-- **Files:** `filedb`/`engine` defaults, `docs/embedding.md`.
+- **Files:** `scriva`/`engine` defaults, `docs/embedding.md`.
 - **Acceptance:** default embedded write path has no per-write fsync; documented.
 
 ### OPS-2 — in-process Watch for the poller/TUI — **S** (mostly exists)
@@ -252,7 +252,7 @@ tracked dependency.
   `mailbox/*.json`, `context.json`, ledgers on disk. Adoption must not lose them.
 - **Approach:** this is primarily **warden-side** (a one-shot importer that reads
   the old layout and inserts into the new collections, splitting embedded
-  `Events` into the `events` collection). FileDBv2's contribution: a documented
+  `Events` into the `events` collection). ScrivaDB's contribution: a documented
   bulk-load path (`InsertMany`, already present) and guidance in
   `docs/embedding.md`. Optionally a small `LoadJSONL(collection, reader)` helper.
 - **Files:** `docs/embedding.md`; optional `engine` bulk-load helper.
@@ -273,7 +273,7 @@ tracked dependency.
 
 ---
 
-## What FileDBv2 already gives us (don't rebuild)
+## What ScrivaDB already gives us (don't rebuild)
 
 - **One dir per collection, append-only NDJSON** → the "separate files for
   sessions / events / messages / context" model is native.
@@ -293,8 +293,8 @@ tracked dependency.
 
 ## Distribution
 
-- **This use case:** FileDBv2 ships to warden as a **Go module dependency**
-  (`go get github.com/srjn45/filedbv2/engine`). Not brew/apt/GHCR — those remain
+- **This use case:** ScrivaDB ships to warden as a **Go module dependency**
+  (`go get github.com/srjn45/scriva/engine`). Not brew/apt/GHCR — those remain
   for the standalone server/CLI.
 - **Requirement:** a public, semver-tagged `engine` package (EMB-1, EMB-4) whose
   import graph is minimal (EMB-3).
@@ -312,13 +312,13 @@ Phase 2 (fit):       KEY-1  (string keys)    ┐ the two real impedance mismatch
 Phase 3 (polish):    KEY-2 (unique idx), KEY-4 (upsert), QRY-3 (count/exists),
                      OPS-1 (durability default), OPS-2 (in-proc Watch),
                      EMB-4 (semver + docs)
-Phase 4 (migrate):   OPS-3 (import)  → then warden swaps FileStore → FileDBStore
+Phase 4 (migrate):   OPS-3 (import)  → then warden swaps FileStore → ScrivaStore
                                         behind the existing store.Store interface
 Depends on release roadmap: QRY-1→Q2, QRY-2→Q3, OPS-4→F2, OPS-5→F3
 ```
 
 The warden side is a drop-in: `internal/store.Store` is already a clean
-interface, so a `FileDBStore` implementation lands behind it with no churn in
+interface, so a `ScrivaStore` implementation lands behind it with no churn in
 callers — the port is gated only on Phase 1–2 here.
 
 ---
