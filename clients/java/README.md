@@ -1,8 +1,8 @@
-# FileDB v2 — Java Client
+# ScrivaDB — Java Client
 
-Java 11+ gRPC client for [FileDB v2](../../README.md).
+Java 11+ gRPC client for [ScrivaDB](../../README.md).
 
-**Maven coordinates:** `com.srjn45:filedbv2-client:0.1.0`
+**Maven coordinates:** `com.srjn45:scriva-client:0.1.0`
 
 ---
 
@@ -10,7 +10,7 @@ Java 11+ gRPC client for [FileDB v2](../../README.md).
 
 - Java 11+
 - Gradle 8+ (wrapper included)
-- A running FileDB v2 server (`make run` from the repo root)
+- A running ScrivaDB server (`make run` from the repo root)
 
 ---
 
@@ -34,7 +34,7 @@ Proto stubs are generated automatically by the `com.google.protobuf` Gradle plug
 
 ```kotlin
 dependencies {
-    implementation("com.srjn45:filedbv2-client:0.1.0")
+    implementation("com.srjn45:scriva-client:0.1.0")
 }
 ```
 
@@ -43,7 +43,7 @@ dependencies {
 ```xml
 <dependency>
   <groupId>com.srjn45</groupId>
-  <artifactId>filedbv2-client</artifactId>
+  <artifactId>scriva-client</artifactId>
   <version>0.1.0</version>
 </dependency>
 ```
@@ -53,11 +53,11 @@ dependencies {
 ## Quick start
 
 ```java
-import com.srjn45.filedbv2.FileDBClient;
+import com.srjn45.scriva.ScrivaDBClient;
 import java.util.List;
 import java.util.Map;
 
-try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
+try (ScrivaDBClient db = new ScrivaDBClient("localhost", 5433, "dev-key")) {
 
     // Collection management
     db.createCollection("users");
@@ -66,12 +66,12 @@ try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
     long id = db.insert("users", Map.of("name", "Alice", "age", 30, "role", "admin"));
 
     // Find by id — returns a Record value object
-    FileDBClient.Record record = db.findById("users", id);
+    ScrivaDBClient.Record record = db.findById("users", id);
     System.out.println(record.get("name")); // Alice
     System.out.println(record.id() + " rev=" + record.rev());
 
     // Find with filter
-    List<FileDBClient.Record> admins = db.find("users",
+    List<ScrivaDBClient.Record> admins = db.find("users",
             Map.of("field", "role", "op", "eq", "value", "admin"),
             0, 0, "name", false);
 
@@ -97,10 +97,10 @@ try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
 
 ```java
 // Plaintext (no TLS)
-FileDBClient db = new FileDBClient(String host, int port, String apiKey);
+ScrivaDBClient db = new ScrivaDBClient(String host, int port, String apiKey);
 
 // TLS — verifies server against the supplied CA certificate
-FileDBClient db = new FileDBClient(String host, int port, String apiKey, File tlsCaCert);
+ScrivaDBClient db = new ScrivaDBClient(String host, int port, String apiKey, File tlsCaCert);
 ```
 
 `x-api-key` is attached as gRPC metadata on every call automatically.
@@ -109,10 +109,10 @@ FileDBClient db = new FileDBClient(String host, int port, String apiKey, File tl
 
 ### Records
 
-Reads return `FileDBClient.Record` value objects rather than raw maps:
+Reads return `ScrivaDBClient.Record` value objects rather than raw maps:
 
 ```java
-FileDBClient.Record r = db.findById("users", id);
+ScrivaDBClient.Record r = db.findById("users", id);
 
 long   id           = r.id();            // server-assigned numeric id
 String key          = r.key();           // caller-supplied key ("" when keyless)
@@ -153,10 +153,10 @@ List<Long> ids = db.insertMany("col", List.of(
 ));
 
 // Find by id — returns a Record
-FileDBClient.Record record = db.findById("col", id);
+ScrivaDBClient.Record record = db.findById("col", id);
 
 // Find with options (all optional — pass null/0/""/false to omit)
-List<FileDBClient.Record> results = db.find(
+List<ScrivaDBClient.Record> results = db.find(
         "col",
         filter,       // Map<String,Object> filter or null
         limit,        // int — 0 = no limit
@@ -166,8 +166,8 @@ List<FileDBClient.Record> results = db.find(
 );
 
 // Convenience overloads
-List<FileDBClient.Record> all      = db.find("col");
-List<FileDBClient.Record> filtered = db.find("col", filter);
+List<ScrivaDBClient.Record> all      = db.find("col");
+List<ScrivaDBClient.Record> filtered = db.find("col", filter);
 
 // Update — returns updated id
 long updatedId = db.update("col", id, Map.of("name", "new value"));
@@ -210,13 +210,13 @@ long id = db.insertKeyed("users", "user:42", Map.of("name", "Alice"));
 // (equivalently: db.insert("users", data, 0L, "user:42"))
 
 // Upsert — insert under a key, or replace the existing keyed record (bumping rev)
-FileDBClient.Record r = db.upsert("users", "user:42", Map.of("name", "Alice", "plan", "pro"));
+ScrivaDBClient.Record r = db.upsert("users", "user:42", Map.of("name", "Alice", "plan", "pro"));
 
 // Fetch by key — raises NotFoundException when no live record carries the key
-FileDBClient.Record found = db.findByKey("users", "user:42");
+ScrivaDBClient.Record found = db.findByKey("users", "user:42");
 
 // Overwrite by key, preserving the key — returns id/key/rev/dateModified
-FileDBClient.UpdateResult upd = db.updateByKey("users", "user:42", Map.of("name", "Alice", "plan", "team"));
+ScrivaDBClient.UpdateResult upd = db.updateByKey("users", "user:42", Map.of("name", "Alice", "plan", "team"));
 System.out.println(upd.rev());
 
 // Delete by key — raises NotFoundException if absent
@@ -224,14 +224,14 @@ boolean gone = db.deleteByKey("users", "user:42");
 
 // Compare-and-swap: apply the write only if the current rev matches expectedRev.
 // A stale rev (or missing key) is a clean no-op — never an error.
-FileDBClient.CasResult cas = db.updateIfRev("users", "user:42", r.rev(),
+ScrivaDBClient.CasResult cas = db.updateIfRev("users", "user:42", r.rev(),
         Map.of("name", "Alice", "plan", "enterprise"));
 if (cas.swapped()) {
     System.out.println("new rev = " + cas.record().rev());
 }
 ```
 
-Typed exceptions (both extend `FileDBException`, a `RuntimeException`):
+Typed exceptions (both extend `ScrivaDBException`, a `RuntimeException`):
 
 | gRPC status | Exception |
 |---|---|
@@ -247,8 +247,8 @@ fields to return in each record's `data`. `id`, `key` and `rev` are always
 included; unknown fields are silently omitted.
 
 ```java
-FileDBClient.Record r = db.findById("users", id, List.of("name", "email"));
-FileDBClient.Record k = db.findByKey("users", "user:42", List.of("name"));
+ScrivaDBClient.Record r = db.findById("users", id, List.of("name", "email"));
+ScrivaDBClient.Record k = db.findByKey("users", "user:42", List.of("name"));
 
 // find/findPage take fields as the 6th argument (see below)
 ```
@@ -258,19 +258,19 @@ FileDBClient.Record k = db.findByKey("users", "user:42", List.of("name"));
 ### Keyset pagination & multi-field ordering (N3)
 
 `findPage` walks a collection page by page using an opaque keyset cursor —
-O(page) rather than O(offset). Ordering is a list of `FileDBClient.Order` sort
+O(page) rather than O(offset). Ordering is a list of `ScrivaDBClient.Order` sort
 keys applied lexicographically; the record id is always the final tiebreaker, so
 pagination is stable.
 
 ```java
-List<FileDBClient.Order> order = List.of(
-        FileDBClient.Order.asc("team"),
-        FileDBClient.Order.desc("score")
+List<ScrivaDBClient.Order> order = List.of(
+        ScrivaDBClient.Order.asc("team"),
+        ScrivaDBClient.Order.desc("score")
 );
 
 String token = "";
 do {
-    FileDBClient.Page page = db.findPage(
+    ScrivaDBClient.Page page = db.findPage(
             "scores",
             null,        // filter
             50,          // limit (page size)
@@ -279,7 +279,7 @@ do {
             null,        // fields projection (N2), or null for all
             token        // keyset cursor, "" for the first page
     );
-    for (FileDBClient.Record r : page.records()) {
+    for (ScrivaDBClient.Record r : page.records()) {
         // ...
     }
     token = page.nextPageToken();   // "" once the last page is reached
@@ -300,20 +300,20 @@ long total   = db.count("orders");
 long shipped = db.count("orders", Map.of("field", "status", "op", "eq", "value", "shipped"));
 
 // Group by a field with numeric aggregates over another field
-List<FileDBClient.AggResult> byRegion = db.groupBy(
+List<ScrivaDBClient.AggResult> byRegion = db.groupBy(
         "orders",
         "region",                             // group-by field
         List.of("sum", "avg", "min", "max"),  // which aggregations
         "total",                              // numeric metric field
         null                                  // optional filter
 );
-for (FileDBClient.AggResult g : byRegion) {
+for (ScrivaDBClient.AggResult g : byRegion) {
     System.out.printf("%s: count=%d sum=%.2f avg=%.2f%n",
             g.group(), g.count(), g.sum(), g.avg());
 }
 
 // Or call aggregate directly (group() is null for the whole-set group)
-List<FileDBClient.AggResult> whole = db.aggregate(
+List<ScrivaDBClient.AggResult> whole = db.aggregate(
         "orders", List.of("sum"), "total", "" /* no group-by */, null);
 ```
 
@@ -346,7 +346,7 @@ boolean rolledBack = db.rollbackTx(txId);
 ### Watch (streaming change feed)
 
 ```java
-import filedb.v1.Filedb.WatchEvent;
+import scriva.v1.Scriva.WatchEvent;
 import io.grpc.stub.StreamObserver;
 
 db.watch("col", null /* optional filter */, new StreamObserver<WatchEvent>() {
@@ -441,7 +441,7 @@ Map.of("or", List.of(
 
 ```java
 File caCert = new File("/path/to/ca.crt");
-FileDBClient db = new FileDBClient("myserver.example.com", 5433, "my-api-key", caCert);
+ScrivaDBClient db = new ScrivaDBClient("myserver.example.com", 5433, "my-api-key", caCert);
 ```
 
 When no CA cert is supplied the client connects over plaintext (insecure channel).
@@ -452,14 +452,14 @@ When no CA cert is supplied the client connects over plaintext (insecure channel
 
 ```bash
 cd clients/java
-FILEDB_API_KEY=dev-key ./gradlew run -PmainClass=com.srjn45.filedbv2.examples.BasicExample
+SCRIVA_API_KEY=dev-key ./gradlew run -PmainClass=com.srjn45.scriva.examples.BasicExample
 ```
 
 ---
 
 ## Running the tests
 
-Tests connect to a live FileDB server. Start it first:
+Tests connect to a live ScrivaDB server. Start it first:
 
 ```bash
 # From repo root

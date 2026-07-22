@@ -6,9 +6,9 @@ import {
   useMemo,
   useState,
 } from 'react'
-import { FileDBClient } from '../api/client'
+import { ScrivaDBClient } from '../api/client'
 
-const STORAGE_KEY = 'filedb_settings'
+const STORAGE_KEY = 'scriva_settings'
 
 interface Settings {
   url: string
@@ -17,7 +17,7 @@ interface Settings {
 
 interface AppContextValue {
   settings: Settings
-  client: FileDBClient
+  client: ScrivaDBClient
   connected: boolean
   saveSettings: (s: Settings) => void
   recheckConnection: () => void
@@ -46,7 +46,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [checkToken, setCheckToken] = useState(0)
 
   const client = useMemo(
-    () => new FileDBClient(settings.url, settings.apiKey),
+    () => new ScrivaDBClient(settings.url, settings.apiKey),
     [settings.url, settings.apiKey],
   )
 

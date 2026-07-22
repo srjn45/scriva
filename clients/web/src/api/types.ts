@@ -31,7 +31,7 @@ export type Filter =
 /** Data payload: arbitrary JSON object */
 export type RecordData = Record<string, unknown>
 
-export interface FileDBRecord {
+export interface ScrivaDBRecord {
   id: string           // uint64 serialised as string by grpc-gateway
   data: RecordData
   date_added: string   // ISO-8601 timestamp
@@ -63,18 +63,18 @@ export interface CollectionStats {
 export interface WatchEvent {
   op: WatchOp
   collection: string
-  record: FileDBRecord
+  record: ScrivaDBRecord
   ts: string  // ISO-8601 timestamp
 }
 
 // ---- API errors -------------------------------------------------------------
 
-export class FileDBError extends Error {
+export class ScrivaDBError extends Error {
   constructor(
     public readonly status: number,
     message: string,
   ) {
     super(message)
-    this.name = 'FileDBError'
+    this.name = 'ScrivaDBError'
   }
 }

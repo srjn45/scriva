@@ -1,15 +1,15 @@
-//! FileDB v2 Rust client — async gRPC wrapper over `proto/filedb.proto`.
+//! ScrivaDB Rust client — async gRPC wrapper over `proto/scriva.proto`.
 //!
 //! All methods are `async` and require a Tokio runtime.
 //!
 //! # Quick start
 //!
 //! ```rust,no_run
-//! use filedbv2::{FileDB, FilterInput, FilterOp, FindOptions};
+//! use scriva::{ScrivaDB, FilterInput, FilterOp, FindOptions};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//!     let mut db = FileDB::connect("localhost", 5433, "dev-key").await?;
+//!     let mut db = ScrivaDB::connect("localhost", 5433, "dev-key").await?;
 //!
 //!     db.create_collection("users").await?;
 //!
@@ -28,18 +28,18 @@
 //! }
 //! ```
 
-// FileDbError wraps tonic::Status (a large type) by design, so callers can match
+// ScrivaDbError wraps tonic::Status (a large type) by design, so callers can match
 // its NotFound / AlreadyExists variants directly; boxing it would obscure the API.
 #![allow(clippy::result_large_err)]
 
 pub(crate) mod pb {
-    tonic::include_proto!("filedb.v1");
+    tonic::include_proto!("scriva.v1");
 }
 
 mod client;
 
 pub use client::{
-    AggregateGroup, AggregateOp, AggregateOptions, CasResult, CollectionStats, Error, FileDB,
-    FileDbError, FilterInput, FilterOp, FindOptions, OrderBy, Record, UpdateResult, WatchEvent,
+    AggregateGroup, AggregateOp, AggregateOptions, CasResult, CollectionStats, Error, ScrivaDB,
+    ScrivaDbError, FilterInput, FilterOp, FindOptions, OrderBy, Record, UpdateResult, WatchEvent,
     WatchOp,
 };

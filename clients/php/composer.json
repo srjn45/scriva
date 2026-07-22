@@ -1,8 +1,8 @@
 {
-  "name": "srjn45/filedbv2",
-  "description": "Official PHP client for FileDB v2 — a file-based document database with a gRPC API",
+  "name": "srjn45/scriva",
+  "description": "Official PHP client for ScrivaDB — a file-based document database with a gRPC API",
   "type": "library",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "license": "MIT",
   "authors": [
     {
@@ -11,13 +11,13 @@
     }
   ],
   "keywords": [
-    "filedb",
+    "scriva",
     "grpc",
     "database",
     "client",
     "document-store"
   ],
-  "homepage": "https://github.com/srjn45/filedbv2",
+  "homepage": "https://github.com/srjn45/scriva",
   "require": {
     "php": ">=8.1",
     "grpc/grpc": "^1.56",
@@ -25,19 +25,19 @@
   },
   "autoload": {
     "psr-4": {
-      "FileDBv2\\": "src/",
-      "Filedb\\": "src/Proto/Filedb/",
+      "ScrivaDB\\": "src/",
+      "Scriva\\": "src/Proto/Scriva/",
       "GPBMetadata\\": "src/Proto/GPBMetadata/"
     }
   },
   "extra": {
     "branch-alias": {
-      "dev-main": "0.1.x-dev"
+      "dev-main": "1.0.x-dev"
     }
   },
   "support": {
-    "issues": "https://github.com/srjn45/filedbv2/issues",
-    "source": "https://github.com/srjn45/filedbv2"
+    "issues": "https://github.com/srjn45/scriva/issues",
+    "source": "https://github.com/srjn45/scriva"
   },
   "minimum-stability": "stable",
   "prefer-stable": true

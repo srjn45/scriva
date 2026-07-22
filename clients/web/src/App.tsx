@@ -17,7 +17,7 @@ function Shell() {
       {/* Top bar */}
       <header className="flex items-center gap-3 px-4 py-2 border-b border-gray-800 bg-gray-900 shrink-0">
         <span className="text-lg">⬡</span>
-        <span className="font-bold text-gray-100 mr-2">FileDB</span>
+        <span className="font-bold text-gray-100 mr-2">ScrivaDB</span>
         <span className="text-sm text-gray-400">{settings.url}</span>
         <span
           className={`ml-2 text-xs font-medium px-2 py-0.5 rounded-full ${

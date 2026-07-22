@@ -1,8 +1,8 @@
-# FileDB v2 — TypeScript / JavaScript Client
+# ScrivaDB — TypeScript / JavaScript Client
 
-Node.js 18+ gRPC client for [FileDB v2](../../README.md).
+Node.js 18+ gRPC client for [ScrivaDB](../../README.md).
 
-**npm package:** `filedbv2`
+**npm package:** `scriva`
 
 ---
 
@@ -10,14 +10,14 @@ Node.js 18+ gRPC client for [FileDB v2](../../README.md).
 
 - Node.js 18+
 - TypeScript 5+ (optional — plain JavaScript works too)
-- A running FileDB v2 server (`make run` from the repo root)
+- A running ScrivaDB server (`make run` from the repo root)
 
 ---
 
 ## Install
 
 ```bash
-npm install filedbv2
+npm install scriva
 ```
 
 ---
@@ -35,9 +35,9 @@ npm run build      # compiles TypeScript → dist/
 ## Quick start
 
 ```typescript
-import { FileDB } from 'filedbv2';
+import { ScrivaDB } from 'scriva';
 
-const db = new FileDB('localhost', 5433, 'dev-key');
+const db = new ScrivaDB('localhost', 5433, 'dev-key');
 
 await db.createCollection('users');
 
@@ -61,7 +61,7 @@ db.close();
 CommonJS also works:
 
 ```javascript
-const { FileDB } = require('filedbv2');
+const { ScrivaDB } = require('scriva');
 ```
 
 ---
@@ -72,13 +72,13 @@ const { FileDB } = require('filedbv2');
 
 ```typescript
 // Plaintext (no TLS)
-const db = new FileDB(host: string, port: number, apiKey: string);
+const db = new ScrivaDB(host: string, port: number, apiKey: string);
 
 // TLS — verify server against a CA certificate PEM buffer
-const db = new FileDB(host, port, apiKey, tlsCaCert: Buffer);
+const db = new ScrivaDB(host, port, apiKey, tlsCaCert: Buffer);
 
 // TLS — load CA certificate from file path
-const db = FileDB.fromTlsCertPath(host, port, apiKey, '/path/to/ca.crt');
+const db = ScrivaDB.fromTlsCertPath(host, port, apiKey, '/path/to/ca.crt');
 ```
 
 `x-api-key` is attached as gRPC metadata on every call automatically.
@@ -412,11 +412,11 @@ Filters are plain JavaScript objects.
 import * as fs from 'fs';
 
 // From buffer
-const db = new FileDB('myserver.example.com', 5433, 'my-api-key',
+const db = new ScrivaDB('myserver.example.com', 5433, 'my-api-key',
   fs.readFileSync('/path/to/ca.crt'));
 
 // From path (convenience static factory)
-const db = FileDB.fromTlsCertPath('myserver.example.com', 5433, 'my-api-key',
+const db = ScrivaDB.fromTlsCertPath('myserver.example.com', 5433, 'my-api-key',
   '/path/to/ca.crt');
 ```
 
@@ -456,10 +456,10 @@ Node.js can connect over the Unix domain socket for zero-overhead local connecti
 
 ```typescript
 import * as grpc from '@grpc/grpc-js';
-import { FileDB } from 'filedbv2';
+import { ScrivaDB } from 'scriva';
 
 // Pass the socket path as a grpc URI:
-//   'unix:///tmp/filedb.sock'
+//   'unix:///tmp/scriva.sock'
 // Use the internal constructor signature with a pre-built stub for advanced use.
 ```
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * FileDB v2 PHP SDK — Watch streaming example.
+ * ScrivaDB PHP SDK — Watch streaming example.
  *
  * Subscribes to a Watch stream on a collection, inserts records from a
  * background process (using proc_open / forked child), and prints each
@@ -23,7 +23,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use FileDBv2\FileDB;
+use ScrivaDB\ScrivaDB;
 
 $host   = $argv[1] ?? 'localhost';
 $port   = (int)($argv[2] ?? 5433);
@@ -31,7 +31,7 @@ $apiKey = $argv[3] ?? 'dev-key';
 
 const WATCH_COLLECTION = 'test_php_watch';
 
-$db = new FileDB($host, $port, $apiKey);
+$db = new ScrivaDB($host, $port, $apiKey);
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 $existing = $db->listCollections();
@@ -54,7 +54,7 @@ if ($pid === 0 && function_exists('pcntl_fork')) {
     // Child process: sleep briefly then insert records
     usleep(300_000); // 300ms
 
-    $child = new FileDB($host, $port, $apiKey);
+    $child = new ScrivaDB($host, $port, $apiKey);
     $child->insert(WATCH_COLLECTION, ['event' => 'one',   'ts' => time()]);
     usleep(200_000);
     $child->insert(WATCH_COLLECTION, ['event' => 'two',   'ts' => time()]);

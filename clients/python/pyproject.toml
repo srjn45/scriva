@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "filedbv2"
-version = "0.7.0"
-description = "Official Python client for FileDB v2 — a file-based document database with a gRPC API"
+name = "scriva"
+version = "1.0.0"
+description = "Official Python client for ScrivaDB — a file-based document database with a gRPC API"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "srjn45" }]
-keywords = ["filedb", "database", "grpc", "document-store", "client"]
+keywords = ["scriva", "database", "grpc", "document-store", "client"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -26,7 +26,7 @@ dependencies = [
     "grpcio>=1.60",
     "protobuf>=4.25",
     # Provides google.api.annotations_pb2, referenced by the generated stubs
-    # because filedb.proto carries grpc-gateway HTTP annotations.
+    # because scriva.proto carries grpc-gateway HTTP annotations.
     "googleapis-common-protos>=1.60",
 ]
 
@@ -35,12 +35,12 @@ dependencies = [
 codegen = ["grpcio-tools>=1.60"]
 
 [project.urls]
-Homepage = "https://github.com/srjn45/filedbv2"
-Repository = "https://github.com/srjn45/filedbv2"
-"Bug Tracker" = "https://github.com/srjn45/filedbv2/issues"
+Homepage = "https://github.com/srjn45/scriva"
+Repository = "https://github.com/srjn45/scriva"
+"Bug Tracker" = "https://github.com/srjn45/scriva/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/filedbv2"]
+packages = ["src/scriva"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/filedbv2", "README.md", "generate.sh"]
+include = ["src/scriva", "README.md", "generate.sh"]

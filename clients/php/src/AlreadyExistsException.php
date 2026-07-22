@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace FileDBv2;
+namespace ScrivaDB;
 
 /**
  * Thrown when a keyed insert collides with a key already held by a live record —
@@ -10,6 +10,6 @@ namespace FileDBv2;
  * a `key` is supplied and that key is already taken. Use upsert() for
  * insert-or-replace semantics instead.
  */
-class AlreadyExistsException extends FileDBException
+class AlreadyExistsException extends ScrivaDBException
 {
 }

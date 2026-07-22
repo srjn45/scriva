@@ -1,21 +1,21 @@
-# FileDBv2 Ruby Client
+# Scriva Ruby Client
 
-Idiomatic Ruby gRPC client for [FileDB v2](https://github.com/srjn45/filedbv2).
+Idiomatic Ruby gRPC client for [ScrivaDB](https://github.com/srjn45/scriva).
 
-**Ruby 3.1+ · gem `filedbv2`**
+**Ruby 3.1+ · gem `scriva`**
 
 ---
 
 ## Install
 
 ```bash
-gem install filedbv2
+gem install scriva
 ```
 
 Or add to your `Gemfile`:
 
 ```ruby
-gem "filedbv2", "~> 0.7"
+gem "scriva", "~> 0.7"
 ```
 
 ---
@@ -23,9 +23,9 @@ gem "filedbv2", "~> 0.7"
 ## Quick start
 
 ```ruby
-require "filedbv2"
+require "scriva"
 
-db = FileDBv2::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
+db = Scriva::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
 
 db.create_collection("users")
 
@@ -45,7 +45,7 @@ db.close
 Use `.open` for automatic close on block exit:
 
 ```ruby
-FileDBv2::Client.open(host: "localhost", port: 5433, api_key: "dev-key") do |db|
+Scriva::Client.open(host: "localhost", port: 5433, api_key: "dev-key") do |db|
   db.create_collection("orders")
   # ...
 end
@@ -66,7 +66,7 @@ end
 
 ```ruby
 # Path to CA cert file
-db = FileDBv2::Client.new(
+db = Scriva::Client.new(
   host: "myserver.example.com",
   port: 5433,
   api_key: "my-key",
@@ -75,7 +75,7 @@ db = FileDBv2::Client.new(
 
 # Or inline PEM string
 pem = File.read("/path/to/ca.crt")
-db = FileDBv2::Client.new(host: "...", port: 5433, api_key: "...", tls_ca_cert: pem)
+db = Scriva::Client.new(host: "...", port: 5433, api_key: "...", tls_ca_cert: pem)
 ```
 
 ---
@@ -147,10 +147,10 @@ rec = db.upsert("users", "user:alice", { name: "Alice", age: 30 })
 # => { "id" => 1, "data" => {...}, "key" => "user:alice", "rev" => 1, ... }
 
 # Keyed create via insert(key:) — a key already held by a live record raises
-# FileDBv2::AlreadyExistsError.
+# Scriva::AlreadyExistsError.
 db.insert("users", { name: "Bob" }, key: "user:bob")
 
-# Fetch / overwrite / delete by key. A missing key raises FileDBv2::NotFoundError.
+# Fetch / overwrite / delete by key. A missing key raises Scriva::NotFoundError.
 db.find_by_key("users", "user:alice")                        # => record Hash
 db.update_by_key("users", "user:alice", { name: "Alice", age: 31 })
 # => { "id" => 1, "key" => "user:alice", "rev" => 2, "date_modified" => "..." }
@@ -163,8 +163,8 @@ res = db.update_if_rev("users", "user:alice", 2, { name: "Alice", age: 32 })
 # => { "swapped" => false, "record" => nil }                  when rev was stale
 ```
 
-Typed errors (`FileDBv2::NotFoundError`, `FileDBv2::AlreadyExistsError`) both
-subclass `FileDBv2::Error`; other gRPC failures propagate as `GRPC::BadStatus`.
+Typed errors (`Scriva::NotFoundError`, `Scriva::AlreadyExistsError`) both
+subclass `Scriva::Error`; other gRPC failures propagate as `GRPC::BadStatus`.
 
 ### Field projection
 
@@ -339,7 +339,7 @@ db.snapshot { |chunk| out.write(chunk) }   # chunk is a binary String
 
 ## Regenerate proto stubs
 
-The stubs under `lib/filedbv2/proto/` are pre-generated and committed. To
+The stubs under `lib/scriva/proto/` are pre-generated and committed. To
 regenerate after a proto change:
 
 ```bash
@@ -366,6 +366,6 @@ bundle exec ruby examples/test_watch.rb
 ## Publish to RubyGems
 
 ```bash
-gem build filedbv2.gemspec
-gem push filedbv2-0.7.0.gem
+gem build scriva.gemspec
+gem push scriva-0.7.0.gem
 ```

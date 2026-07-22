@@ -1,4 +1,4 @@
-/** A record returned from FileDB. `id` is a string because uint64 exceeds JS's safe integer range. */
+/** A record returned from ScrivaDB. `id` is a string because uint64 exceeds JS's safe integer range. */
 export interface DBRecord {
   id: string;
   /** Caller-supplied string primary key. Empty string for records inserted without one. */

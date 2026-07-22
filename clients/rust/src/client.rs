@@ -4,27 +4,27 @@ use tonic::transport::{Channel, ClientTlsConfig, Certificate};
 use tonic::Request;
 
 use crate::pb;
-use crate::pb::file_db_client::FileDbClient;
+use crate::pb::scriva_client::ScrivaClient;
 
-/// Transport / setup errors from [`FileDB::connect`], [`FileDB::connect_tls`]
-/// and the file-writing snapshot helper. RPC methods return [`FileDbError`].
+/// Transport / setup errors from [`ScrivaDB::connect`], [`ScrivaDB::connect_tls`]
+/// and the file-writing snapshot helper. RPC methods return [`ScrivaDbError`].
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Errors returned by FileDB RPC methods.
+/// Errors returned by ScrivaDB RPC methods.
 ///
-/// [`NotFound`](FileDbError::NotFound) and
-/// [`AlreadyExists`](FileDbError::AlreadyExists) are surfaced as dedicated
+/// [`NotFound`](ScrivaDbError::NotFound) and
+/// [`AlreadyExists`](ScrivaDbError::AlreadyExists) are surfaced as dedicated
 /// variants so keyed operations can be matched idiomatically: a keyed
 /// lookup/update/delete against a key no live record holds yields `NotFound`,
 /// and a keyed insert on a key already held by a live record yields
 /// `AlreadyExists`. Every other gRPC status propagates as
-/// [`Rpc`](FileDbError::Rpc).
+/// [`Rpc`](ScrivaDbError::Rpc).
 #[derive(Debug)]
-pub enum FileDbError {
+pub enum ScrivaDbError {
     /// A keyed lookup/update/delete referenced a key no live record holds
     /// (gRPC `NOT_FOUND`).
     NotFound(tonic::Status),
@@ -35,38 +35,38 @@ pub enum FileDbError {
     Rpc(tonic::Status),
 }
 
-impl FileDbError {
+impl ScrivaDbError {
     /// The underlying gRPC status.
     pub fn status(&self) -> &tonic::Status {
         match self {
-            FileDbError::NotFound(s)
-            | FileDbError::AlreadyExists(s)
-            | FileDbError::Rpc(s) => s,
+            ScrivaDbError::NotFound(s)
+            | ScrivaDbError::AlreadyExists(s)
+            | ScrivaDbError::Rpc(s) => s,
         }
     }
 }
 
-impl From<tonic::Status> for FileDbError {
+impl From<tonic::Status> for ScrivaDbError {
     fn from(status: tonic::Status) -> Self {
         match status.code() {
-            tonic::Code::NotFound => FileDbError::NotFound(status),
-            tonic::Code::AlreadyExists => FileDbError::AlreadyExists(status),
-            _ => FileDbError::Rpc(status),
+            tonic::Code::NotFound => ScrivaDbError::NotFound(status),
+            tonic::Code::AlreadyExists => ScrivaDbError::AlreadyExists(status),
+            _ => ScrivaDbError::Rpc(status),
         }
     }
 }
 
-impl std::fmt::Display for FileDbError {
+impl std::fmt::Display for ScrivaDbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileDbError::NotFound(s) => write!(f, "not found: {}", s.message()),
-            FileDbError::AlreadyExists(s) => write!(f, "already exists: {}", s.message()),
-            FileDbError::Rpc(s) => write!(f, "{}", s),
+            ScrivaDbError::NotFound(s) => write!(f, "not found: {}", s.message()),
+            ScrivaDbError::AlreadyExists(s) => write!(f, "already exists: {}", s.message()),
+            ScrivaDbError::Rpc(s) => write!(f, "{}", s),
         }
     }
 }
 
-impl std::error::Error for FileDbError {
+impl std::error::Error for ScrivaDbError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.status())
     }
@@ -83,7 +83,7 @@ pub struct Record {
     /// Caller-supplied string primary key; empty for records inserted without one.
     pub key: String,
     /// Monotonic per-record revision, bumped on every write. Fresh records start
-    /// at 1. Feed it to [`FileDB::update_if_rev`] for optimistic-concurrency updates.
+    /// at 1. Feed it to [`ScrivaDB::update_if_rev`] for optimistic-concurrency updates.
     pub rev: u64,
     pub data: serde_json::Value,
     pub date_added: Option<String>,
@@ -134,13 +134,13 @@ pub struct FindOptions {
     /// included). Empty returns full records; an unknown field is silently omitted.
     pub fields: Vec<String>,
     /// Opaque keyset pagination token (N3). Empty requests the first page;
-    /// otherwise it must be a token returned by a previous [`FileDB::find_page`].
+    /// otherwise it must be a token returned by a previous [`ScrivaDB::find_page`].
     /// Only meaningful with an ordering — pass the same ordering, filter and limit
     /// on every page.
     pub page_token: String,
 }
 
-/// Result of a keyed update ([`FileDB::update_by_key`]).
+/// Result of a keyed update ([`ScrivaDB::update_by_key`]).
 #[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub id: u64,
@@ -151,7 +151,7 @@ pub struct UpdateResult {
     pub date_modified: Option<String>,
 }
 
-/// Result of a compare-and-swap update ([`FileDB::update_if_rev`]).
+/// Result of a compare-and-swap update ([`ScrivaDB::update_if_rev`]).
 #[derive(Debug, Clone)]
 pub struct CasResult {
     /// `true` when `expected_rev` matched and the update applied; `false` — never
@@ -174,7 +174,7 @@ pub enum AggregateOp {
     Max,
 }
 
-/// Options for [`FileDB::aggregate`].
+/// Options for [`ScrivaDB::aggregate`].
 #[derive(Debug, Clone, Default)]
 pub struct AggregateOptions {
     /// Which aggregations to compute. `Count` is always returned even if omitted;
@@ -189,7 +189,7 @@ pub struct AggregateOptions {
     pub filter: Option<FilterInput>,
 }
 
-/// One group's result from [`FileDB::aggregate`].
+/// One group's result from [`ScrivaDB::aggregate`].
 #[derive(Debug, Clone)]
 pub struct AggregateGroup {
     /// The group-by field's value for this group, type-preserved. `Null` for the
@@ -255,7 +255,7 @@ pub enum FilterOp {
 /// # Examples
 ///
 /// ```rust
-/// use filedbv2::{FilterInput, FilterOp};
+/// use scriva::{FilterInput, FilterOp};
 ///
 /// // Field filter
 /// let f = FilterInput::field("age", FilterOp::Gt, "18");
@@ -500,30 +500,30 @@ fn opt_string(s: String) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// FileDB client
+// ScrivaDB client
 // ---------------------------------------------------------------------------
 
-/// Async gRPC client for FileDB v2.
+/// Async gRPC client for ScrivaDB.
 ///
-/// Obtain an instance via [`FileDB::connect`] (plaintext) or
-/// [`FileDB::connect_tls`] (TLS with CA certificate verification).
+/// Obtain an instance via [`ScrivaDB::connect`] (plaintext) or
+/// [`ScrivaDB::connect_tls`] (TLS with CA certificate verification).
 ///
 /// All RPC methods require `&mut self` because the underlying tonic channel
 /// is driven through a mutable reference to the generated stub, and return
-/// [`FileDbError`] (with dedicated `NotFound` / `AlreadyExists` variants for
+/// [`ScrivaDbError`] (with dedicated `NotFound` / `AlreadyExists` variants for
 /// keyed operations).
-pub struct FileDB {
-    client: FileDbClient<Channel>,
+pub struct ScrivaDB {
+    client: ScrivaClient<Channel>,
     api_key: String,
 }
 
-impl FileDB {
-    /// Connect to a FileDB server over plaintext gRPC.
+impl ScrivaDB {
+    /// Connect to a ScrivaDB server over plaintext gRPC.
     pub async fn connect(host: &str, port: u16, api_key: &str) -> Result<Self, Error> {
         let endpoint = format!("http://{}:{}", host, port);
         let channel = Channel::from_shared(endpoint)?.connect().await?;
         Ok(Self {
-            client: FileDbClient::new(channel),
+            client: ScrivaClient::new(channel),
             api_key: api_key.to_owned(),
         })
     }
@@ -545,7 +545,7 @@ impl FileDB {
             .connect()
             .await?;
         Ok(Self {
-            client: FileDbClient::new(channel),
+            client: ScrivaClient::new(channel),
             api_key: api_key.to_owned(),
         })
     }
@@ -579,7 +579,7 @@ impl FileDB {
     // -------------------------------------------------------------------------
 
     /// Create a new collection. Returns the collection name.
-    pub async fn create_collection(&mut self, name: &str) -> Result<String, FileDbError> {
+    pub async fn create_collection(&mut self, name: &str) -> Result<String, ScrivaDbError> {
         self.create_collection_with_ttl(name, 0).await
     }
 
@@ -593,7 +593,7 @@ impl FileDB {
         &mut self,
         name: &str,
         default_ttl_seconds: i64,
-    ) -> Result<String, FileDbError> {
+    ) -> Result<String, ScrivaDbError> {
         let resp = self
             .client
             .create_collection(self.req(pb::CreateCollectionRequest {
@@ -606,7 +606,7 @@ impl FileDB {
     }
 
     /// Drop a collection and all its data. Returns `true` on success.
-    pub async fn drop_collection(&mut self, name: &str) -> Result<bool, FileDbError> {
+    pub async fn drop_collection(&mut self, name: &str) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .drop_collection(self.req(pb::DropCollectionRequest {
@@ -618,7 +618,7 @@ impl FileDB {
     }
 
     /// List all collection names.
-    pub async fn list_collections(&mut self) -> Result<Vec<String>, FileDbError> {
+    pub async fn list_collections(&mut self) -> Result<Vec<String>, ScrivaDbError> {
         let resp = self
             .client
             .list_collections(self.req(pb::ListCollectionsRequest {}))
@@ -636,7 +636,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         data: serde_json::Value,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         self.insert_inner(collection, data, 0, "").await
     }
 
@@ -650,7 +650,7 @@ impl FileDB {
         collection: &str,
         data: serde_json::Value,
         ttl_seconds: i64,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         self.insert_inner(collection, data, ttl_seconds, "").await
     }
 
@@ -658,14 +658,14 @@ impl FileDB {
     /// create). Returns the assigned ID.
     ///
     /// A key already held by a live record is rejected with
-    /// [`FileDbError::AlreadyExists`]. A keyed insert does not participate in
+    /// [`ScrivaDbError::AlreadyExists`]. A keyed insert does not participate in
     /// transactions or per-record TTL.
     pub async fn insert_with_key(
         &mut self,
         collection: &str,
         data: serde_json::Value,
         key: &str,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         self.insert_inner(collection, data, 0, key).await
     }
 
@@ -675,7 +675,7 @@ impl FileDB {
         data: serde_json::Value,
         ttl_seconds: i64,
         key: &str,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         let resp = self
             .client
             .insert(self.req(pb::InsertRequest {
@@ -694,19 +694,19 @@ impl FileDB {
         &mut self,
         collection: &str,
         records: Vec<serde_json::Value>,
-    ) -> Result<Vec<u64>, FileDbError> {
+    ) -> Result<Vec<u64>, ScrivaDbError> {
         self.insert_many_with_ttl(collection, records, 0).await
     }
 
     /// Insert multiple records with a per-record TTL applied to every record in
-    /// the batch. Same semantics as [`FileDB::insert_with_ttl`]. Returns the
+    /// the batch. Same semantics as [`ScrivaDB::insert_with_ttl`]. Returns the
     /// assigned IDs in insertion order.
     pub async fn insert_many_with_ttl(
         &mut self,
         collection: &str,
         records: Vec<serde_json::Value>,
         ttl_seconds: i64,
-    ) -> Result<Vec<u64>, FileDbError> {
+    ) -> Result<Vec<u64>, ScrivaDbError> {
         let resp = self
             .client
             .insert_many(self.req(pb::InsertManyRequest {
@@ -724,7 +724,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         id: u64,
-    ) -> Result<Record, FileDbError> {
+    ) -> Result<Record, ScrivaDbError> {
         self.find_by_id_with_fields(collection, id, &[]).await
     }
 
@@ -738,7 +738,7 @@ impl FileDB {
         collection: &str,
         id: u64,
         fields: &[&str],
-    ) -> Result<Record, FileDbError> {
+    ) -> Result<Record, ScrivaDbError> {
         let resp = self
             .client
             .find_by_id(self.req(pb::FindByIdRequest {
@@ -754,13 +754,13 @@ impl FileDB {
     /// Query records and collect them into a `Vec`.
     ///
     /// The server streams results one by one; this method buffers the full
-    /// stream for convenience. Use [`FileDB::find_stream`] for large datasets,
-    /// or [`FileDB::find_page`] to also receive the next-page cursor.
+    /// stream for convenience. Use [`ScrivaDB::find_stream`] for large datasets,
+    /// or [`ScrivaDB::find_page`] to also receive the next-page cursor.
     pub async fn find(
         &mut self,
         collection: &str,
         opts: FindOptions,
-    ) -> Result<Vec<Record>, FileDbError> {
+    ) -> Result<Vec<Record>, ScrivaDbError> {
         let (records, _) = self.find_page(collection, opts).await?;
         Ok(records)
     }
@@ -776,7 +776,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         opts: FindOptions,
-    ) -> Result<(Vec<Record>, String), FileDbError> {
+    ) -> Result<(Vec<Record>, String), ScrivaDbError> {
         let request = self.req(self.build_find_request(collection, opts));
         let mut streaming = self.client.find(request).await?.into_inner();
         let mut records = Vec::new();
@@ -792,21 +792,21 @@ impl FileDB {
 
     /// Query records and return a server-side streaming [`Stream`].
     ///
-    /// Prefer this over [`FileDB::find`] when the result set may be very large.
+    /// Prefer this over [`ScrivaDB::find`] when the result set may be very large.
     /// The keyset page token is not surfaced by the streaming variant — use
-    /// [`FileDB::find_page`] when you need to paginate.
+    /// [`ScrivaDB::find_page`] when you need to paginate.
     pub async fn find_stream(
         &mut self,
         collection: &str,
         opts: FindOptions,
-    ) -> Result<impl Stream<Item = Result<Record, FileDbError>>, FileDbError> {
+    ) -> Result<impl Stream<Item = Result<Record, ScrivaDbError>>, ScrivaDbError> {
         let request = self.req(self.build_find_request(collection, opts));
         let streaming = self.client.find(request).await?.into_inner();
 
         Ok(streaming.map(|result| {
             result
                 .map(|resp| proto_record_to_record(resp.record.unwrap_or_default()))
-                .map_err(FileDbError::from)
+                .map_err(ScrivaDbError::from)
         }))
     }
 
@@ -816,7 +816,7 @@ impl FileDB {
         collection: &str,
         id: u64,
         data: serde_json::Value,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         self.update_with_ttl(collection, id, data, 0).await
     }
 
@@ -832,7 +832,7 @@ impl FileDB {
         id: u64,
         data: serde_json::Value,
         ttl_seconds: i64,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         let resp = self
             .client
             .update(self.req(pb::UpdateRequest {
@@ -847,7 +847,7 @@ impl FileDB {
     }
 
     /// Delete a record by ID. Returns `true` if the record existed.
-    pub async fn delete(&mut self, collection: &str, id: u64) -> Result<bool, FileDbError> {
+    pub async fn delete(&mut self, collection: &str, id: u64) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .delete(self.req(pb::DeleteRequest {
@@ -873,7 +873,7 @@ impl FileDB {
         collection: &str,
         key: &str,
         data: serde_json::Value,
-    ) -> Result<Record, FileDbError> {
+    ) -> Result<Record, ScrivaDbError> {
         let resp = self
             .client
             .upsert(self.req(pb::UpsertRequest {
@@ -886,25 +886,25 @@ impl FileDB {
         Ok(proto_record_to_record(resp.record.unwrap_or_default()))
     }
 
-    /// Fetch the record carrying `key`. Returns [`FileDbError::NotFound`] if none.
+    /// Fetch the record carrying `key`. Returns [`ScrivaDbError::NotFound`] if none.
     pub async fn find_by_key(
         &mut self,
         collection: &str,
         key: &str,
-    ) -> Result<Record, FileDbError> {
+    ) -> Result<Record, ScrivaDbError> {
         self.find_by_key_with_fields(collection, key, &[]).await
     }
 
     /// Fetch the record carrying `key`, projecting `data` to `fields` (N2).
     ///
     /// `id`, `key` and `rev` are always included. An empty slice returns the full
-    /// record. Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    /// record. Returns [`ScrivaDbError::NotFound`] if no live record carries `key`.
     pub async fn find_by_key_with_fields(
         &mut self,
         collection: &str,
         key: &str,
         fields: &[&str],
-    ) -> Result<Record, FileDbError> {
+    ) -> Result<Record, ScrivaDbError> {
         let resp = self
             .client
             .find_by_key(self.req(pb::FindByKeyRequest {
@@ -919,13 +919,13 @@ impl FileDB {
 
     /// Overwrite the record carrying `key`, preserving the key itself.
     ///
-    /// Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    /// Returns [`ScrivaDbError::NotFound`] if no live record carries `key`.
     pub async fn update_by_key(
         &mut self,
         collection: &str,
         key: &str,
         data: serde_json::Value,
-    ) -> Result<UpdateResult, FileDbError> {
+    ) -> Result<UpdateResult, ScrivaDbError> {
         let resp = self
             .client
             .update_by_key(self.req(pb::UpdateByKeyRequest {
@@ -945,12 +945,12 @@ impl FileDB {
 
     /// Delete the record carrying `key`. Returns `true` on success.
     ///
-    /// Returns [`FileDbError::NotFound`] if no live record carries `key`.
+    /// Returns [`ScrivaDbError::NotFound`] if no live record carries `key`.
     pub async fn delete_by_key(
         &mut self,
         collection: &str,
         key: &str,
-    ) -> Result<bool, FileDbError> {
+    ) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .delete_by_key(self.req(pb::DeleteByKeyRequest {
@@ -974,7 +974,7 @@ impl FileDB {
         key: &str,
         expected_rev: u64,
         data: serde_json::Value,
-    ) -> Result<CasResult, FileDbError> {
+    ) -> Result<CasResult, ScrivaDbError> {
         let resp = self
             .client
             .update_if_rev(self.req(pb::UpdateIfRevRequest {
@@ -1005,7 +1005,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         field: &str,
-    ) -> Result<(), FileDbError> {
+    ) -> Result<(), ScrivaDbError> {
         self.client
             .ensure_index(self.req(pb::EnsureIndexRequest {
                 collection: collection.to_owned(),
@@ -1020,7 +1020,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         field: &str,
-    ) -> Result<bool, FileDbError> {
+    ) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .drop_index(self.req(pb::DropIndexRequest {
@@ -1033,7 +1033,7 @@ impl FileDB {
     }
 
     /// List all indexed field names for a collection.
-    pub async fn list_indexes(&mut self, collection: &str) -> Result<Vec<String>, FileDbError> {
+    pub async fn list_indexes(&mut self, collection: &str) -> Result<Vec<String>, ScrivaDbError> {
         let resp = self
             .client
             .list_indexes(self.req(pb::ListIndexesRequest {
@@ -1049,7 +1049,7 @@ impl FileDB {
     // -------------------------------------------------------------------------
 
     /// Begin a transaction on a collection. Returns the transaction ID.
-    pub async fn begin_tx(&mut self, collection: &str) -> Result<String, FileDbError> {
+    pub async fn begin_tx(&mut self, collection: &str) -> Result<String, ScrivaDbError> {
         let resp = self
             .client
             .begin_tx(self.req(pb::BeginTxRequest {
@@ -1061,7 +1061,7 @@ impl FileDB {
     }
 
     /// Commit a transaction. Returns `true` on success.
-    pub async fn commit_tx(&mut self, tx_id: &str) -> Result<bool, FileDbError> {
+    pub async fn commit_tx(&mut self, tx_id: &str) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .commit_tx(self.req(pb::CommitTxRequest {
@@ -1073,7 +1073,7 @@ impl FileDB {
     }
 
     /// Roll back a transaction. Returns `true` on success.
-    pub async fn rollback_tx(&mut self, tx_id: &str) -> Result<bool, FileDbError> {
+    pub async fn rollback_tx(&mut self, tx_id: &str) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .rollback_tx(self.req(pb::RollbackTxRequest {
@@ -1099,7 +1099,7 @@ impl FileDB {
     /// ```rust,no_run
     /// use futures::StreamExt;
     ///
-    /// # async fn example(mut db: filedbv2::FileDB) -> Result<(), filedbv2::FileDbError> {
+    /// # async fn example(mut db: scriva::ScrivaDB) -> Result<(), scriva::ScrivaDbError> {
     /// let mut events = db.watch("users", None).await?;
     /// while let Some(event) = events.next().await {
     ///     let event = event?;
@@ -1112,7 +1112,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         filter: Option<FilterInput>,
-    ) -> Result<impl Stream<Item = Result<WatchEvent, FileDbError>>, FileDbError> {
+    ) -> Result<impl Stream<Item = Result<WatchEvent, ScrivaDbError>>, ScrivaDbError> {
         let streaming = self
             .client
             .watch(self.req(pb::WatchRequest {
@@ -1130,7 +1130,7 @@ impl FileDB {
                     record: proto_record_to_record(event.record.unwrap_or_default()),
                     ts: event.ts.map(timestamp_to_rfc3339),
                 })
-                .map_err(FileDbError::from)
+                .map_err(ScrivaDbError::from)
         }))
     }
 
@@ -1149,7 +1149,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         opts: AggregateOptions,
-    ) -> Result<Vec<AggregateGroup>, FileDbError> {
+    ) -> Result<Vec<AggregateGroup>, ScrivaDbError> {
         let request = self.req(pb::AggregateRequest {
             collection: collection.to_owned(),
             filter: opts.filter.as_ref().map(filter_to_proto),
@@ -1178,7 +1178,7 @@ impl FileDB {
         &mut self,
         collection: &str,
         filter: Option<FilterInput>,
-    ) -> Result<u64, FileDbError> {
+    ) -> Result<u64, ScrivaDbError> {
         let groups = self
             .aggregate(collection, AggregateOptions { filter, ..Default::default() })
             .await?;
@@ -1187,7 +1187,7 @@ impl FileDB {
 
     /// Group live records by `field` and aggregate each group.
     ///
-    /// Convenience wrapper over [`FileDB::aggregate`]: `field` is the group-by
+    /// Convenience wrapper over [`ScrivaDB::aggregate`]: `field` is the group-by
     /// field, `metric` the numeric field for `sum`/`avg`/`min`/`max` (request
     /// those via `aggregations`). Returns one [`AggregateGroup`] per distinct
     /// group value.
@@ -1198,7 +1198,7 @@ impl FileDB {
         aggregations: Vec<AggregateOp>,
         metric: &str,
         filter: Option<FilterInput>,
-    ) -> Result<Vec<AggregateGroup>, FileDbError> {
+    ) -> Result<Vec<AggregateGroup>, ScrivaDbError> {
         self.aggregate(
             collection,
             AggregateOptions {
@@ -1216,7 +1216,7 @@ impl FileDB {
     // -------------------------------------------------------------------------
 
     /// Return statistics for a collection.
-    pub async fn stats(&mut self, collection: &str) -> Result<CollectionStats, FileDbError> {
+    pub async fn stats(&mut self, collection: &str) -> Result<CollectionStats, ScrivaDbError> {
         let resp = self
             .client
             .collection_stats(self.req(pb::CollectionStatsRequest {
@@ -1241,7 +1241,7 @@ impl FileDB {
     ///
     /// Merges dirty segments and reclaims space from deleted or overwritten
     /// records. Returns only after the pass completes; `true` on success.
-    pub async fn compact(&mut self, collection: &str) -> Result<bool, FileDbError> {
+    pub async fn compact(&mut self, collection: &str) -> Result<bool, ScrivaDbError> {
         let resp = self
             .client
             .compact(self.req(pb::CompactRequest {
@@ -1256,18 +1256,18 @@ impl FileDB {
     ///
     /// Returns an async `Stream` yielding the raw archive bytes chunk by chunk.
     /// Concatenate the chunks to reconstruct the `.tar.gz`; restore by
-    /// extracting it into a data directory. See [`FileDB::snapshot_to_file`] for
+    /// extracting it into a data directory. See [`ScrivaDB::snapshot_to_file`] for
     /// a convenience wrapper that writes straight to disk.
     pub async fn snapshot(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<Vec<u8>, FileDbError>>, FileDbError> {
+    ) -> Result<impl Stream<Item = Result<Vec<u8>, ScrivaDbError>>, ScrivaDbError> {
         let streaming = self
             .client
             .snapshot(self.req(pb::SnapshotRequest {}))
             .await?
             .into_inner();
 
-        Ok(streaming.map(|result| result.map(|chunk| chunk.data).map_err(FileDbError::from)))
+        Ok(streaming.map(|result| result.map(|chunk| chunk.data).map_err(ScrivaDbError::from)))
     }
 
     /// Stream a database snapshot straight to a file at `path`.

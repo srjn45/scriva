@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import type { FileDBRecord, FindRequest } from '../api/types'
+import type { ScrivaDBRecord, FindRequest } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'
 import FilterBar from './FilterBar'
@@ -8,11 +8,11 @@ import { useRecords } from '../hooks/useRecords'
 interface Props {
   collection: string
   onInsert: () => void
-  onEdit: (record: FileDBRecord) => void
+  onEdit: (record: ScrivaDBRecord) => void
 }
 
 /** Returns a sorted list of all unique keys across all records (excluding internal fields) */
-function dataColumns(records: FileDBRecord[]): string[] {
+function dataColumns(records: ScrivaDBRecord[]): string[] {
   const keys = new Set<string>()
   for (const r of records) {
     for (const k of Object.keys(r.data ?? {})) keys.add(k)
@@ -52,7 +52,7 @@ export default function BrowseTab({ collection, onInsert, onEdit }: Props) {
   const page = Math.floor((lastReq.offset ?? 0) / (lastReq.limit ?? 20))
   const dataCols = dataColumns(records)
 
-  async function handleDelete(record: FileDBRecord) {
+  async function handleDelete(record: ScrivaDBRecord) {
     if (!window.confirm(`Delete record ${record.id}?`)) return
     try {
       await client.delete(collection, record.id)

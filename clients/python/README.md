@@ -1,22 +1,22 @@
-# FileDB v2 — Python Client
+# ScrivaDB — Python Client
 
-Synchronous Python gRPC client for [FileDB v2](../../README.md).
+Synchronous Python gRPC client for [ScrivaDB](../../README.md).
 
-**PyPI package:** `filedbv2`
+**PyPI package:** `scriva`
 
 ---
 
 ## Requirements
 
 - Python 3.9+
-- A running FileDB v2 server (`make run` from the repo root)
+- A running ScrivaDB server (`make run` from the repo root)
 
 ---
 
 ## Install
 
 ```bash
-pip install filedbv2
+pip install scriva
 ```
 
 This pulls in `grpcio`, `protobuf`, and `googleapis-common-protos`.
@@ -30,11 +30,11 @@ cd clients/python
 pip install .
 ```
 
-To regenerate the gRPC stubs from `proto/filedb.proto`:
+To regenerate the gRPC stubs from `proto/scriva.proto`:
 
 ```bash
 pip install ".[codegen]"   # installs grpcio-tools
-./generate.sh              # writes src/filedbv2/proto/filedb_pb2*.py
+./generate.sh              # writes src/scriva/proto/scriva_pb2*.py
 ```
 
 ---
@@ -42,9 +42,9 @@ pip install ".[codegen]"   # installs grpcio-tools
 ## Quick start
 
 ```python
-from filedbv2 import FileDB
+from scriva import ScrivaDB
 
-db = FileDB("localhost", 5433, "dev-key")
+db = ScrivaDB("localhost", 5433, "dev-key")
 
 db.create_collection("users")
 
@@ -62,10 +62,10 @@ db.drop_collection("users")
 db.close()
 ```
 
-`FileDB` is also a context manager:
+`ScrivaDB` is also a context manager:
 
 ```python
-with FileDB("localhost", 5433, "dev-key") as db:
+with ScrivaDB("localhost", 5433, "dev-key") as db:
     db.create_collection("users")
     ...
 ```
@@ -80,10 +80,10 @@ with FileDB("localhost", 5433, "dev-key") as db:
 
 ```python
 # Plaintext (no TLS)
-FileDB(host="localhost", port=5433, api_key="dev-key")
+ScrivaDB(host="localhost", port=5433, api_key="dev-key")
 
 # TLS — verify the server against a CA certificate
-FileDB(host, port, api_key, tls_ca_cert="/path/to/ca.crt")  # path or PEM bytes/str
+ScrivaDB(host, port, api_key, tls_ca_cert="/path/to/ca.crt")  # path or PEM bytes/str
 ```
 
 ### Collection management
@@ -250,10 +250,10 @@ are present only when `numeric` is `True`.
 ### Errors
 
 Keyed operations map the engine's gRPC status codes onto typed exceptions
-(exported from `filedbv2`):
+(exported from `scriva`):
 
 ```python
-from filedbv2 import FileDB, NotFoundError, AlreadyExistsError
+from scriva import ScrivaDB, NotFoundError, AlreadyExistsError
 
 try:
     db.insert("col", {"name": "Bob"}, key="user:bob")   # duplicate key
@@ -266,7 +266,7 @@ except NotFoundError:
     ...
 ```
 
-Both derive from `FileDBError`. Other gRPC failures propagate as `grpc.RpcError`.
+Both derive from `ScrivaDBError`. Other gRPC failures propagate as `grpc.RpcError`.
 
 ### Secondary indexes
 
@@ -397,11 +397,11 @@ Composites nest arbitrarily.
 
 ```python
 # From a PEM file path
-db = FileDB("myserver.example.com", 5433, "api-key", tls_ca_cert="/path/to/ca.crt")
+db = ScrivaDB("myserver.example.com", 5433, "api-key", tls_ca_cert="/path/to/ca.crt")
 
 # From PEM bytes
 with open("/path/to/ca.crt", "rb") as fh:
-    db = FileDB("myserver.example.com", 5433, "api-key", tls_ca_cert=fh.read())
+    db = ScrivaDB("myserver.example.com", 5433, "api-key", tls_ca_cert=fh.read())
 ```
 
 When no CA cert is supplied the client connects over plaintext (insecure channel).
@@ -414,7 +414,7 @@ Python can connect over the Unix domain socket for local connections by passing 
 `unix:` target as the host (with port `0`):
 
 ```python
-db = FileDB("unix:///tmp/filedb.sock", 0, "dev-key")
+db = ScrivaDB("unix:///tmp/scriva.sock", 0, "dev-key")
 ```
 
 For the common case, TCP (`localhost:5433`) is sufficient.

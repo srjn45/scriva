@@ -1,6 +1,6 @@
 <?php
 /**
- * FileDB v2 PHP SDK — basic end-to-end example.
+ * ScrivaDB PHP SDK — basic end-to-end example.
  *
  * Start the server first (from the repo root):
  *
@@ -17,13 +17,13 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use FileDBv2\FileDB;
+use ScrivaDB\ScrivaDB;
 
 $host   = $argv[1] ?? 'localhost';
 $port   = (int)($argv[2] ?? 5433);
 $apiKey = $argv[3] ?? 'dev-key';
 
-$db = new FileDB($host, $port, $apiKey);
+$db = new ScrivaDB($host, $port, $apiKey);
 
 const COLLECTION = 'test_php';
 
@@ -191,7 +191,7 @@ echo "UpdateByKey user:alice ok\n";
 try {
     $db->insert(COLLECTION, ['name' => 'dup'], key: 'user:alice');
     echo "ERROR: expected AlreadyExistsException\n";
-} catch (\FileDBv2\AlreadyExistsException $e) {
+} catch (\ScrivaDB\AlreadyExistsException $e) {
     echo "Keyed insert on taken key threw AlreadyExistsException (as expected)\n";
 }
 
@@ -200,7 +200,7 @@ echo "DeleteByKey user:alice ok\n";
 try {
     $db->findByKey(COLLECTION, 'user:alice');
     echo "ERROR: expected NotFoundException\n";
-} catch (\FileDBv2\NotFoundException $e) {
+} catch (\ScrivaDB\NotFoundException $e) {
     echo "FindByKey on missing key threw NotFoundException (as expected)\n";
 }
 
@@ -225,7 +225,7 @@ foreach ($byRole as $g) {
 }
 
 // ── Snapshot (whole-database backup) ─────────────────────────────────────────
-$backup = sys_get_temp_dir() . '/filedb_php_snapshot.tar.gz';
+$backup = sys_get_temp_dir() . '/scriva_php_snapshot.tar.gz';
 $bytes = $db->snapshotToFile($backup);
 echo "Snapshot: wrote $bytes bytes to $backup\n";
 @unlink($backup);

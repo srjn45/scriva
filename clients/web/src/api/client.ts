@@ -1,13 +1,13 @@
 import type {
   CollectionStats,
-  FileDBRecord,
+  ScrivaDBRecord,
   FindRequest,
   RecordData,
   WatchEvent,
 } from './types'
-import { FileDBError } from './types'
+import { ScrivaDBError } from './types'
 
-export class FileDBClient {
+export class ScrivaDBClient {
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey: string,
@@ -29,7 +29,7 @@ export class FileDBClient {
     })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
-      throw new FileDBError(res.status, text)
+      throw new ScrivaDBError(res.status, text)
     }
     return res.json() as Promise<T>
   }
@@ -55,15 +55,15 @@ export class FileDBClient {
     return this.request('POST', `/v1/${encodeURIComponent(collection)}/records`, { data })
   }
 
-  async findById(collection: string, id: string): Promise<FileDBRecord> {
-    const res = await this.request<{ record: FileDBRecord }>(
+  async findById(collection: string, id: string): Promise<ScrivaDBRecord> {
+    const res = await this.request<{ record: ScrivaDBRecord }>(
       'GET',
       `/v1/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`,
     )
     return res.record
   }
 
-  async find(collection: string, req: FindRequest): Promise<FileDBRecord[]> {
+  async find(collection: string, req: FindRequest): Promise<ScrivaDBRecord[]> {
     // grpc-gateway streams FindResponse one per line; collect all
     const res = await fetch(
       `${this.baseUrl}/v1/${encodeURIComponent(collection)}/records/find`,
@@ -71,7 +71,7 @@ export class FileDBClient {
     )
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
-      throw new FileDBError(res.status, text)
+      throw new ScrivaDBError(res.status, text)
     }
     const text = await res.text()
     return text
@@ -79,10 +79,10 @@ export class FileDBClient {
       .filter(Boolean)
       .map((line) => {
         const envelope = JSON.parse(line) as
-          | { result: { record: FileDBRecord } }
+          | { result: { record: ScrivaDBRecord } }
           | { error: { message: string; code?: number } }
         if ('error' in envelope) {
-          throw new FileDBError(500, envelope.error.message)
+          throw new ScrivaDBError(500, envelope.error.message)
         }
         return envelope.result.record
       })
@@ -155,7 +155,7 @@ export class FileDBClient {
         )
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => res.statusText)
-          onError?.(new FileDBError(res.status, text))
+          onError?.(new ScrivaDBError(res.status, text))
           return
         }
         const reader = res.body.getReader()
