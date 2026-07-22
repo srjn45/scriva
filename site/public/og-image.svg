@@ -20,7 +20,7 @@
     <rect x="20" y="58" width="30" height="8" rx="4" fill="#7c3aed"/>
   </g>
 
-  <text x="210" y="220" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="82" font-weight="800" fill="#e6edf3">filedb <tspan fill="#a78bfa">v2</tspan></text>
+  <text x="210" y="220" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="82" font-weight="800" fill="url(#t)">ScrivaDB</text>
 
   <text x="92" y="340" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="44" font-weight="700" fill="#e6edf3">A file-based document database.</text>
   <text x="92" y="404" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="44" font-weight="700" fill="url(#t)">One binary. Human-readable storage.</text>

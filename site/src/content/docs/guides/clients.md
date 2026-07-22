@@ -10,18 +10,18 @@ Each wraps the same gRPC API, takes the same connection config (`host`, `port`,
 
 | Language | Install | Reference |
 |---|---|---|
-| Python | `pip install filedbv2` | [clients/python](https://github.com/srjn45/FileDBv2/tree/main/clients/python) |
-| JavaScript / TypeScript | `npm install filedbv2` | [clients/js](https://github.com/srjn45/FileDBv2/tree/main/clients/js) |
-| PHP | `composer require srjn45/filedbv2` | [clients/php](https://github.com/srjn45/FileDBv2/tree/main/clients/php) |
-| Java | `com.srjn45:filedbv2-client` (Maven Central) | [clients/java](https://github.com/srjn45/FileDBv2/tree/main/clients/java) |
-| Ruby | `gem install filedbv2` | [clients/ruby](https://github.com/srjn45/FileDBv2/tree/main/clients/ruby) |
-| Rust | `cargo add filedbv2` | [clients/rust](https://github.com/srjn45/FileDBv2/tree/main/clients/rust) |
-| C# / .NET | `dotnet add package FileDBv2.Client` | [clients/csharp](https://github.com/srjn45/FileDBv2/tree/main/clients/csharp) |
+| Python | `pip install scriva` | [clients/python](https://github.com/srjn45/scriva/tree/main/clients/python) |
+| JavaScript / TypeScript | `npm install scriva` | [clients/js](https://github.com/srjn45/scriva/tree/main/clients/js) |
+| PHP | `composer require srjn45/scriva` | [clients/php](https://github.com/srjn45/scriva/tree/main/clients/php) |
+| Java | `com.srjn45:scriva-client` (Maven Central) | [clients/java](https://github.com/srjn45/scriva/tree/main/clients/java) |
+| Ruby | `gem install scriva` | [clients/ruby](https://github.com/srjn45/scriva/tree/main/clients/ruby) |
+| Rust | `cargo add scriva` | [clients/rust](https://github.com/srjn45/scriva/tree/main/clients/rust) |
+| C# / .NET | `dotnet add package ScrivaDB.Client` | [clients/csharp](https://github.com/srjn45/scriva/tree/main/clients/csharp) |
 
 ## Example (Python)
 
 ```python
-from filedbv2 import Client
+from scriva import Client
 
 db = Client(host="localhost", port=5433, api_key="dev-key")
 db.insert("users", {"name": "alice", "age": 30})
@@ -37,11 +37,11 @@ SDK? The checked-in **OpenAPI spec** (`docs/openapi/filedb.swagger.json`) is
 generated from the proto and covers every RPC. Feed it to
 [openapi-generator](https://openapi-generator.tech/) for any language.
 
-See the [API reference](/FileDBv2/reference/api/) for details on the gRPC and
+See the [API reference](/scriva/reference/api/) for details on the gRPC and
 REST surfaces.
 
 ## Web admin UI
 
 There's also a browser-based collection and record manager under
-[`clients/web/`](https://github.com/srjn45/FileDBv2/tree/main/clients/web)
+[`clients/web/`](https://github.com/srjn45/scriva/tree/main/clients/web)
 (React + Vite), which talks to the REST gateway.

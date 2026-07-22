@@ -1,16 +1,16 @@
 ---
-title: What is FileDB v2?
+title: What is ScrivaDB?
 description: A lightweight, append-only, file-based document database — one binary, human-readable NDJSON storage, gRPC + REST, and an embeddable Go engine.
 ---
 
-**FileDB v2** is a lightweight, append-only, file-based document database. It
+**ScrivaDB** is a lightweight, append-only, file-based document database. It
 stores each collection as a set of **NDJSON segment files** — one JSON object
 per line, appended in order. There is no binary format, no external runtime, and
 no hidden state. You can inspect, back up, or migrate your data with any text
 editor or Unix tool.
 
 ```bash
-$ filedb-cli insert users '{"name":"alice","age":30}' --api-key dev-key
+$ scriva-cli insert users '{"name":"alice","age":30}' --api-key dev-key
   ✓ id=01J8...  key=01J8...  rev=1
 
 $ tail -1 data/users/000001.ndjson      # your data is just text
@@ -19,15 +19,15 @@ $ tail -1 data/users/000001.ndjson      # your data is just text
 
 ## How it's delivered
 
-FileDB ships as **two binaries built from one repo**:
+ScrivaDB ships as **two binaries built from one repo**:
 
-- **`filedb`** — the server. Serves a dual **gRPC + REST** API from a single
+- **`scriva`** — the server. Serves a dual **gRPC + REST** API from a single
   process, on `:5433` (gRPC) and `:8080` (REST) by default.
-- **`filedb-cli`** — the client. Subcommands plus an interactive REPL; talks to
+- **`scriva-cli`** — the client. Subcommands plus an interactive REPL; talks to
   a local server over a Unix domain socket.
 
 And a third distribution channel — the **embeddable engine**. `go get` the
-`filedb`/`engine` packages and run the database **in-process**, with no gRPC,
+`scriva`/`engine` packages and run the database **in-process**, with no gRPC,
 no network, and no separate daemon.
 
 ## What makes it different
@@ -48,7 +48,7 @@ no network, and no separate daemon.
 
 ## When to use it
 
-FileDB v2 is the right tool when:
+ScrivaDB is the right tool when:
 
 - You need persistence without standing up PostgreSQL or MongoDB.
 - Your data fits on one machine and you want human-readable files.
@@ -61,6 +61,6 @@ leader→follower with **manual** failover — deliberately simple.
 
 ## Next steps
 
-- [Install](/FileDBv2/start/install/) the server and CLI.
-- Run through the [Quickstart](/FileDBv2/start/quickstart/).
-- Learn the [data model](/FileDBv2/guides/data-model/) — keys, revisions, CAS.
+- [Install](/scriva/start/install/) the server and CLI.
+- Run through the [Quickstart](/scriva/start/quickstart/).
+- Learn the [data model](/scriva/guides/data-model/) — keys, revisions, CAS.

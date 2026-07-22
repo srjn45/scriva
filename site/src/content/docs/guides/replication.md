@@ -3,7 +3,7 @@ title: Replication & failover
 description: Leader→follower replication, read replicas, staleness bounds, and manual promotion after a leader loss.
 ---
 
-FileDB supports **leader→follower** replication for read scaling and standby
+ScrivaDB supports **leader→follower** replication for read scaling and standby
 redundancy. It is intentionally simple: asynchronous, with **manual** failover.
 Automatic election is out of scope.
 
@@ -12,7 +12,7 @@ Automatic election is out of scope.
 Start a hot standby that replicates from a leader:
 
 ```bash
-filedb serve --data ./follower-data \
+scriva serve --data ./follower-data \
   --replicate-from leader-host:5433 \
   --api-key dev-key
 ```
@@ -45,7 +45,7 @@ leader's `leader_lsn`.
 After a leader loss, promote a caught-up follower with the admin `Promote` RPC:
 
 ```bash
-filedb-cli promote --api-key dev-key
+scriva-cli promote --api-key dev-key
 ```
 
 Promotion:
@@ -56,10 +56,10 @@ Promotion:
 - Is **one-way**. There is no automatic election; re-point the old leader as a
   follower of the new one if you want it back.
 
-See the [operator runbook](https://github.com/srjn45/FileDBv2/blob/main/docs/operations.md)
+See the [operator runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md)
 for the full failover procedure.
 
 ## Next
 
-- [Configuration](/FileDBv2/reference/configuration/)
-- [Architecture](/FileDBv2/concepts/architecture/)
+- [Configuration](/scriva/reference/configuration/)
+- [Architecture](/scriva/concepts/architecture/)

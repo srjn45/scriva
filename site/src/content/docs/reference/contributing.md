@@ -1,15 +1,15 @@
 ---
 title: Contributing
-description: How to build, test, regenerate stubs, and submit changes to FileDB v2.
+description: How to build, test, regenerate stubs, and submit changes to ScrivaDB.
 ---
 
-Contributions are welcome. FileDB v2 is written in **Go (1.22+)** and the whole
+Contributions are welcome. ScrivaDB is written in **Go (1.22+)** and the whole
 project builds from a single repo.
 
 ## Build & test
 
 ```bash
-make build        # compiles bin/filedb and bin/filedb-cli
+make build        # compiles bin/scriva and bin/scriva-cli
 make test         # go test ./... -race -count=1
 make lint         # golangci-lint run ./...
 make vet          # go vet ./...
@@ -23,7 +23,7 @@ engine layer is never mocked, because the whole point is testing real disk I/O.
 
 The proto is the source of truth. To add or change an RPC:
 
-1. Edit [`proto/filedb.proto`](https://github.com/srjn45/FileDBv2/blob/main/proto/filedb.proto).
+1. Edit [`proto/filedb.proto`](https://github.com/srjn45/scriva/blob/main/proto/filedb.proto).
 2. Run `make proto` (requires the [buf](https://buf.build/docs/installation) CLI)
    to regenerate stubs. **Never** hand-edit files under `internal/pb/proto/`.
 3. Implement the server handler, then the engine method.
@@ -48,8 +48,8 @@ docs(getting-started): document --slow-query-ms
 
 ## Getting help
 
-Read the full [`CONTRIBUTING.md`](https://github.com/srjn45/FileDBv2/blob/main/CONTRIBUTING.md)
-and the [`CLAUDE.md`](https://github.com/srjn45/FileDBv2/blob/main/CLAUDE.md)
+Read the full [`CONTRIBUTING.md`](https://github.com/srjn45/scriva/blob/main/CONTRIBUTING.md)
+and the [`CLAUDE.md`](https://github.com/srjn45/scriva/blob/main/CLAUDE.md)
 developer guide in the repo, and open an
-[issue](https://github.com/srjn45/FileDBv2/issues) or discussion for anything
+[issue](https://github.com/srjn45/scriva/issues) or discussion for anything
 unclear.

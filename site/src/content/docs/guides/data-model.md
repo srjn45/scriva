@@ -3,7 +3,7 @@ title: Data model
 description: Collections, records, caller-supplied keys, monotonic revisions, upsert, compare-and-swap, TTL, and transactions.
 ---
 
-FileDB is a **document** database. You organize data into **collections**, and
+ScrivaDB is a **document** database. You organize data into **collections**, and
 each collection holds JSON **records**.
 
 ## Records
@@ -23,10 +23,10 @@ Plus a `crc` checksum, which the engine verifies on read.
 You can address records by their natural `key`, not just the internal `id`:
 
 ```bash
-filedb-cli insert users '{"name":"alice"}' --key alice --api-key dev-key
-filedb-cli get    users --key alice --api-key dev-key
-filedb-cli update users --key alice '{"name":"alice","age":31}' --api-key dev-key
-filedb-cli delete users --key alice --api-key dev-key
+scriva-cli insert users '{"name":"alice"}' --key alice --api-key dev-key
+scriva-cli get    users --key alice --api-key dev-key
+scriva-cli update users --key alice '{"name":"alice","age":31}' --api-key dev-key
+scriva-cli delete users --key alice --api-key dev-key
 ```
 
 Duplicate keys are rejected with `AlreadyExists`; missing keys return
@@ -37,7 +37,7 @@ Duplicate keys are rejected with `AlreadyExists`; missing keys return
 Insert-or-replace in one call — idempotent by key:
 
 ```bash
-filedb-cli upsert users '{"name":"alice","age":31}' --key alice --api-key dev-key
+scriva-cli upsert users '{"name":"alice","age":31}' --key alice --api-key dev-key
 ```
 
 ## Compare-and-swap (CAS)
@@ -48,7 +48,7 @@ otherwise it fails, so two writers can't silently clobber each other.
 
 ```bash
 # read gives you rev=4; only update if it's still 4
-filedb-cli update-if-rev users --key alice --rev 4 '{"name":"alice","age":32}' --api-key dev-key
+scriva-cli update-if-rev users --key alice --rev 4 '{"name":"alice","age":32}' --api-key dev-key
 ```
 
 ## TTL / expiring records
@@ -58,14 +58,14 @@ by compaction:
 
 - Per record: `--ttl 24h` on insert/update.
 - Per collection default: `create-collection --default-ttl ...` (persisted).
-- Server-wide default: `--default-ttl` on `filedb serve`.
+- Server-wide default: `--default-ttl` on `scriva serve`.
 
 Expired records disappear from reads **immediately**; the on-disk space is
 reclaimed on the next compaction pass.
 
 ## Transactions
 
-For multi-operation atomicity, FileDB offers **optimistic** transactions:
+For multi-operation atomicity, ScrivaDB offers **optimistic** transactions:
 
 ```
 BeginTx  →  (insert / update / delete ...)  →  CommitTx
@@ -77,7 +77,7 @@ underneath it. Idle transactions are reaped after `--tx-timeout` (default 5m).
 
 ## Next
 
-- [Queries & indexes](/FileDBv2/guides/queries/) — filters, pagination,
+- [Queries & indexes](/scriva/guides/queries/) — filters, pagination,
   secondary indexes, aggregations.
-- [Embedding](/FileDBv2/guides/embedding/) — the same model as an in-process Go
+- [Embedding](/scriva/guides/embedding/) — the same model as an in-process Go
   API.

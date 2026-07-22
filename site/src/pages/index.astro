@@ -1,7 +1,7 @@
 ---
 import '../styles/landing.css';
-const base = import.meta.env.BASE_URL; // '/FileDBv2/'
-const gh = 'https://github.com/srjn45/FileDBv2';
+const base = import.meta.env.BASE_URL; // '/scriva/'
+const gh = 'https://github.com/srjn45/scriva';
 
 const values = [
   ['📄', 'Human-readable storage', 'Every collection is plain NDJSON — one JSON object per line. Inspect, grep, back up, or migrate your data with any text editor. No binary format, no hidden state.'],
@@ -31,32 +31,32 @@ const features = [
 ];
 
 const deploys = [
-  ['🖥️', 'Standalone server', 'Run <code>filedb serve</code> and get gRPC on :5433 and REST on :8080 from one binary. Talk to it from any language, or from the CLI over a Unix socket.'],
+  ['🖥️', 'Standalone server', 'Run <code>scriva serve</code> and get gRPC on :5433 and REST on :8080 from one binary. Talk to it from any language, or from the CLI over a Unix socket.'],
   ['📚', 'Embedded library', 'Skip the server entirely — <code>go get</code> the engine and run the database in-process. Keyed CRUD, CAS, secondary indexes, and in-process <code>Watch</code>.'],
-  ['🐳', 'Docker & Compose', 'Pull <code>ghcr.io/srjn45/filedbv2</code> or <code>docker compose up</code>. Data persists in a named volume; REST and gRPC ports exposed and ready.'],
+  ['🐳', 'Docker & Compose', 'Pull <code>ghcr.io/srjn45/scriva</code> or <code>docker compose up</code>. Data persists in a named volume; REST and gRPC ports exposed and ready.'],
 ];
 ---
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FileDB v2 — a file-based document database</title>
+    <title>ScrivaDB — a file-based document database</title>
     <meta name="description" content="A lightweight, append-only, file-based document database. Human-readable NDJSON storage, gRPC + REST from one binary, an embeddable Go engine, secondary indexes, replication, and 7 client SDKs. MIT licensed." />
     <link rel="icon" href={`${base}favicon.svg`} />
-    <meta property="og:title" content="FileDB v2 — a file-based document database" />
+    <meta property="og:title" content="ScrivaDB — a file-based document database" />
     <meta property="og:description" content="Append-only NDJSON storage, gRPC + REST from one binary, an embeddable Go engine. One small binary, zero dependencies." />
-    <meta property="og:image" content="https://srjn45.github.io/FileDBv2/og-image.svg" />
+    <meta property="og:image" content="https://srjn45.github.io/scriva/og-image.svg" />
     <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
     <!-- ===== nav ===== -->
     <nav class="nav">
       <div class="wrap nav-inner">
-        <a class="brand" href={base}><span class="caret">▤</span> filedb<span class="v">v2</span></a>
+        <a class="brand" href={base}><span class="caret">▤</span> ScrivaDB</a>
         <div class="nav-links">
           <a class="hide-sm" href="#features">Features</a>
           <a class="hide-sm" href="#engine">How it works</a>
-          <a href={`${base}start/what-is-filedb/`}>Docs</a>
+          <a href={`${base}start/what-is-scriva/`}>Docs</a>
           <a class="hide-sm" href={gh}>GitHub</a>
           <a class="nav-cta" href={`${base}start/install/`}>Install</a>
         </div>
@@ -68,7 +68,7 @@ const deploys = [
       <div class="wrap">
         <span class="pill"><span class="dot"></span> Open source · MIT · v1.0 API frozen</span>
         <h1>A file-based<br /><span class="grad">document database.</span></h1>
-        <p class="lede">FileDB v2 stores each collection as append-only NDJSON — human-readable, one
+        <p class="lede">ScrivaDB stores each collection as append-only NDJSON — human-readable, one
           JSON object per line. Get a durable document store with gRPC + REST from a single Go
           binary, or embed the engine directly in your program. No daemon, no external runtime, no
           hidden state.</p>
@@ -80,13 +80,13 @@ const deploys = [
         <div class="terminal">
           <div class="terminal-bar">
             <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
-            <span class="tt">zsh — filedb</span>
+            <span class="tt">zsh — scriva</span>
           </div>
-<pre class="terminal-body"><span class="prompt">$</span> <span class="cmd">filedb serve --data ./data --api-key dev-key &amp;</span>
-<span class="prompt">$</span> <span class="cmd">filedb-cli insert users '&#123;"name":"alice","age":30&#125;' --api-key dev-key</span>
+<pre class="terminal-body"><span class="prompt">$</span> <span class="cmd">scriva serve --data ./data --api-key dev-key &amp;</span>
+<span class="prompt">$</span> <span class="cmd">scriva-cli insert users '&#123;"name":"alice","age":30&#125;' --api-key dev-key</span>
   <span class="ok">✓</span> id=01J8... <span class="muted">key=01J8... rev=1</span>
 
-<span class="prompt">$</span> <span class="cmd">filedb-cli find users '&#123;"field":"name","op":"eq","value":"alice"&#125;'</span>
+<span class="prompt">$</span> <span class="cmd">scriva-cli find users '&#123;"field":"name","op":"eq","value":"alice"&#125;'</span>
   <span class="tool">▶ index hit</span> <span class="muted">users.name (1 row scanned, 1 returned)</span>
   <span class="key">&#123;</span><span class="str">"name"</span>: <span class="str">"alice"</span>, <span class="str">"age"</span>: 30<span class="key">&#125;</span>
 
@@ -99,7 +99,7 @@ const deploys = [
     <!-- ===== value props ===== -->
     <section class="section" id="features">
       <div class="wrap">
-        <p class="eyebrow">Why FileDB</p>
+        <p class="eyebrow">Why ScrivaDB</p>
         <h2>Persistence without the operational weight</h2>
         <p class="lede">When you need a real document store but standing up PostgreSQL or MongoDB is
           overkill — and you'd like to still be able to <code>cat</code> your data.</p>
@@ -222,7 +222,7 @@ const deploys = [
     <section class="section">
       <div class="wrap">
         <p class="eyebrow">Explore</p>
-        <h2>Everything FileDB does</h2>
+        <h2>Everything ScrivaDB does</h2>
         <div class="linkgrid" style="margin-top:24px">
           {features.map(([label, slug]) => (
             <a href={`${base}${slug}/`}>{label}<span class="arw">→</span></a>
@@ -237,17 +237,17 @@ const deploys = [
         <p class="eyebrow">Quickstart</p>
         <h2>Up in under a minute</h2>
 <pre class="qs-pre"><span class="muted"># start the server (or: docker compose up -d)</span>
-filedb serve --data ./data --api-key dev-key
+scriva serve --data ./data --api-key dev-key
 
 <span class="muted"># insert, then query — via the CLI over the Unix socket</span>
-filedb-cli insert users <span class="str">'&#123;"name":"alice","age":30&#125;'</span> --api-key dev-key
-filedb-cli find   users <span class="str">'&#123;"field":"age","op":"gt","value":18&#125;'</span> --api-key dev-key
+scriva-cli insert users <span class="str">'&#123;"name":"alice","age":30&#125;'</span> --api-key dev-key
+scriva-cli find   users <span class="str">'&#123;"field":"age","op":"gt","value":18&#125;'</span> --api-key dev-key
 
 <span class="muted"># or embed it directly in Go — no server at all</span>
-go get github.com/srjn45/filedbv2/filedb</pre>
+go get github.com/srjn45/scriva/filedb</pre>
         <div class="cta-row" style="justify-content:flex-start;margin-top:24px">
           <a class="btn btn-primary" href={`${base}start/install/`}>Install guide →</a>
-          <a class="btn btn-ghost" href={`${base}start/what-is-filedb/`}>Read the docs</a>
+          <a class="btn btn-ghost" href={`${base}start/what-is-scriva/`}>Read the docs</a>
         </div>
       </div>
     </section>
@@ -255,11 +255,11 @@ go get github.com/srjn45/filedbv2/filedb</pre>
     <!-- ===== footer ===== -->
     <footer class="foot">
       <div class="wrap">
-        <a href={`${base}start/what-is-filedb/`}>Docs</a> ·
+        <a href={`${base}start/what-is-scriva/`}>Docs</a> ·
         <a href={gh}>GitHub</a> ·
         <a href={`${base}reference/api/`}>API</a> ·
         MIT
-        <p class="fine">FileDB v2 is an independent open-source project. It is the right tool for
+        <p class="fine">ScrivaDB is an independent open-source project. It is the right tool for
           single-machine, human-readable persistence — not for datasets too large to compact on one
           node, complex joins, or automatic multi-node consensus. Use at your own risk. All product
           names are trademarks of their respective owners.</p>

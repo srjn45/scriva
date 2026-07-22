@@ -1,9 +1,9 @@
 ---
 title: Architecture
-description: How FileDB stores data — segment files, the write and read paths, indexes, compaction, and crash safety.
+description: How ScrivaDB stores data — segment files, the write and read paths, indexes, compaction, and crash safety.
 ---
 
-FileDB is built around one idea: **an append-only log of JSON, made queryable**.
+ScrivaDB is built around one idea: **an append-only log of JSON, made queryable**.
 
 ## Storage model
 
@@ -31,7 +31,7 @@ Every line carries the record's `id`, `key`, `rev`, your `data`, and a **CRC32C*
 2. It's **appended** to the active segment — inserts, updates, and deletes are
    all just new lines (a delete is a tombstone line).
 3. Indexes are updated in memory.
-4. The write is durably flushed according to the [`--sync` mode](/FileDBv2/guides/durability-and-backup/).
+4. The write is durably flushed according to the [`--sync` mode](/scriva/guides/durability-and-backup/).
 
 Because writes never modify existing bytes, a crash can at worst leave a torn
 trailing line, which is detected and skipped on restart.
@@ -61,14 +61,14 @@ A background goroutine per collection periodically **merges and deduplicates**
 sealed segments: it keeps the newest `rev` per record, drops tombstones and
 expired (TTL) records, and reclaims space. It triggers on `--compact-interval`
 or when the dirty ratio crosses `--compact-dirty`; operators can force a
-synchronous pass with `filedb-cli compact`.
+synchronous pass with `scriva-cli compact`.
 
 ## Replication
 
 Committed writes are assigned a monotonic **global LSN**. A follower bootstraps
 from a snapshot and then tails the leader by LSN, applying each write through the
 normal write path — so a follower's segments and indexes match the leader
-exactly. See [Replication & failover](/FileDBv2/guides/replication/).
+exactly. See [Replication & failover](/scriva/guides/replication/).
 
 ## Observability
 
@@ -80,4 +80,4 @@ exactly. See [Replication & failover](/FileDBv2/guides/replication/).
   dependency.
 
 For the authoritative deep-dive, see
-[`docs/architecture.md`](https://github.com/srjn45/FileDBv2/blob/main/docs/architecture.md).
+[`docs/architecture.md`](https://github.com/srjn45/scriva/blob/main/docs/architecture.md).
