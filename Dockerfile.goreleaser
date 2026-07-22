@@ -1,0 +1,23 @@
+# Multi-arch image built by GoReleaser (dockers_v2 / buildx).
+# GoReleaser stages the pre-built binaries under platform subdirectories
+# (linux/amd64/scriva, linux/arm64/scriva), so the COPY must resolve the
+# per-platform path via the buildx-provided $TARGETPLATFORM build arg rather
+# than a bare binary name. For a plain local `docker build .`, use the root
+# Dockerfile instead.
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates tzdata
+
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/scriva /usr/local/bin/scriva
+
+RUN adduser -D -H -h /data scriva && \
+    mkdir -p /data && \
+    chown scriva:scriva /data
+
+USER scriva
+WORKDIR /data
+
+EXPOSE 5433 8080
+
+ENTRYPOINT ["scriva", "serve", "--data", "/data"]

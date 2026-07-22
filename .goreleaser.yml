@@ -155,7 +155,7 @@ dockers_v2:
     tags:
       - "{{ .Tag }}"
       - latest
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     labels:
       org.opencontainers.image.title: ScrivaDB
       org.opencontainers.image.version: "{{ .Version }}"
