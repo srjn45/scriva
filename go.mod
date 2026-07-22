@@ -1,4 +1,4 @@
-module github.com/srjn45/filedbv2
+module github.com/srjn45/scriva
 
 go 1.24.0
 

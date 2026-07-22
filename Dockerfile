@@ -2,15 +2,15 @@ FROM alpine:3.19
 
 RUN apk --no-cache add ca-certificates tzdata
 
-COPY filedb /usr/local/bin/filedb
+COPY scriva /usr/local/bin/scriva
 
-RUN adduser -D -H -h /data filedb && \
+RUN adduser -D -H -h /data scriva && \
     mkdir -p /data && \
-    chown filedb:filedb /data
+    chown scriva:scriva /data
 
-USER filedb
+USER scriva
 WORKDIR /data
 
 EXPOSE 5433 8080
 
-ENTRYPOINT ["filedb", "serve", "--data", "/data"]
+ENTRYPOINT ["scriva", "serve", "--data", "/data"]

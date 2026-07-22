@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // TestScanStream_StatsFullScan pins the acceptance bar for the slow-query log:

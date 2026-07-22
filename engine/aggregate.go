@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // AggregateSpec parameterises an aggregation over a collection's live records.

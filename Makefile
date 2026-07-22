@@ -1,6 +1,6 @@
 BINARY_DIR   := bin
-FILEDB       := $(BINARY_DIR)/filedb
-FILEDB_CLI   := $(BINARY_DIR)/filedb-cli
+SCRIVA       := $(BINARY_DIR)/scriva
+SCRIVA_CLI   := $(BINARY_DIR)/scriva-cli
 PROTO_DIR    := proto
 PROTO_GEN    := internal/pb
 
@@ -24,11 +24,11 @@ all: build
 ## build: compile both binaries into bin/
 build:
 	@mkdir -p $(BINARY_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(FILEDB)     ./cmd/filedb
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(FILEDB_CLI) ./cmd/filedb-cli
-	@echo "Built: $(FILEDB) and $(FILEDB_CLI)"
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SCRIVA)     ./cmd/scriva
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SCRIVA_CLI) ./cmd/scriva-cli
+	@echo "Built: $(SCRIVA) and $(SCRIVA_CLI)"
 
-## proto: generate Go code from proto/filedb.proto (requires buf)
+## proto: generate Go code from proto/scriva.proto (requires buf)
 proto:
 	@which buf > /dev/null 2>&1 || (echo "ERROR: buf not found. Install: https://buf.build/docs/installation" && exit 1)
 	buf generate
@@ -76,13 +76,13 @@ deps-check:
 	@cd embeddemo && $(GO) build -o /dev/null ./...
 	@echo "OK: embeddemo builds against the public engine package"
 
-## run: start the filedb server (requires bin/filedb)
+## run: start the scriva server (requires bin/scriva)
 run: build
-	$(FILEDB) serve --data ./data --api-key dev-key
+	$(SCRIVA) serve --data ./data --api-key dev-key
 
 ## cli: start the interactive CLI
 cli: build
-	$(FILEDB_CLI) --api-key dev-key
+	$(SCRIVA_CLI) --api-key dev-key
 
 ## release: dry-run goreleaser snapshot build
 release:

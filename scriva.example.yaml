@@ -1,8 +1,8 @@
-# FileDB v2 — sample configuration
+# ScrivaDB — sample configuration
 #
-# Copy this file to filedb.yaml and pass it with:
+# Copy this file to scriva.yaml and pass it with:
 #
-#   filedb serve --config filedb.yaml
+#   scriva serve --config scriva.yaml
 #
 # Every key is optional; omitted keys fall back to the built-in defaults shown
 # below. CLI flags always override values set here.
@@ -21,7 +21,7 @@ grpc_addr: ":5433"
 rest_addr: ":8080"
 
 # Unix socket path; the local CLI prefers this over TCP when available.
-unix_socket: /tmp/filedb.sock
+unix_socket: /tmp/scriva.sock
 
 # Prometheus metrics listen address. Leave empty to disable metrics.
 metrics_addr: ":9090"

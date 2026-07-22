@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // replCfg is a replication-enabled engine config for leader-side tests.

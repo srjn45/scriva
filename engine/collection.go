@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/srjn45/filedbv2/query"
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/query"
+	"github.com/srjn45/scriva/store"
 )
 
 // SyncMode controls how aggressively writes are flushed to stable storage.

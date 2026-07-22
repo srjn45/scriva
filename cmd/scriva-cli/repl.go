@@ -28,7 +28,7 @@ func runREPL(flags *cliFlags) error {
 	line.SetCtrlCAborts(true)
 
 	// Load history.
-	histPath := filepath.Join(os.TempDir(), ".filedb_history")
+	histPath := filepath.Join(os.TempDir(), ".scriva_history")
 	if f, err := os.Open(histPath); err == nil {
 		_, _ = line.ReadHistory(f)
 		_ = f.Close()
@@ -43,12 +43,12 @@ func runREPL(flags *cliFlags) error {
 	collection := ""
 	prompt := func() string {
 		if collection == "" {
-			return "filedb> "
+			return "scriva> "
 		}
-		return fmt.Sprintf("filedb:%s> ", collection)
+		return fmt.Sprintf("scriva:%s> ", collection)
 	}
 
-	fmt.Println("FileDB CLI — type 'help' for commands, 'exit' to quit")
+	fmt.Println("ScrivaDB CLI — type 'help' for commands, 'exit' to quit")
 
 	for {
 		input, err := line.Prompt(prompt())

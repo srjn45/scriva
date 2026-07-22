@@ -18,7 +18,7 @@ import (
 
 // tracerName is the instrumentation scope reported on every span this package
 // emits.
-const tracerName = "github.com/srjn45/filedbv2/server"
+const tracerName = "github.com/srjn45/scriva/server"
 
 // These are the OpenTelemetry RPC semantic-convention attribute keys. They are
 // spelled out here (rather than pulled from a versioned semconv package) so the
@@ -51,7 +51,7 @@ func NewTracerProvider(ctx context.Context, endpoint string, sampleRatio float64
 	}
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
 		"",
-		attribute.String("service.name", "filedb"),
+		attribute.String("service.name", "scriva"),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("otel resource: %w", err)

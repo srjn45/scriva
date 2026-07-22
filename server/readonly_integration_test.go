@@ -13,21 +13,21 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // startReadOnlyReplica serves the follower DB behind the R2 read-only
 // interceptors — the same wiring cmd/filedb installs in --replicate-from mode —
 // and returns a client to it.
-func startReadOnlyReplica(t *testing.T, fdb *engine.DB) pb.FileDBClient {
+func startReadOnlyReplica(t *testing.T, fdb *engine.DB) pb.ScrivaClient {
 	t.Helper()
 	roUnary, roStream := server.ReadOnlyInterceptors(fdb)
 	gs := server.NewGRPCServer(fdb, 5*time.Minute)
 	t.Cleanup(gs.Close)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(roUnary), grpc.ChainStreamInterceptor(roStream))
-	pb.RegisterFileDBServer(srv, gs)
+	pb.RegisterScrivaServer(srv, gs)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -40,11 +40,11 @@ func startReadOnlyReplica(t *testing.T, fdb *engine.DB) pb.FileDBClient {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn)
+	return pb.NewScrivaClient(conn)
 }
 
 // drainFind collects a streamed Find into an id→record map.
-func drainFind(t *testing.T, client pb.FileDBClient, coll string) map[uint64]*pb.Record {
+func drainFind(t *testing.T, client pb.ScrivaClient, coll string) map[uint64]*pb.Record {
 	t.Helper()
 	stream, err := client.Find(context.Background(), &pb.FindRequest{Collection: coll})
 	if err != nil {

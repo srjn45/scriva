@@ -1,4 +1,4 @@
-// Package metrics provides Prometheus instrumentation for FileDB.
+// Package metrics provides Prometheus instrumentation for ScrivaDB.
 package metrics
 
 import (
@@ -17,7 +17,7 @@ type CollectionStats struct {
 	SizeBytes    uint64
 }
 
-// Metrics holds all Prometheus instruments for FileDB.
+// Metrics holds all Prometheus instruments for ScrivaDB.
 type Metrics struct {
 	reg                prometheus.Registerer
 	CompactionTotal    *prometheus.CounterVec
@@ -33,18 +33,18 @@ func New(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{reg: reg}
 
 	m.CompactionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "filedb_compaction_runs_total",
+		Name: "scriva_compaction_runs_total",
 		Help: "Total number of compaction runs per collection.",
 	}, []string{"collection"})
 
 	m.CompactionDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "filedb_compaction_duration_seconds",
+		Name:    "scriva_compaction_duration_seconds",
 		Help:    "Duration of compaction runs in seconds.",
 		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{"collection"})
 
 	m.GRPCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "filedb_grpc_request_duration_seconds",
+		Name:    "scriva_grpc_request_duration_seconds",
 		Help:    "Duration of gRPC unary requests in seconds.",
 		Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
 	}, []string{"method", "code"})
@@ -54,17 +54,17 @@ func New(reg prometheus.Registerer) *Metrics {
 	// lookups. An operator pairs this with the slow-query log to find unindexed
 	// hot queries.
 	m.ScanRowsScanned = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "filedb_scan_rows_scanned",
+		Name:    "scriva_scan_rows_scanned",
 		Help:    "Number of live records examined per Find/Scan query.",
 		Buckets: prometheus.ExponentialBuckets(1, 4, 10), // 1, 4, 16, ... ~262144
 	}, []string{"collection"})
 
 	// Writes refused because they would breach a collection's configured quota
-	// (S4). Paired with the filedb_collection_records_total / segments gauges (and
+	// (S4). Paired with the scriva_collection_records_total / segments gauges (and
 	// the SizeBytes the DBCollector reads), an operator sees both consumption and
 	// the rejections it triggers.
 	m.QuotaRejectedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "filedb_quota_rejected_total",
+		Name: "scriva_quota_rejected_total",
 		Help: "Total number of writes refused because they would exceed a collection's quota.",
 	}, []string{"collection"})
 
@@ -109,17 +109,17 @@ func NewDBCollector(reg prometheus.Registerer, statsFunc func() []CollectionStat
 	c := &DBCollector{
 		statsFunc: statsFunc,
 		recordsDesc: prometheus.NewDesc(
-			"filedb_collection_records_total",
+			"scriva_collection_records_total",
 			"Current number of live records in the collection.",
 			[]string{"collection"}, nil,
 		),
 		segmentsDesc: prometheus.NewDesc(
-			"filedb_collection_segments_total",
+			"scriva_collection_segments_total",
 			"Current number of segment files in the collection.",
 			[]string{"collection"}, nil,
 		),
 		bytesDesc: prometheus.NewDesc(
-			"filedb_collection_bytes",
+			"scriva_collection_bytes",
 			"Current on-disk size of the collection in bytes (summed segment files).",
 			[]string{"collection"}, nil,
 		),

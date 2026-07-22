@@ -82,7 +82,7 @@ var readMethods = map[string]bool{
 }
 
 // methodRequiresWrite reports whether the given gRPC full method name
-// ("/filedb.v1.FileDB/Insert") requires ScopeReadWrite. Unknown methods require
+// ("/scriva.v1.Scriva/Insert") requires ScopeReadWrite. Unknown methods require
 // write access so a read-only key is never silently allowed through a new RPC.
 func methodRequiresWrite(fullMethod string) bool {
 	name := fullMethod

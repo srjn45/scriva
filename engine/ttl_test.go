@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // openTTLCollection is openTestCollection with a collection-level DefaultTTL and

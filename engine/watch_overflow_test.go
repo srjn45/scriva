@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // recvEvent reads one event from ch, failing the test if none arrives promptly.

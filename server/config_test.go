@@ -155,7 +155,7 @@ quotas:
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
-		_, err := LoadConfigFile("/nonexistent/filedb.yaml")
+		_, err := LoadConfigFile("/nonexistent/scriva.yaml")
 		if err == nil {
 			t.Fatal("expected error for missing file")
 		}

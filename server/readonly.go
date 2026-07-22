@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 )
 
 // ReadOnlyReplicaMessage is the status message a follower returns when a client
@@ -27,22 +27,22 @@ const ReadOnlyReplicaMessage = "read-only replica; write to the leader"
 // intentionally absent — it is the one admin RPC that must reach a follower, so
 // an operator can flip it to leader.
 var writeMethods = map[string]struct{}{
-	pb.FileDB_CreateCollection_FullMethodName: {},
-	pb.FileDB_DropCollection_FullMethodName:   {},
-	pb.FileDB_Insert_FullMethodName:           {},
-	pb.FileDB_InsertMany_FullMethodName:       {},
-	pb.FileDB_Update_FullMethodName:           {},
-	pb.FileDB_Delete_FullMethodName:           {},
-	pb.FileDB_Upsert_FullMethodName:           {},
-	pb.FileDB_UpdateByKey_FullMethodName:      {},
-	pb.FileDB_DeleteByKey_FullMethodName:      {},
-	pb.FileDB_UpdateIfRev_FullMethodName:      {},
-	pb.FileDB_EnsureIndex_FullMethodName:      {},
-	pb.FileDB_DropIndex_FullMethodName:        {},
-	pb.FileDB_BeginTx_FullMethodName:          {},
-	pb.FileDB_CommitTx_FullMethodName:         {},
-	pb.FileDB_RollbackTx_FullMethodName:       {},
-	pb.FileDB_Compact_FullMethodName:          {},
+	pb.Scriva_CreateCollection_FullMethodName: {},
+	pb.Scriva_DropCollection_FullMethodName:   {},
+	pb.Scriva_Insert_FullMethodName:           {},
+	pb.Scriva_InsertMany_FullMethodName:       {},
+	pb.Scriva_Update_FullMethodName:           {},
+	pb.Scriva_Delete_FullMethodName:           {},
+	pb.Scriva_Upsert_FullMethodName:           {},
+	pb.Scriva_UpdateByKey_FullMethodName:      {},
+	pb.Scriva_DeleteByKey_FullMethodName:      {},
+	pb.Scriva_UpdateIfRev_FullMethodName:      {},
+	pb.Scriva_EnsureIndex_FullMethodName:      {},
+	pb.Scriva_DropIndex_FullMethodName:        {},
+	pb.Scriva_BeginTx_FullMethodName:          {},
+	pb.Scriva_CommitTx_FullMethodName:         {},
+	pb.Scriva_RollbackTx_FullMethodName:       {},
+	pb.Scriva_Compact_FullMethodName:          {},
 }
 
 // isWriteMethod reports whether fullMethod mutates durable state and must be

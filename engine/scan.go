@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/srjn45/filedbv2/query"
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/query"
+	"github.com/srjn45/scriva/store"
 )
 
 // ScanResult holds a single matched record from a scan.

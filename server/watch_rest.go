@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -57,7 +57,7 @@ func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 		apiKey := r.Header.Get("x-api-key")
 		ctx := metadata.NewOutgoingContext(r.Context(), metadata.Pairs("x-api-key", apiKey))
 
-		stream, err := pb.NewFileDBClient(conn).Watch(ctx, req)
+		stream, err := pb.NewScrivaClient(conn).Watch(ctx, req)
 		if err != nil {
 			http.Error(w, "watch: start: "+err.Error(), http.StatusBadGateway)
 			return

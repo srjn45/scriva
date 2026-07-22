@@ -15,15 +15,15 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/query"
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/query"
+	"github.com/srjn45/scriva/store"
 )
 
-// GRPCServer implements pb.FileDBServer.
+// GRPCServer implements pb.ScrivaServer.
 type GRPCServer struct {
-	pb.UnimplementedFileDBServer
+	pb.UnimplementedScrivaServer
 	db    *engine.DB
 	txMgr *engine.TxManager
 
@@ -236,7 +236,7 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 	return &pb.FindResponse{Record: rec}, nil
 }
 
-func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) error {
+func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) error {
 	start := time.Now()
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
@@ -575,7 +575,7 @@ func (s *GRPCServer) ListIndexes(_ context.Context, req *pb.ListIndexesRequest) 
 
 // ---- Watch ----------------------------------------------------------------
 
-func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.FileDB_WatchServer) error {
+func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) error {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "%v", err)
@@ -659,7 +659,7 @@ func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsR
 // request's Filter, optionally grouped by a field, and server-streams one message
 // per group. It maps straight onto the engine's Aggregate, which folds each record
 // into its group's accumulator without materialising the collection.
-func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.FileDB_AggregateServer) error {
+func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_AggregateServer) error {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "%v", err)
@@ -743,7 +743,7 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 // Snapshot streams a consistent gzip-compressed tar archive of the whole
 // database to the client. The tar body is buffered so each streamed message
 // carries a sizeable chunk rather than one message per tiny gzip/tar write.
-func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.FileDB_SnapshotServer) error {
+func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.Scriva_SnapshotServer) error {
 	bw := bufio.NewWriterSize(&snapshotChunkWriter{stream: stream}, 64*1024)
 	if err := s.db.SnapshotTo(bw); err != nil {
 		return status.Errorf(codes.Internal, "snapshot: %v", err)
@@ -758,7 +758,7 @@ func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.FileDB_SnapshotSe
 // buffered block as a SnapshotChunk. stream.Send copies the bytes during
 // marshaling, so reusing the buffer after Write returns is safe.
 type snapshotChunkWriter struct {
-	stream pb.FileDB_SnapshotServer
+	stream pb.Scriva_SnapshotServer
 }
 
 func (w *snapshotChunkWriter) Write(p []byte) (int, error) {
@@ -775,7 +775,7 @@ func (w *snapshotChunkWriter) Write(p []byte) (int, error) {
 // buffered by the leader, then streams live commits as they happen. A follower
 // too far behind for the leader's buffer — or one whose consumer overflows — is
 // told to re-bootstrap from a Snapshot via FAILED_PRECONDITION.
-func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.FileDB_ReplicateServer) error {
+func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.Scriva_ReplicateServer) error {
 	rs, backlog, ok := s.db.SubscribeReplication(req.FromLsn, req.FollowerId)
 	if !ok {
 		return status.Error(codes.FailedPrecondition,
@@ -809,7 +809,7 @@ func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.FileDB_Replic
 
 // sendReplRecord marshals and ships one entry, then records the shipped LSN for
 // ReplicationStatus lag reporting.
-func sendReplRecord(stream pb.FileDB_ReplicateServer, rs *engine.ReplicationStream, re engine.ReplicationEntry) error {
+func sendReplRecord(stream pb.Scriva_ReplicateServer, rs *engine.ReplicationStream, re engine.ReplicationEntry) error {
 	rec, err := replEntryToProto(re)
 	if err != nil {
 		return status.Errorf(codes.Internal, "replicate: %v", err)

@@ -14,7 +14,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	"github.com/srjn45/scriva/internal/envkey"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 )
 
 type cliFlags struct {
@@ -41,16 +42,16 @@ func rootCmd() *cobra.Command {
 	flags := &cliFlags{}
 
 	root := &cobra.Command{
-		Use:     "filedb-cli",
-		Short:   "FileDB command-line client",
+		Use:     "scriva-cli",
+		Short:   "ScrivaDB command-line client",
 		Version: version,
 	}
-	root.SetVersionTemplate("filedb-cli {{.Version}}\n")
+	root.SetVersionTemplate("scriva-cli {{.Version}}\n")
 
 	pf := root.PersistentFlags()
-	pf.StringVar(&flags.host, "host", "localhost:5433", "FileDB gRPC address")
-	pf.StringVar(&flags.socket, "socket", "/tmp/filedb.sock", "Unix socket path (used if socket file exists)")
-	pf.StringVar(&flags.apiKey, "api-key", os.Getenv("FILEDB_API_KEY"), "API key (env: FILEDB_API_KEY)")
+	pf.StringVar(&flags.host, "host", "localhost:5433", "ScrivaDB gRPC address")
+	pf.StringVar(&flags.socket, "socket", "/tmp/scriva.sock", "Unix socket path (used if socket file exists)")
+	pf.StringVar(&flags.apiKey, "api-key", envkey.APIKey(), "API key (env: SCRIVA_API_KEY)")
 	pf.StringVar(&flags.tlsCA, "tls-ca", "", "Path to CA certificate PEM for TLS server verification (enables TLS on TCP)")
 
 	root.AddCommand(
@@ -92,13 +93,13 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version, commit, and build date",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Printf("filedb-cli %s (commit %s, built %s)\n", version, commit, date)
+			fmt.Printf("scriva-cli %s (commit %s, built %s)\n", version, commit, date)
 		},
 	}
 }
 
-// connect dials the FileDB server, preferring the Unix socket when available.
-func connect(flags *cliFlags) (*grpc.ClientConn, pb.FileDBClient, func(), error) {
+// connect dials the ScrivaDB server, preferring the Unix socket when available.
+func connect(flags *cliFlags) (*grpc.ClientConn, pb.ScrivaClient, func(), error) {
 	var (
 		conn *grpc.ClientConn
 		err  error
@@ -136,7 +137,7 @@ func connect(flags *cliFlags) (*grpc.ClientConn, pb.FileDBClient, func(), error)
 		return nil, nil, nil, fmt.Errorf("connect: %w", err)
 	}
 
-	client := pb.NewFileDBClient(conn)
+	client := pb.NewScrivaClient(conn)
 	cleanup := func() { _ = conn.Close() }
 	return conn, client, cleanup, nil
 }

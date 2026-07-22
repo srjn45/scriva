@@ -14,10 +14,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/query"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/query"
+	"github.com/srjn45/scriva/server"
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -44,7 +44,7 @@ func followerEngineConfig() engine.CollectionConfig {
 
 // startLeader spins up an in-process, replication-enabled leader and returns a
 // connected client plus the backing DB (for direct state comparison in tests).
-func startLeader(t *testing.T) (pb.FileDBClient, *engine.DB) {
+func startLeader(t *testing.T) (pb.ScrivaClient, *engine.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := engine.Open(dir, leaderEngineConfig())
@@ -56,7 +56,7 @@ func startLeader(t *testing.T) (pb.FileDBClient, *engine.DB) {
 	gs := server.NewGRPCServer(db, 5*time.Minute)
 	t.Cleanup(gs.Close)
 	srv := grpc.NewServer()
-	pb.RegisterFileDBServer(srv, gs)
+	pb.RegisterScrivaServer(srv, gs)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -69,17 +69,17 @@ func startLeader(t *testing.T) (pb.FileDBClient, *engine.DB) {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn), db
+	return pb.NewScrivaClient(conn), db
 }
 
-func mustCreate(t *testing.T, client pb.FileDBClient, coll string) {
+func mustCreate(t *testing.T, client pb.ScrivaClient, coll string) {
 	t.Helper()
 	if _, err := client.CreateCollection(context.Background(), &pb.CreateCollectionRequest{Name: coll}); err != nil {
 		t.Fatalf("CreateCollection: %v", err)
 	}
 }
 
-func mustInsert(t *testing.T, client pb.FileDBClient, coll string, data map[string]any) uint64 {
+func mustInsert(t *testing.T, client pb.ScrivaClient, coll string, data map[string]any) uint64 {
 	t.Helper()
 	st, err := structpb.NewStruct(data)
 	if err != nil {
@@ -136,7 +136,7 @@ func waitConverged(t *testing.T, leader, follower *engine.DB, coll string) {
 // bootstrapFollower bootstraps a fresh follower DB from the leader and starts its
 // apply loop. It returns the follower DB and a stop func that cleanly halts the
 // loop and closes the DB.
-func bootstrapFollower(t *testing.T, leader pb.FileDBClient) (*engine.DB, func()) {
+func bootstrapFollower(t *testing.T, leader pb.ScrivaClient) (*engine.DB, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	wm, err := server.Bootstrap(context.Background(), leader, dir)
