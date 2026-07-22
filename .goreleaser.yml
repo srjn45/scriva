@@ -66,15 +66,103 @@ changelog:
       - Merge pull request
       - Merge branch
 
-dockers:
-  - image_templates:
-      - "ghcr.io/srjn45/scriva:{{ .Tag }}"
-      - "ghcr.io/srjn45/scriva:latest"
+# Linux packages (.deb and .rpm) for amd64 + arm64
+nfpms:
+  - id: packages
+    package_name: scriva
     ids:
       - scriva
+      - scriva-cli
+    vendor: srjn45
+    homepage: https://github.com/srjn45/scriva
+    maintainer: srjn45
+    description: ScrivaDB — an embedded append-only document database
+    license: MIT
+    section: database
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+
+# Homebrew tap (macOS Cask format) published to srjn45/homebrew-scriva
+# Install with: brew install --cask scriva
+# Requires: HOMEBREW_TAP_GITHUB_TOKEN secret (PAT with repo scope on homebrew-scriva)
+# Note: tap repo srjn45/homebrew-scriva must exist before the first release
+homebrew_casks:
+  - name: scriva
+    ids:
+      - default
+    repository:
+      owner: srjn45
+      name: homebrew-scriva
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/srjn45/scriva
+    description: ScrivaDB — an embedded append-only document database
+    binaries:
+      - scriva
+      - scriva-cli
+
+# Windows Scoop manifest published to srjn45/scoop-scriva bucket
+# Requires: HOMEBREW_TAP_GITHUB_TOKEN secret (same PAT, must also have repo scope on scoop-scriva)
+# Note: bucket repo srjn45/scoop-scriva must exist before the first release
+scoops:
+  - name: scriva
+    ids:
+      - default
+    repository:
+      owner: srjn45
+      name: scoop-scriva
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/srjn45/scriva
+    description: ScrivaDB — an embedded append-only document database
+    license: MIT
+
+# AUR package (optional — skipped automatically when AUR_SSH_PRIVATE_KEY is absent)
+# Requires: AUR_SSH_PRIVATE_KEY secret (ed25519 key registered on aur.archlinux.org)
+# Install with: yay -S scriva-bin   (or any AUR helper)
+aurs:
+  - name: scriva-bin
+    ids:
+      - default
+    homepage: https://github.com/srjn45/scriva
+    description: ScrivaDB — an embedded append-only document database
+    maintainers:
+      - srjn45
+    license: MIT
+    private_key: "{{ .Env.AUR_SSH_PRIVATE_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/scriva-bin.git"
+    skip_upload: "{{ if .Env.AUR_SSH_PRIVATE_KEY }}false{{ else }}true{{ end }}"
+
+# Docker multi-arch images (linux/amd64 + linux/arm64) via dockers_v2
+# Single entry builds and fuses the manifest for both ghcr.io and docker.io
+# Requires: docker buildx + QEMU in the release environment (via setup-qemu-action + setup-buildx-action)
+dockers_v2:
+  - id: scriva
+    ids:
+      - scriva
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    images:
+      - ghcr.io/srjn45/scriva
+      - docker.io/srjn45/scriva
+    tags:
+      - "{{ .Tag }}"
+      - latest
     dockerfile: Dockerfile
-    build_flag_templates:
-      - "--label=org.opencontainers.image.title=ScrivaDB"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+    labels:
+      org.opencontainers.image.title: ScrivaDB
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.revision: "{{ .Commit }}"
+      org.opencontainers.image.source: https://github.com/srjn45/scriva
+
+# Keyless cosign signing of Docker manifests via OIDC (CI only)
+# Requires: cosign installed in release workflow + id-token: write permission
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - sign
+      - "${artifact}"
+      - --yes

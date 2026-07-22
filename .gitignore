@@ -22,3 +22,6 @@ data/
 
 clients/java/.gradle/
 clients/java/build/
+
+# GoReleaser build output
+dist/
