@@ -564,12 +564,12 @@ durability-hardening and query-at-scale work that landed since v0.1.0.
   in-process. A CI gate (`make deps-check`) keeps the engine free of
   gRPC/protobuf/Prometheus/cobra dependencies, and an `embeddemo/` module proves
   the engine builds standalone. (EMB-1, EMB-3)
-- **`filedb` façade** — new top-level package. `filedb.Open(dir, opts…)` roots a
+- **`scriva` façade** — root package. `scriva.Open(dir, opts…)` roots a
   store at a directory and lazily opens-or-creates named collections with
   per-collection options (`WithUniqueIndex`, `WithCollectionSyncMode`, …).
   Existing collections on disk are discovered automatically; `db.Engine()` drops
   to the underlying `*engine.DB`. (EMB-2)
-- **Embedded durability default** — a DB opened via `filedb.Open` defaults every
+- **Embedded durability default** — a DB opened via `scriva.Open` defaults every
   collection to `SyncModeInterval` at a 1s cadence (bounded crash-loss window
   without a per-write fsync); opt back into `SyncModeAlways` per collection. The
   raw engine default (`SyncModeNone`) is unchanged. (OPS-1)

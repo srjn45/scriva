@@ -248,8 +248,8 @@ commit style, one PR per task. Commits must use the
      `DB.CollectionWithConfig(name string, cfg CollectionConfig) (*Collection, error)`
      — open-or-create with an explicit per-collection config; plain
      `Collection`/`CreateCollection` behavior unchanged.
-  2. New top-level package `filedb/` (public):
-     - `filedb.Open(dir string, opts ...Option) (*DB, error)`
+  2. Root package `scriva` (public):
+     - `scriva.Open(dir string, opts ...Option) (*DB, error)`
      - `(*DB).Collection(name string, opts ...CollectionOption) (*engine.Collection, error)`
        and `MustCollection`.
      - Options for sync mode/interval, segment size, compaction cadence,
@@ -305,7 +305,7 @@ commit style, one PR per task. Commits must use the
 - **Depends on:** all of T2–T10 merged. **Runs last.**
 - **Scope:**
   1. Finish `docs/embedding.md`: full API reference for the stable surface
-     (`filedb.Open`, `engine.DB/Collection` incl. keyed/CAS/upsert/count,
+     (`scriva.Open`, `engine.DB/Collection` incl. keyed/CAS/upsert/count,
      `query.Filter`, `store.Entry`, Watch contract, durability modes,
      migration section) — reconcile the seeds from T8/T9/T10 into one doc.
   2. `README.md`: add an "Embedding" section; note distribution is `go get`
@@ -314,7 +314,7 @@ commit style, one PR per task. Commits must use the
      break until v1).
   4. Tag `v0.x.0` (per CLAUDE.md: push the tag; CI releases — coordinate with
      the release-roadmap versioning before choosing the number).
-- **Acceptance:** `go get github.com/srjn45/filedbv2/engine@v0.x.0` works from
+- **Acceptance:** `go get github.com/srjn45/scriva/engine@v0.x.0` works from
   a clean module and the documented API matches what ships.
 
 ---

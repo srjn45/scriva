@@ -11,16 +11,16 @@ want ScrivaDB's durability and query model directly inside your binary.
 ## Install
 
 ```bash
-go get github.com/srjn45/scriva/filedb   # the ergonomic façade (recommended)
-go get github.com/srjn45/scriva/engine   # the lower-level storage engine
+go get github.com/srjn45/scriva         # the ergonomic façade (recommended)
+go get github.com/srjn45/scriva/engine  # the lower-level storage engine
 ```
 
 ## Usage
 
 ```go
-import "github.com/srjn45/scriva/filedb"
+import "github.com/srjn45/scriva"
 
-db, _ := filedb.Open("./data")            // embedded durability defaults (fsync ~1s)
+db, _ := scriva.Open("./data")            // embedded durability defaults (fsync ~1s)
 defer db.Close()
 
 sessions := db.MustCollection("sessions")

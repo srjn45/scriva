@@ -8,7 +8,7 @@ want the durability and query model of FileDB without running a separate
 daemon.
 
 ```go
-import "github.com/srjn45/filedbv2/engine"
+import "github.com/srjn45/scriva/engine"
 
 db, err := engine.Open("./data", engine.CollectionConfig{})
 if err != nil {
@@ -36,15 +36,15 @@ embedded program needs is reachable from them:
 
 | Package | Import path | What it gives you |
 |---|---|---|
-| `filedb` | `github.com/srjn45/filedbv2/filedb` | The recommended façade: `Open`, per-collection options, embedded durability defaults. |
-| `engine` | `github.com/srjn45/filedbv2/engine` | The storage engine: `DB`, `Collection`, keyed ops, CAS, upsert, count/exists, secondary indexes, Watch, `Record`, typed errors. |
-| `query` | `github.com/srjn45/filedbv2/query` | `Filter` and the comparison operators used by `Scan`/`Count`. |
-| `store` | `github.com/srjn45/filedbv2/store` | `Entry` — the on-disk record shape (surfaced through `Watch` and segment I/O). |
+| `scriva` | `github.com/srjn45/scriva` | The recommended façade: `Open`, per-collection options, embedded durability defaults. |
+| `engine` | `github.com/srjn45/scriva/engine` | The storage engine: `DB`, `Collection`, keyed ops, CAS, upsert, count/exists, secondary indexes, Watch, `Record`, typed errors. |
+| `query` | `github.com/srjn45/scriva/query` | `Filter` and the comparison operators used by `Scan`/`Count`. |
+| `store` | `github.com/srjn45/scriva/store` | `Entry` — the on-disk record shape (surfaced through `Watch` and segment I/O). |
 
 The rest of this document is the reference for that surface, in the order you
 meet it:
 
-- [The `filedb` façade](#the-filedb-façade-recommended-entry-point) — `Open`,
+- [The `scriva` façade](#the-scriva-façade-recommended-entry-point) — `Open`,
   options, embedded durability default.
 - [String keys](#string-keys-caller-supplied-primary-keys) — `InsertWithKey` /
   `FindByKey` / `UpdateByKey` / `DeleteByKey`.
@@ -61,13 +61,13 @@ meet it:
 
 ### Stability and versioning
 
-As of **v1.0.0 the embedding API is frozen.** The `engine`, `filedb`, `store`,
+As of **v1.0.0 the embedding API is frozen.** The `engine`, `scriva`, `store`,
 and `query` packages — their import paths and the exported surface documented
 here — are stable and covered by the usual semver guarantee: **no breaking
 changes without a major (v2) bump.** For anyone taking `go get` on the packages
 above, that means:
 
-- **The import paths are stable.** `engine`, `store`, `query`, and `filedb`
+- **The import paths are stable.** `engine`, `store`, `query`, and `scriva`
   are public and will not move back under `internal/` — the whole point of the
   embedding milestone was to promote them (see the roadmap's EMB-1).
 - **No breaking changes without a major bump.** A change to any exported type or
@@ -76,7 +76,7 @@ above, that means:
   `v1` line, minor bumps (`v1.(y+1).0`) are **additive only** (new methods,
   options, or types) and patch bumps (`v1.y.(z+1)`) are bug-fix only. Neither
   breaks code that compiles against the surface below.
-- **Pin a version anyway.** `go get github.com/srjn45/filedbv2/engine@v1` and let
+- **Pin a version anyway.** `go get github.com/srjn45/scriva/engine@v1` and let
   your `go.mod` hold the line. Additive minor releases are safe to take, and any
   behavioural change worth knowing about is still called out in
   [`CHANGELOG.md`](../CHANGELOG.md).
@@ -96,11 +96,11 @@ authoritative contract for the embedded Go API.
 
 ---
 
-## The `filedb` façade (recommended entry point)
+## The `scriva` façade (recommended entry point)
 
 `engine.Open` opens every collection under a single config. When your program
 hosts several collections — each wanting its own durability or compaction
-settings — the `filedb` package is the ergonomic front door. It opens a store
+settings — the `scriva` package is the ergonomic front door. It opens a store
 rooted at a directory, lazily opens-or-creates named collections with
 per-collection options, and applies **embedded-friendly defaults** so you don't
 have to.
@@ -110,21 +110,21 @@ and a per-write-durable `spend` ledger — stands up in a handful of lines:
 
 ```go
 import (
-    "github.com/srjn45/filedbv2/engine"
-    "github.com/srjn45/filedbv2/filedb"
+    "github.com/srjn45/scriva"
+    "github.com/srjn45/scriva/engine"
 )
 
-db, err := filedb.Open("./data")
+db, err := scriva.Open("./data")
 if err != nil {
     log.Fatal(err)
 }
 defer db.Close()
 
-sessions := db.MustCollection("sessions", filedb.WithUniqueIndex("name"))
+sessions := db.MustCollection("sessions", scriva.WithUniqueIndex("name"))
 events   := db.MustCollection("events")
 messages := db.MustCollection("messages")
 context  := db.MustCollection("context")
-spend    := db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+spend    := db.MustCollection("spend", scriva.WithCollectionSyncMode(engine.SyncModeAlways))
 
 // CRUD goes straight to the returned *engine.Collection:
 id, _, _ := sessions.InsertWithKey("sess-1", map[string]any{"name": "alpha", "status": "open"})
@@ -133,9 +133,9 @@ _, _ = context.Upsert("cfg", map[string]any{"model": "opus"})
 _ = id
 ```
 
-- `Open(dir string, opts ...filedb.Option)` returns a `*filedb.DB`. Existing
+- `Open(dir string, opts ...scriva.Option)` returns a `*scriva.DB`. Existing
   collections on disk are discovered automatically.
-- `Collection(name, opts ...filedb.CollectionOption) (*engine.Collection, error)`
+- `Collection(name, opts ...scriva.CollectionOption) (*engine.Collection, error)`
   and `MustCollection` (which panics on error, for init-time convenience) open a
   collection. The returned value is a plain `*engine.Collection`, so the full
   keyed / CAS / upsert / Watch API described below is available on it.
@@ -146,7 +146,7 @@ _ = id
 
 ### Options
 
-DB-wide defaults (passed to `filedb.Open`) — `WithSyncMode`, `WithSyncInterval`,
+DB-wide defaults (passed to `scriva.Open`) — `WithSyncMode`, `WithSyncInterval`,
 `WithSegmentMaxSize`, `WithCompactInterval`, `WithWatchBufferSize`.
 
 Per-collection overrides (passed to `Collection`/`MustCollection`) —
@@ -158,7 +158,7 @@ secondary index on each field at open time, via `EnsureUniqueIndex`).
 ### Embedded durability default
 
 The raw engine defaults to `SyncModeNone` — fastest, but a crash can lose
-recently acknowledged writes. A DB opened through **`filedb.Open` defaults every
+recently acknowledged writes. A DB opened through **`scriva.Open` defaults every
 collection to `SyncModeInterval` at a 1s cadence** instead. This trades a bounded
 (~1s) durability window for throughput: a crash loses at most the last interval's
 writes, while the append-only, temp-then-rename segment format already rules out
@@ -169,7 +169,7 @@ A write path that genuinely needs per-write durability — a spend/ledger
 collection, say — opts back in per collection:
 
 ```go
-spend := db.MustCollection("spend", filedb.WithCollectionSyncMode(engine.SyncModeAlways))
+spend := db.MustCollection("spend", scriva.WithCollectionSyncMode(engine.SyncModeAlways))
 ```
 
 `SyncModeAlways` fsyncs before each write is acknowledged; the override is scoped
@@ -299,7 +299,7 @@ filter model the server exposes, evaluated in-process against each record's data
 map. A filter is either a single-field test or a boolean combination:
 
 ```go
-import "github.com/srjn45/filedbv2/query"
+import "github.com/srjn45/scriva/query"
 
 // A field test. Value is JSON-encoded: `"open"` matches the string "open",
 // `30` matches the number 30. A bare, non-JSON string is taken literally.
