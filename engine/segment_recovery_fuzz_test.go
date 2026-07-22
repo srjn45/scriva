@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // writeEntries appends n insert entries (ids 1..n) to a fresh active segment at

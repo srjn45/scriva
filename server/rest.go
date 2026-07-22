@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -60,7 +60,7 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
-	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
+	if err := pb.RegisterScrivaHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
 	}
 	if err := registerProbes(mux, ready); err != nil {
@@ -91,7 +91,7 @@ func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() err
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 		}),
 	}
-	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, "unix://"+socketPath, opts); err != nil {
+	if err := pb.RegisterScrivaHandlerFromEndpoint(ctx, mux, "unix://"+socketPath, opts); err != nil {
 		return nil, err
 	}
 	if err := registerProbes(mux, ready); err != nil {

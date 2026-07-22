@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // DefaultReplicationRingSize is the number of recent committed entries the

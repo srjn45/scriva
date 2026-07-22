@@ -13,10 +13,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/srjn45/filedbv2/engine"
-	"github.com/srjn45/filedbv2/internal/auth"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // startAuditServer serves an authenticated in-process gRPC server whose audit
@@ -24,7 +24,7 @@ import (
 // cmd/filedb installs for --audit-log — writing NDJSON to a file under a temp
 // dir. It returns a client, the backing DB (so a test can seed a collection
 // without generating its own audit records), and the audit file path.
-func startAuditServer(t *testing.T, keys []auth.Key) (pb.FileDBClient, *engine.DB, string) {
+func startAuditServer(t *testing.T, keys []auth.Key) (pb.ScrivaClient, *engine.DB, string) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := engine.Open(filepath.Join(dir, "data"), engine.CollectionConfig{
@@ -61,7 +61,7 @@ func startAuditServer(t *testing.T, keys []auth.Key) (pb.FileDBClient, *engine.D
 		grpc.ChainUnaryInterceptor(auditUnary, au),
 		grpc.ChainStreamInterceptor(auditStream, as),
 	)
-	pb.RegisterFileDBServer(srv, gs)
+	pb.RegisterScrivaServer(srv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -75,7 +75,7 @@ func startAuditServer(t *testing.T, keys []auth.Key) (pb.FileDBClient, *engine.D
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn), db, auditPath
+	return pb.NewScrivaClient(conn), db, auditPath
 }
 
 // readAuditLines parses the audit NDJSON file into one map per record. The
@@ -129,8 +129,8 @@ func TestIntegration_Audit_MutatingRPC_OneRecord(t *testing.T) {
 	if rec["msg"] != "audit" {
 		t.Errorf("msg = %v, want audit", rec["msg"])
 	}
-	if rec["method"] != pb.FileDB_Insert_FullMethodName {
-		t.Errorf("method = %v, want %s", rec["method"], pb.FileDB_Insert_FullMethodName)
+	if rec["method"] != pb.Scriva_Insert_FullMethodName {
+		t.Errorf("method = %v, want %s", rec["method"], pb.Scriva_Insert_FullMethodName)
 	}
 	if rec["principal"] != "writer" {
 		t.Errorf("principal = %v, want writer", rec["principal"])
@@ -169,8 +169,8 @@ func TestIntegration_Audit_AuthFailure_OneRecord(t *testing.T) {
 		t.Fatalf("want exactly 1 audit record, got %d: %v", len(lines), lines)
 	}
 	rec := lines[0]
-	if rec["method"] != pb.FileDB_Insert_FullMethodName {
-		t.Errorf("method = %v, want %s", rec["method"], pb.FileDB_Insert_FullMethodName)
+	if rec["method"] != pb.Scriva_Insert_FullMethodName {
+		t.Errorf("method = %v, want %s", rec["method"], pb.Scriva_Insert_FullMethodName)
 	}
 	if rec["principal"] != "unauthenticated" {
 		t.Errorf("principal = %v, want unauthenticated", rec["principal"])

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // ErrResourceExhausted is returned by the write path when applying a write would

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // scanIDs runs a filter through Scan and returns the matching ids, sorted.

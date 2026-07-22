@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // ---- Revision tracking on the plain (non-keyed) path ------------------------

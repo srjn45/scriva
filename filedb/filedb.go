@@ -31,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/srjn45/filedbv2/engine"
+	"github.com/srjn45/scriva/engine"
 )
 
 // Option configures the DB-wide defaults applied to every collection opened

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // openTestCollection creates a collection with a tiny segment size and a

@@ -16,4 +16,4 @@ plugins:
     out: docs/openapi
     opt:
       - allow_merge=true
-      - merge_file_name=filedb
+      - merge_file_name=scriva

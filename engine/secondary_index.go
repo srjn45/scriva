@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/srjn45/filedbv2/query"
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/query"
+	"github.com/srjn45/scriva/store"
 )
 
 // ErrDuplicateKey is returned when a write would map a value already held by a

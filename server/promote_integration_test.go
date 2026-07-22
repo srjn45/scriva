@@ -12,22 +12,22 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // startReplicaServer serves fdb behind the R2/R3 read-only guard — the same
 // wiring cmd/filedb installs in --replicate-from mode — with the given promotion
 // lag ceiling, and returns a client to it. The read-only guard is dynamic, so a
 // successful Promote lifts it live.
-func startReplicaServer(t *testing.T, fdb *engine.DB, maxLag uint64) pb.FileDBClient {
+func startReplicaServer(t *testing.T, fdb *engine.DB, maxLag uint64) pb.ScrivaClient {
 	t.Helper()
 	roUnary, roStream := server.ReadOnlyInterceptors(fdb)
 	gs := server.NewGRPCServer(fdb, 5*time.Minute, server.WithPromoteMaxLag(maxLag))
 	t.Cleanup(gs.Close)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(roUnary), grpc.ChainStreamInterceptor(roStream))
-	pb.RegisterFileDBServer(srv, gs)
+	pb.RegisterScrivaServer(srv, gs)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -40,7 +40,7 @@ func startReplicaServer(t *testing.T, fdb *engine.DB, maxLag uint64) pb.FileDBCl
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn)
+	return pb.NewScrivaClient(conn)
 }
 
 // TestPromote_CaughtUpFollowerAcceptsWrites: a write refused with

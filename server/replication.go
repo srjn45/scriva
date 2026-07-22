@@ -17,8 +17,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 )
 
 // DefaultReplicationBackoff is how long a follower waits before reconnecting to
@@ -46,7 +46,7 @@ func ReplicationAuthContext(ctx context.Context, apiKey string) context.Context 
 // dataDir must be empty (a fresh follower). Existing collection sub-directories
 // are left untouched — a follower that already has data resumes from its
 // persisted applied-LSN instead of re-bootstrapping.
-func Bootstrap(ctx context.Context, client pb.FileDBClient, dataDir string) (uint64, error) {
+func Bootstrap(ctx context.Context, client pb.ScrivaClient, dataDir string) (uint64, error) {
 	st, err := client.ReplicationStatus(ctx, &pb.ReplicationStatusRequest{})
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: read leader lsn: %w", err)
@@ -134,7 +134,7 @@ func extractSnapshot(r io.Reader, dataDir string) error {
 // transient stream errors, resuming from the last durably-applied LSN.
 type Follower struct {
 	db      *engine.DB
-	client  pb.FileDBClient
+	client  pb.ScrivaClient
 	id      string
 	apiKey  string
 	logger  *slog.Logger
@@ -144,7 +144,7 @@ type Follower struct {
 // NewFollower builds a Follower that applies the leader's feed into db. id is an
 // opaque label surfaced in the leader's ReplicationStatus; apiKey authenticates
 // to the leader (empty when the leader has auth disabled).
-func NewFollower(db *engine.DB, client pb.FileDBClient, id, apiKey string, logger *slog.Logger) *Follower {
+func NewFollower(db *engine.DB, client pb.ScrivaClient, id, apiKey string, logger *slog.Logger) *Follower {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}

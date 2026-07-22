@@ -14,15 +14,15 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/srjn45/filedbv2/engine"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // newQuotaServer spins up an in-process gRPC server whose "capped" collection is
 // limited to maxRecords live records, and returns the client plus a counter that
 // the quota-rejection observer increments.
-func newQuotaServer(t *testing.T, collection string, maxRecords uint64) (pb.FileDBClient, *atomic.Int64) {
+func newQuotaServer(t *testing.T, collection string, maxRecords uint64) (pb.ScrivaClient, *atomic.Int64) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -44,7 +44,7 @@ func newQuotaServer(t *testing.T, collection string, maxRecords uint64) (pb.File
 	t.Cleanup(gs.Close)
 
 	grpcSrv := grpc.NewServer()
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
@@ -57,7 +57,7 @@ func newQuotaServer(t *testing.T, collection string, maxRecords uint64) (pb.File
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn), &rejects
+	return pb.NewScrivaClient(conn), &rejects
 }
 
 func TestIntegration_QuotaResourceExhausted(t *testing.T) {

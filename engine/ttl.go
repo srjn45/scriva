@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // metaSnapshot builds the current collectionMeta for persistence, carrying the

@@ -20,10 +20,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/srjn45/filedbv2/engine"
-	"github.com/srjn45/filedbv2/internal/auth"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // ---- Certificate authority test helpers -----------------------------------
@@ -160,7 +160,7 @@ func newMTLSServer(t *testing.T, tlsCfg *tls.Config, certAuth bool) string {
 		grpc.ChainUnaryInterceptor(authUnary),
 		grpc.ChainStreamInterceptor(authStream),
 	)
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -172,14 +172,14 @@ func newMTLSServer(t *testing.T, tlsCfg *tls.Config, certAuth bool) string {
 }
 
 // dial builds a client for addr using the given client-side TLS config.
-func dial(t *testing.T, addr string, tlsCfg *tls.Config) pb.FileDBClient {
+func dial(t *testing.T, addr string, tlsCfg *tls.Config) pb.ScrivaClient {
 	t.Helper()
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn)
+	return pb.NewScrivaClient(conn)
 }
 
 // ---- Tests ----------------------------------------------------------------

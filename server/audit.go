@@ -9,8 +9,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/internal/auth"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
+	"github.com/srjn45/scriva/internal/auth"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
 )
 
 // NewAuditLogger builds the dedicated audit *slog.Logger. It reuses the O1
@@ -32,7 +32,7 @@ func isAuditedMethod(fullMethod string) bool {
 	if isWriteMethod(fullMethod) {
 		return true
 	}
-	return fullMethod == pb.FileDB_Promote_FullMethodName
+	return fullMethod == pb.Scriva_Promote_FullMethodName
 }
 
 // isAuthFailure reports whether err is an authentication/authorization rejection.

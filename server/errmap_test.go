@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/engine"
+	"github.com/srjn45/scriva/engine"
 )
 
 // TestWriteErrMapsRecordTooLarge verifies the engine.ErrRecordTooLarge → gRPC

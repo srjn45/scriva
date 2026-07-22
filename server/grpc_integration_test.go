@@ -32,15 +32,15 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/srjn45/filedbv2/engine"
-	"github.com/srjn45/filedbv2/internal/auth"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // newTestServer spins up an in-process gRPC server backed by a real engine.DB
 // and returns a connected client. The server is stopped when the test ends.
-func newTestServer(t *testing.T) pb.FileDBClient {
+func newTestServer(t *testing.T) pb.ScrivaClient {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -57,7 +57,7 @@ func newTestServer(t *testing.T) pb.FileDBClient {
 	gs := server.NewGRPCServer(db, 5*time.Minute)
 	t.Cleanup(gs.Close)
 	grpcSrv := grpc.NewServer()
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -75,7 +75,7 @@ func newTestServer(t *testing.T) pb.FileDBClient {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	return pb.NewFileDBClient(conn)
+	return pb.NewScrivaClient(conn)
 }
 
 // ctx returns a background context (no auth needed — server created without interceptors).
@@ -199,7 +199,7 @@ func TestIntegration_InsertMany(t *testing.T) {
 
 // ---- Find with filter and order_by ------------------------------------------
 
-func collectFind(t *testing.T, stream pb.FileDB_FindClient) []*pb.Record {
+func collectFind(t *testing.T, stream pb.Scriva_FindClient) []*pb.Record {
 	t.Helper()
 	var out []*pb.Record
 	for {
@@ -343,7 +343,7 @@ func TestIntegration_Find_UnorderedLimit(t *testing.T) {
 // collectFindPage drains a Find stream into its records and the next-page cursor.
 // The token rides the final record's message (N3), so it survives collection into
 // a single trailing value; an empty token means the last page was reached.
-func collectFindPage(t *testing.T, stream pb.FileDB_FindClient) ([]*pb.Record, string) {
+func collectFindPage(t *testing.T, stream pb.Scriva_FindClient) ([]*pb.Record, string) {
 	t.Helper()
 	var recs []*pb.Record
 	var token string
@@ -714,7 +714,7 @@ func TestIntegration_Find_CancelStops(t *testing.T) {
 // ---- Aggregations (N4) ------------------------------------------------------
 
 // collectAggregate drains an Aggregate stream into a slice of responses.
-func collectAggregate(t *testing.T, stream pb.FileDB_AggregateClient) []*pb.AggregateResponse {
+func collectAggregate(t *testing.T, stream pb.Scriva_AggregateClient) []*pb.AggregateResponse {
 	t.Helper()
 	var out []*pb.AggregateResponse
 	for {
@@ -1278,7 +1278,7 @@ func newInstrumentedServer(t *testing.T, logger *slog.Logger, keys []auth.Key, h
 		)
 	}
 	grpcSrv := grpc.NewServer(opts...)
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 	if healthSvc != nil {
 		healthSvc.Register(grpcSrv)
 	}
@@ -1314,7 +1314,7 @@ func TestIntegration_LoggingInterceptor_OneRecordPerCall(t *testing.T) {
 	}
 	keys := []auth.Key{{Key: "sekret", Name: "tester", Scope: auth.ScopeReadWrite}}
 	conn := newInstrumentedServer(t, logger, keys, nil)
-	c := pb.NewFileDBClient(conn)
+	c := pb.NewScrivaClient(conn)
 
 	if _, err := c.CreateCollection(keyCtx("sekret"), &pb.CreateCollectionRequest{Name: "logs"}); err != nil {
 		t.Fatalf("CreateCollection: %v", err)
@@ -1329,7 +1329,7 @@ func TestIntegration_LoggingInterceptor_OneRecordPerCall(t *testing.T) {
 	if rec["msg"] != "grpc request" {
 		t.Errorf("msg = %v, want %q", rec["msg"], "grpc request")
 	}
-	if rec["method"] != "/filedb.v1.FileDB/CreateCollection" {
+	if rec["method"] != "/scriva.v1.Scriva/CreateCollection" {
 		t.Errorf("method = %v", rec["method"])
 	}
 	if rec["principal"] != "tester" {
@@ -1355,7 +1355,7 @@ func TestIntegration_LoggingInterceptor_LevelFiltering(t *testing.T) {
 		t.Fatalf("NewLogger: %v", err)
 	}
 	conn := newInstrumentedServer(t, logger, nil, nil) // auth disabled
-	c := pb.NewFileDBClient(conn)
+	c := pb.NewScrivaClient(conn)
 
 	// Success → info → suppressed at warn.
 	if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: "ok"}); err != nil {
@@ -1485,7 +1485,7 @@ func TestReadinessHandler_UnwritableDataDir(t *testing.T) {
 // chained only when it is enabled, mirroring production. An optional extraUnary
 // interceptor is chained after the limiter so a test can hold an RPC in-flight
 // and deterministically saturate the semaphore.
-func newLimitedServer(t *testing.T, limiter *server.Limiter, keys []auth.Key, extraUnary grpc.UnaryServerInterceptor) pb.FileDBClient {
+func newLimitedServer(t *testing.T, limiter *server.Limiter, keys []auth.Key, extraUnary grpc.UnaryServerInterceptor) pb.ScrivaClient {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -1521,7 +1521,7 @@ func newLimitedServer(t *testing.T, limiter *server.Limiter, keys []auth.Key, ex
 		grpc.ChainUnaryInterceptor(unary...),
 		grpc.ChainStreamInterceptor(stream...),
 	)
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1538,7 +1538,7 @@ func newLimitedServer(t *testing.T, limiter *server.Limiter, keys []auth.Key, ex
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewFileDBClient(conn)
+	return pb.NewScrivaClient(conn)
 }
 
 // TestIntegration_InflightSemaphore_ShedsExcess saturates the in-flight
@@ -1673,7 +1673,7 @@ func (b *lockedBuffer) String() string {
 // newSlowQueryTestServer is newTestServer with the slow-query log wired to a
 // captured JSON logger at the given threshold. It returns the client and the
 // buffer the WARN slow-query lines land in.
-func newSlowQueryTestServer(t *testing.T, threshold time.Duration) (pb.FileDBClient, *lockedBuffer) {
+func newSlowQueryTestServer(t *testing.T, threshold time.Duration) (pb.ScrivaClient, *lockedBuffer) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -1696,7 +1696,7 @@ func newSlowQueryTestServer(t *testing.T, threshold time.Duration) (pb.FileDBCli
 	gs := server.NewGRPCServer(db, 5*time.Minute, server.WithSlowQueryLog(logger, threshold))
 	t.Cleanup(gs.Close)
 	grpcSrv := grpc.NewServer()
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1711,7 +1711,7 @@ func newSlowQueryTestServer(t *testing.T, threshold time.Duration) (pb.FileDBCli
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	return pb.NewFileDBClient(conn), logBuf
+	return pb.NewScrivaClient(conn), logBuf
 }
 
 // waitForLogLine polls the buffer for up to two seconds and returns the first
@@ -1733,7 +1733,7 @@ func waitForLogLine(t *testing.T, b *lockedBuffer) string {
 	return ""
 }
 
-func seedRoles(t *testing.T, c pb.FileDBClient, collection string) {
+func seedRoles(t *testing.T, c pb.ScrivaClient, collection string) {
 	t.Helper()
 	for i := 0; i < 10; i++ {
 		role := "user"
@@ -1846,7 +1846,7 @@ func TestIntegration_SlowQuery_IndexedUnderThresholdNoLog(t *testing.T) {
 // chained outermost and the engine's OnScan hook turns scans into child spans.
 // Spans are captured by an in-memory exporter (no live collector) via a
 // synchronous span processor, so they are readable the moment an RPC returns.
-func newTracedServer(t *testing.T) (pb.FileDBClient, *tracetest.InMemoryExporter) {
+func newTracedServer(t *testing.T) (pb.ScrivaClient, *tracetest.InMemoryExporter) {
 	t.Helper()
 
 	exp := tracetest.NewInMemoryExporter()
@@ -1873,7 +1873,7 @@ func newTracedServer(t *testing.T) (pb.FileDBClient, *tracetest.InMemoryExporter
 		grpc.ChainUnaryInterceptor(tu),
 		grpc.ChainStreamInterceptor(ts),
 	)
-	pb.RegisterFileDBServer(grpcSrv, gs)
+	pb.RegisterScrivaServer(grpcSrv, gs)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1891,7 +1891,7 @@ func newTracedServer(t *testing.T) (pb.FileDBClient, *tracetest.InMemoryExporter
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	return pb.NewFileDBClient(conn), exp
+	return pb.NewScrivaClient(conn), exp
 }
 
 // spanByName returns the first captured span with the given name, or nil.
@@ -1923,11 +1923,11 @@ func TestIntegration_TracingInterceptor_SpanPerRPC(t *testing.T) {
 		t.Fatalf("CreateCollection: %v", err)
 	}
 	spans := exp.GetSpans()
-	rpc := spanByName(spans, "/filedb.v1.FileDB/CreateCollection")
+	rpc := spanByName(spans, "/scriva.v1.Scriva/CreateCollection")
 	if rpc == nil {
 		t.Fatalf("no span for CreateCollection; got %v", spanNames(spans))
 	}
-	if v, ok := spanAttr(rpc, "rpc.method"); !ok || v.AsString() != "/filedb.v1.FileDB/CreateCollection" {
+	if v, ok := spanAttr(rpc, "rpc.method"); !ok || v.AsString() != "/scriva.v1.Scriva/CreateCollection" {
 		t.Errorf("rpc.method attr = %v (present=%v), want the full method", v.AsString(), ok)
 	}
 	if v, ok := spanAttr(rpc, "rpc.grpc.status_code"); !ok || v.AsInt64() != int64(codes.OK) {
@@ -1959,7 +1959,7 @@ func TestIntegration_TracingInterceptor_SpanPerRPC(t *testing.T) {
 	}
 
 	spans = exp.GetSpans()
-	find := spanByName(spans, "/filedb.v1.FileDB/Find")
+	find := spanByName(spans, "/scriva.v1.Scriva/Find")
 	if find == nil {
 		t.Fatalf("no span for Find; got %v", spanNames(spans))
 	}
@@ -2226,7 +2226,7 @@ func TestIntegration_CollectionACL_ConfinesScopedKey(t *testing.T) {
 		{Key: "scoped", Name: "app", Scope: auth.ScopeReadWrite, Collections: []string{"allowed"}},
 	}
 	conn := newInstrumentedServer(t, nil, keys, nil)
-	c := pb.NewFileDBClient(conn)
+	c := pb.NewScrivaClient(conn)
 
 	for _, name := range []string{"allowed", "forbidden"} {
 		if _, err := c.CreateCollection(keyCtx("admin"), &pb.CreateCollectionRequest{Name: name}); err != nil {

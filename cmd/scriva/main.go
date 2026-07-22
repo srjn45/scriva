@@ -22,11 +22,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/engine"
-	"github.com/srjn45/filedbv2/internal/auth"
-	"github.com/srjn45/filedbv2/internal/metrics"
-	pb "github.com/srjn45/filedbv2/internal/pb/proto"
-	"github.com/srjn45/filedbv2/server"
+	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
+	"github.com/srjn45/scriva/internal/envkey"
+	"github.com/srjn45/scriva/internal/metrics"
+	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/server"
 )
 
 // Build information, injected at release time via -ldflags -X (see .goreleaser.yml).
@@ -44,11 +45,11 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:     "filedb",
-		Short:   "FileDB — lightweight append-only file database",
+		Use:     "scriva",
+		Short:   "ScrivaDB — lightweight append-only file database",
 		Version: version,
 	}
-	root.SetVersionTemplate("filedb {{.Version}}\n")
+	root.SetVersionTemplate("scriva {{.Version}}\n")
 	root.AddCommand(serveCmd(), versionCmd())
 	return root
 }
@@ -58,7 +59,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version, commit, and build date",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Printf("filedb %s (commit %s, built %s)\n", version, commit, date)
+			fmt.Printf("scriva %s (commit %s, built %s)\n", version, commit, date)
 		},
 	}
 }
@@ -69,7 +70,7 @@ func serveCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Start the FileDB server",
+		Short: "Start the ScrivaDB server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// If a config file was given, load it (overrides defaults).
 			// Then re-apply any flags that were explicitly set on the CLI
@@ -154,12 +155,12 @@ func serveCmd() *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&configFile, "config", "", "Path to YAML config file (filedb.yaml)")
+	f.StringVar(&configFile, "config", "", "Path to YAML config file (scriva.yaml)")
 	f.StringVar(&cfg.DataDir, "data", cfg.DataDir, "Data directory")
 	f.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	f.StringVar(&cfg.RESTAddr, "rest-addr", cfg.RESTAddr, "REST listen address")
 	f.StringVar(&cfg.UnixSocket, "socket", cfg.UnixSocket, "Unix socket path")
-	f.StringVar(&cfg.APIKey, "api-key", os.Getenv("FILEDB_API_KEY"), "API key (env: FILEDB_API_KEY)")
+	f.StringVar(&cfg.APIKey, "api-key", envkey.APIKey(), "API key (env: SCRIVA_API_KEY)")
 	f.Int64Var(&cfg.SegmentMaxSize, "segment-size", cfg.SegmentMaxSize, "Max segment file size in bytes")
 	f.DurationVar(&cfg.CompactInterval, "compact-interval", cfg.CompactInterval, "Compaction interval")
 	f.Float64Var(&cfg.CompactDirtyPct, "compact-dirty", cfg.CompactDirtyPct, "Dirty ratio threshold to trigger compaction (0–1)")
@@ -249,7 +250,7 @@ func serve(cfg server.Config, configFile string) error {
 		if fresh {
 			logger.Info("follower: bootstrapping from leader snapshot", "leader", cfg.ReplicateFrom)
 			bctx := server.ReplicationAuthContext(context.Background(), cfg.APIKey)
-			wm, err := server.Bootstrap(bctx, pb.NewFileDBClient(conn), cfg.DataDir)
+			wm, err := server.Bootstrap(bctx, pb.NewScrivaClient(conn), cfg.DataDir)
 			if err != nil {
 				return fmt.Errorf("follower bootstrap: %w", err)
 			}
@@ -462,7 +463,7 @@ func serve(cfg server.Config, configFile string) error {
 		grpc.Creds(serverCreds),
 	}, streamCapOpts...)...)
 	tcpAPI := server.NewGRPCServer(db, cfg.TxTimeout, slowQueryOpts...)
-	pb.RegisterFileDBServer(grpcSrv, tcpAPI)
+	pb.RegisterScrivaServer(grpcSrv, tcpAPI)
 	healthSvc.Register(grpcSrv)
 
 	// TCP listener for gRPC.
@@ -479,7 +480,7 @@ func serve(cfg server.Config, configFile string) error {
 		grpc.Creds(insecure.NewCredentials()),
 	}, streamCapOpts...)...)
 	unixAPI := server.NewGRPCServer(db, cfg.TxTimeout, slowQueryOpts...)
-	pb.RegisterFileDBServer(unixGrpcSrv, unixAPI)
+	pb.RegisterScrivaServer(unixGrpcSrv, unixAPI)
 	healthSvc.Register(unixGrpcSrv)
 
 	_ = os.Remove(cfg.UnixSocket)
@@ -545,7 +546,7 @@ func serve(cfg server.Config, configFile string) error {
 				followerID = hn
 			}
 		}
-		fol := server.NewFollower(db, pb.NewFileDBClient(leaderConn), followerID, cfg.APIKey, logger)
+		fol := server.NewFollower(db, pb.NewScrivaClient(leaderConn), followerID, cfg.APIKey, logger)
 		go func() {
 			if err := fol.Run(fctx); err != nil && fctx.Err() == nil {
 				logger.Error("follower replication stopped", "err", err)

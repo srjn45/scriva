@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/srjn45/filedbv2/engine"
+	"github.com/srjn45/scriva/engine"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,7 +36,7 @@ type Config struct {
 	// Network
 	GRPCAddr    string `yaml:"grpc_addr"`    // default: :5433
 	RESTAddr    string `yaml:"rest_addr"`    // default: :8080
-	UnixSocket  string `yaml:"unix_socket"`  // default: /tmp/filedb.sock
+	UnixSocket  string `yaml:"unix_socket"`  // default: /tmp/scriva.sock
 	MetricsAddr string `yaml:"metrics_addr"` // default: :9090
 
 	// TLS (optional — both cert and key must be set to enable)
@@ -127,7 +127,7 @@ func DefaultConfig() Config {
 		DataDir:         "./data",
 		GRPCAddr:        ":5433",
 		RESTAddr:        ":8080",
-		UnixSocket:      "/tmp/filedb.sock",
+		UnixSocket:      "/tmp/scriva.sock",
 		MetricsAddr:     ":9090",
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: 5 * time.Minute,

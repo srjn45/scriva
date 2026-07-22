@@ -1,12 +1,12 @@
 {
   "swagger": "2.0",
   "info": {
-    "title": "proto/filedb.proto",
+    "title": "proto/scriva.proto",
     "version": "version not set"
   },
   "tags": [
     {
-      "name": "FileDB"
+      "name": "Scriva"
     }
   ],
   "consumes": [
@@ -18,7 +18,7 @@
   "paths": {
     "/v1/collections": {
       "get": {
-        "operationId": "FileDB_ListCollections",
+        "operationId": "Scriva_ListCollections",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -34,11 +34,11 @@
           }
         },
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "post": {
-        "operationId": "FileDB_CreateCollection",
+        "operationId": "Scriva_CreateCollection",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -64,13 +64,13 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/collections/{name}": {
       "delete": {
-        "operationId": "FileDB_DropCollection",
+        "operationId": "Scriva_DropCollection",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -94,14 +94,14 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/replication/promote": {
       "post": {
         "summary": "Promote flips a caught-up follower into a leader: it stops replicating from\nits upstream, lifts the read-only guard, and begins accepting writes.\nPromotion is refused with FAILED_PRECONDITION when the node is not a\nfollower, or when its replication lag (last-known leader LSN minus applied\nLSN) exceeds the server's configured threshold — pass force to override that\nguard when the leader is unrecoverable and some divergence is acceptable.\nThis is an admin operation and requires a read-write API key. Promotion is a\none-way transition; automatic leader election is out of scope.",
-        "operationId": "FileDB_Promote",
+        "operationId": "Scriva_Promote",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -127,14 +127,14 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/replication/status": {
       "get": {
         "summary": "ReplicationStatus reports the leader's current LSN and, for each connected\nfollower, the last LSN shipped to it and its lag. Used for observability and\nto read the leader's LSN watermark before bootstrapping a fresh follower.",
-        "operationId": "FileDB_ReplicationStatus",
+        "operationId": "Scriva_ReplicationStatus",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -150,14 +150,14 @@
           }
         },
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/aggregate": {
       "post": {
         "summary": "Aggregate computes count and numeric aggregations (sum/avg/min/max) over the\nlive records matching the same Filter as Find, optionally grouped by a field.\nIt server-streams one message per group; a plain (ungrouped) aggregation\nstreams a single message. Aggregation runs entirely in the engine — the\ncollection is never materialised on the client.",
-        "operationId": "FileDB_Aggregate",
+        "operationId": "Scriva_Aggregate",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -193,19 +193,19 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBAggregateBody"
+              "$ref": "#/definitions/ScrivaAggregateBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/compact": {
       "post": {
         "summary": "Compact runs a forced, synchronous compaction pass on a collection and\nreturns only after it completes.",
-        "operationId": "FileDB_Compact",
+        "operationId": "Scriva_Compact",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -232,18 +232,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBCompactBody"
+              "$ref": "#/definitions/ScrivaCompactBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/indexes": {
       "get": {
-        "operationId": "FileDB_ListIndexes",
+        "operationId": "Scriva_ListIndexes",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -267,11 +267,11 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "post": {
-        "operationId": "FileDB_EnsureIndex",
+        "operationId": "Scriva_EnsureIndex",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -298,18 +298,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBEnsureIndexBody"
+              "$ref": "#/definitions/ScrivaEnsureIndexBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/indexes/{field}": {
       "delete": {
-        "operationId": "FileDB_DropIndex",
+        "operationId": "Scriva_DropIndex",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -339,14 +339,14 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/keys/{key}": {
       "get": {
         "summary": "FindByKey returns the record carrying the caller-supplied string key.\nA missing key yields NOT_FOUND.",
-        "operationId": "FileDB_FindByKey",
+        "operationId": "Scriva_FindByKey",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -387,12 +387,12 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "delete": {
         "summary": "DeleteByKey removes the record carrying key. A missing key yields NOT_FOUND.",
-        "operationId": "FileDB_DeleteByKey",
+        "operationId": "Scriva_DeleteByKey",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -422,12 +422,12 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "put": {
         "summary": "UpdateByKey overwrites the record carrying key, preserving the key itself.\nA missing key yields NOT_FOUND.",
-        "operationId": "FileDB_UpdateByKey",
+        "operationId": "Scriva_UpdateByKey",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -460,19 +460,19 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBUpdateByKeyBody"
+              "$ref": "#/definitions/ScrivaUpdateByKeyBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/keys/{key}:cas": {
       "post": {
         "summary": "UpdateIfRev conditionally updates the record carrying key: the write is\napplied only if the record's current revision equals expected_rev. A stale\nrevision (or a missing key) is a clean no-op reported as swapped=false, not\nan error.",
-        "operationId": "FileDB_UpdateIfRev",
+        "operationId": "Scriva_UpdateIfRev",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -505,18 +505,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBUpdateIfRevBody"
+              "$ref": "#/definitions/ScrivaUpdateIfRevBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/records": {
       "post": {
-        "operationId": "FileDB_Insert",
+        "operationId": "Scriva_Insert",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -543,18 +543,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBInsertBody"
+              "$ref": "#/definitions/ScrivaInsertBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/records/batch": {
       "post": {
-        "operationId": "FileDB_InsertMany",
+        "operationId": "Scriva_InsertMany",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -581,19 +581,19 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBInsertManyBody"
+              "$ref": "#/definitions/ScrivaInsertManyBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/records/find": {
       "post": {
         "summary": "Server-streaming: results are streamed back one by one.",
-        "operationId": "FileDB_Find",
+        "operationId": "Scriva_Find",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -629,18 +629,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBFindBody"
+              "$ref": "#/definitions/ScrivaFindBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/records/{id}": {
       "get": {
-        "operationId": "FileDB_FindById",
+        "operationId": "Scriva_FindById",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -682,11 +682,11 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "delete": {
-        "operationId": "FileDB_Delete",
+        "operationId": "Scriva_Delete",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -717,11 +717,11 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       },
       "put": {
-        "operationId": "FileDB_Update",
+        "operationId": "Scriva_Update",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -755,19 +755,19 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBUpdateBody"
+              "$ref": "#/definitions/ScrivaUpdateBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/records:upsert": {
       "post": {
         "summary": "Upsert inserts data under key if no live record carries it, or replaces the\nexisting record's data if one does — atomically. Returns the resulting\nrecord with its (incremented on replace) revision. This is the keyed-insert\npath: there is no separate InsertWithKey RPC.",
-        "operationId": "FileDB_Upsert",
+        "operationId": "Scriva_Upsert",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -794,18 +794,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBUpsertBody"
+              "$ref": "#/definitions/ScrivaUpsertBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/stats": {
       "get": {
-        "operationId": "FileDB_CollectionStats",
+        "operationId": "Scriva_CollectionStats",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -829,13 +829,13 @@
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     },
     "/v1/{collection}/watch": {
       "post": {
-        "operationId": "FileDB_Watch",
+        "operationId": "Scriva_Watch",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -871,18 +871,18 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FileDBWatchBody"
+              "$ref": "#/definitions/ScrivaWatchBody"
             }
           }
         ],
         "tags": [
-          "FileDB"
+          "Scriva"
         ]
       }
     }
   },
   "definitions": {
-    "FileDBAggregateBody": {
+    "ScrivaAggregateBody": {
       "type": "object",
       "properties": {
         "filter": {
@@ -906,10 +906,10 @@
         }
       }
     },
-    "FileDBCompactBody": {
+    "ScrivaCompactBody": {
       "type": "object"
     },
-    "FileDBEnsureIndexBody": {
+    "ScrivaEnsureIndexBody": {
       "type": "object",
       "properties": {
         "field": {
@@ -917,7 +917,7 @@
         }
       }
     },
-    "FileDBFindBody": {
+    "ScrivaFindBody": {
       "type": "object",
       "properties": {
         "filter": {
@@ -960,7 +960,7 @@
         }
       }
     },
-    "FileDBInsertBody": {
+    "ScrivaInsertBody": {
       "type": "object",
       "properties": {
         "data": {
@@ -977,7 +977,7 @@
         }
       }
     },
-    "FileDBInsertManyBody": {
+    "ScrivaInsertManyBody": {
       "type": "object",
       "properties": {
         "records": {
@@ -993,7 +993,7 @@
         }
       }
     },
-    "FileDBUpdateBody": {
+    "ScrivaUpdateBody": {
       "type": "object",
       "properties": {
         "data": {
@@ -1006,7 +1006,7 @@
         }
       }
     },
-    "FileDBUpdateByKeyBody": {
+    "ScrivaUpdateByKeyBody": {
       "type": "object",
       "properties": {
         "data": {
@@ -1014,7 +1014,7 @@
         }
       }
     },
-    "FileDBUpdateIfRevBody": {
+    "ScrivaUpdateIfRevBody": {
       "type": "object",
       "properties": {
         "expectedRev": {
@@ -1026,7 +1026,7 @@
         }
       }
     },
-    "FileDBUpsertBody": {
+    "ScrivaUpsertBody": {
       "type": "object",
       "properties": {
         "key": {
@@ -1037,7 +1037,7 @@
         }
       }
     },
-    "FileDBWatchBody": {
+    "ScrivaWatchBody": {
       "type": "object",
       "properties": {
         "filter": {

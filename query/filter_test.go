@@ -3,7 +3,7 @@ package query_test
 import (
 	"testing"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // record is a helper to build a data map concisely.

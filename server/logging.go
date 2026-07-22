@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/internal/auth"
+	"github.com/srjn45/scriva/internal/auth"
 )
 
 // NewLogger builds a *slog.Logger writing to w with the given minimum level

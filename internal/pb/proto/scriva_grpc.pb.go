@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             (unknown)
-// source: proto/filedb.proto
+// source: proto/scriva.proto
 
 package proto
 
@@ -19,40 +19,40 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FileDB_CreateCollection_FullMethodName  = "/filedb.v1.FileDB/CreateCollection"
-	FileDB_DropCollection_FullMethodName    = "/filedb.v1.FileDB/DropCollection"
-	FileDB_ListCollections_FullMethodName   = "/filedb.v1.FileDB/ListCollections"
-	FileDB_Insert_FullMethodName            = "/filedb.v1.FileDB/Insert"
-	FileDB_InsertMany_FullMethodName        = "/filedb.v1.FileDB/InsertMany"
-	FileDB_FindById_FullMethodName          = "/filedb.v1.FileDB/FindById"
-	FileDB_Find_FullMethodName              = "/filedb.v1.FileDB/Find"
-	FileDB_Update_FullMethodName            = "/filedb.v1.FileDB/Update"
-	FileDB_Delete_FullMethodName            = "/filedb.v1.FileDB/Delete"
-	FileDB_Upsert_FullMethodName            = "/filedb.v1.FileDB/Upsert"
-	FileDB_FindByKey_FullMethodName         = "/filedb.v1.FileDB/FindByKey"
-	FileDB_UpdateByKey_FullMethodName       = "/filedb.v1.FileDB/UpdateByKey"
-	FileDB_DeleteByKey_FullMethodName       = "/filedb.v1.FileDB/DeleteByKey"
-	FileDB_UpdateIfRev_FullMethodName       = "/filedb.v1.FileDB/UpdateIfRev"
-	FileDB_EnsureIndex_FullMethodName       = "/filedb.v1.FileDB/EnsureIndex"
-	FileDB_DropIndex_FullMethodName         = "/filedb.v1.FileDB/DropIndex"
-	FileDB_ListIndexes_FullMethodName       = "/filedb.v1.FileDB/ListIndexes"
-	FileDB_BeginTx_FullMethodName           = "/filedb.v1.FileDB/BeginTx"
-	FileDB_CommitTx_FullMethodName          = "/filedb.v1.FileDB/CommitTx"
-	FileDB_RollbackTx_FullMethodName        = "/filedb.v1.FileDB/RollbackTx"
-	FileDB_Watch_FullMethodName             = "/filedb.v1.FileDB/Watch"
-	FileDB_Aggregate_FullMethodName         = "/filedb.v1.FileDB/Aggregate"
-	FileDB_CollectionStats_FullMethodName   = "/filedb.v1.FileDB/CollectionStats"
-	FileDB_Compact_FullMethodName           = "/filedb.v1.FileDB/Compact"
-	FileDB_Snapshot_FullMethodName          = "/filedb.v1.FileDB/Snapshot"
-	FileDB_Replicate_FullMethodName         = "/filedb.v1.FileDB/Replicate"
-	FileDB_ReplicationStatus_FullMethodName = "/filedb.v1.FileDB/ReplicationStatus"
-	FileDB_Promote_FullMethodName           = "/filedb.v1.FileDB/Promote"
+	Scriva_CreateCollection_FullMethodName  = "/scriva.v1.Scriva/CreateCollection"
+	Scriva_DropCollection_FullMethodName    = "/scriva.v1.Scriva/DropCollection"
+	Scriva_ListCollections_FullMethodName   = "/scriva.v1.Scriva/ListCollections"
+	Scriva_Insert_FullMethodName            = "/scriva.v1.Scriva/Insert"
+	Scriva_InsertMany_FullMethodName        = "/scriva.v1.Scriva/InsertMany"
+	Scriva_FindById_FullMethodName          = "/scriva.v1.Scriva/FindById"
+	Scriva_Find_FullMethodName              = "/scriva.v1.Scriva/Find"
+	Scriva_Update_FullMethodName            = "/scriva.v1.Scriva/Update"
+	Scriva_Delete_FullMethodName            = "/scriva.v1.Scriva/Delete"
+	Scriva_Upsert_FullMethodName            = "/scriva.v1.Scriva/Upsert"
+	Scriva_FindByKey_FullMethodName         = "/scriva.v1.Scriva/FindByKey"
+	Scriva_UpdateByKey_FullMethodName       = "/scriva.v1.Scriva/UpdateByKey"
+	Scriva_DeleteByKey_FullMethodName       = "/scriva.v1.Scriva/DeleteByKey"
+	Scriva_UpdateIfRev_FullMethodName       = "/scriva.v1.Scriva/UpdateIfRev"
+	Scriva_EnsureIndex_FullMethodName       = "/scriva.v1.Scriva/EnsureIndex"
+	Scriva_DropIndex_FullMethodName         = "/scriva.v1.Scriva/DropIndex"
+	Scriva_ListIndexes_FullMethodName       = "/scriva.v1.Scriva/ListIndexes"
+	Scriva_BeginTx_FullMethodName           = "/scriva.v1.Scriva/BeginTx"
+	Scriva_CommitTx_FullMethodName          = "/scriva.v1.Scriva/CommitTx"
+	Scriva_RollbackTx_FullMethodName        = "/scriva.v1.Scriva/RollbackTx"
+	Scriva_Watch_FullMethodName             = "/scriva.v1.Scriva/Watch"
+	Scriva_Aggregate_FullMethodName         = "/scriva.v1.Scriva/Aggregate"
+	Scriva_CollectionStats_FullMethodName   = "/scriva.v1.Scriva/CollectionStats"
+	Scriva_Compact_FullMethodName           = "/scriva.v1.Scriva/Compact"
+	Scriva_Snapshot_FullMethodName          = "/scriva.v1.Scriva/Snapshot"
+	Scriva_Replicate_FullMethodName         = "/scriva.v1.Scriva/Replicate"
+	Scriva_ReplicationStatus_FullMethodName = "/scriva.v1.Scriva/ReplicationStatus"
+	Scriva_Promote_FullMethodName           = "/scriva.v1.Scriva/Promote"
 )
 
-// FileDBClient is the client API for FileDB service.
+// ScrivaClient is the client API for Scriva service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type FileDBClient interface {
+type ScrivaClient interface {
 	CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CreateCollectionResponse, error)
 	DropCollection(ctx context.Context, in *DropCollectionRequest, opts ...grpc.CallOption) (*DropCollectionResponse, error)
 	ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error)
@@ -126,77 +126,77 @@ type FileDBClient interface {
 	Promote(ctx context.Context, in *PromoteRequest, opts ...grpc.CallOption) (*PromoteResponse, error)
 }
 
-type fileDBClient struct {
+type scrivaClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewFileDBClient(cc grpc.ClientConnInterface) FileDBClient {
-	return &fileDBClient{cc}
+func NewScrivaClient(cc grpc.ClientConnInterface) ScrivaClient {
+	return &scrivaClient{cc}
 }
 
-func (c *fileDBClient) CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CreateCollectionResponse, error) {
+func (c *scrivaClient) CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CreateCollectionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateCollectionResponse)
-	err := c.cc.Invoke(ctx, FileDB_CreateCollection_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_CreateCollection_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) DropCollection(ctx context.Context, in *DropCollectionRequest, opts ...grpc.CallOption) (*DropCollectionResponse, error) {
+func (c *scrivaClient) DropCollection(ctx context.Context, in *DropCollectionRequest, opts ...grpc.CallOption) (*DropCollectionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DropCollectionResponse)
-	err := c.cc.Invoke(ctx, FileDB_DropCollection_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_DropCollection_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error) {
+func (c *scrivaClient) ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCollectionsResponse)
-	err := c.cc.Invoke(ctx, FileDB_ListCollections_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_ListCollections_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Insert(ctx context.Context, in *InsertRequest, opts ...grpc.CallOption) (*InsertResponse, error) {
+func (c *scrivaClient) Insert(ctx context.Context, in *InsertRequest, opts ...grpc.CallOption) (*InsertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InsertResponse)
-	err := c.cc.Invoke(ctx, FileDB_Insert_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Insert_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) InsertMany(ctx context.Context, in *InsertManyRequest, opts ...grpc.CallOption) (*InsertManyResponse, error) {
+func (c *scrivaClient) InsertMany(ctx context.Context, in *InsertManyRequest, opts ...grpc.CallOption) (*InsertManyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InsertManyResponse)
-	err := c.cc.Invoke(ctx, FileDB_InsertMany_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_InsertMany_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) FindById(ctx context.Context, in *FindByIdRequest, opts ...grpc.CallOption) (*FindResponse, error) {
+func (c *scrivaClient) FindById(ctx context.Context, in *FindByIdRequest, opts ...grpc.CallOption) (*FindResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FindResponse)
-	err := c.cc.Invoke(ctx, FileDB_FindById_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_FindById_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Find(ctx context.Context, in *FindRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FindResponse], error) {
+func (c *scrivaClient) Find(ctx context.Context, in *FindRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FindResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[0], FileDB_Find_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[0], Scriva_Find_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -211,141 +211,141 @@ func (c *fileDBClient) Find(ctx context.Context, in *FindRequest, opts ...grpc.C
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_FindClient = grpc.ServerStreamingClient[FindResponse]
+type Scriva_FindClient = grpc.ServerStreamingClient[FindResponse]
 
-func (c *fileDBClient) Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+func (c *scrivaClient) Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UpdateResponse)
-	err := c.cc.Invoke(ctx, FileDB_Update_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Update_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
+func (c *scrivaClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteResponse)
-	err := c.cc.Invoke(ctx, FileDB_Delete_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Delete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Upsert(ctx context.Context, in *UpsertRequest, opts ...grpc.CallOption) (*UpsertResponse, error) {
+func (c *scrivaClient) Upsert(ctx context.Context, in *UpsertRequest, opts ...grpc.CallOption) (*UpsertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UpsertResponse)
-	err := c.cc.Invoke(ctx, FileDB_Upsert_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Upsert_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) FindByKey(ctx context.Context, in *FindByKeyRequest, opts ...grpc.CallOption) (*FindResponse, error) {
+func (c *scrivaClient) FindByKey(ctx context.Context, in *FindByKeyRequest, opts ...grpc.CallOption) (*FindResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FindResponse)
-	err := c.cc.Invoke(ctx, FileDB_FindByKey_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_FindByKey_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) UpdateByKey(ctx context.Context, in *UpdateByKeyRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+func (c *scrivaClient) UpdateByKey(ctx context.Context, in *UpdateByKeyRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UpdateResponse)
-	err := c.cc.Invoke(ctx, FileDB_UpdateByKey_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_UpdateByKey_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) DeleteByKey(ctx context.Context, in *DeleteByKeyRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
+func (c *scrivaClient) DeleteByKey(ctx context.Context, in *DeleteByKeyRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteResponse)
-	err := c.cc.Invoke(ctx, FileDB_DeleteByKey_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_DeleteByKey_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) UpdateIfRev(ctx context.Context, in *UpdateIfRevRequest, opts ...grpc.CallOption) (*UpdateIfRevResponse, error) {
+func (c *scrivaClient) UpdateIfRev(ctx context.Context, in *UpdateIfRevRequest, opts ...grpc.CallOption) (*UpdateIfRevResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UpdateIfRevResponse)
-	err := c.cc.Invoke(ctx, FileDB_UpdateIfRev_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_UpdateIfRev_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) EnsureIndex(ctx context.Context, in *EnsureIndexRequest, opts ...grpc.CallOption) (*EnsureIndexResponse, error) {
+func (c *scrivaClient) EnsureIndex(ctx context.Context, in *EnsureIndexRequest, opts ...grpc.CallOption) (*EnsureIndexResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnsureIndexResponse)
-	err := c.cc.Invoke(ctx, FileDB_EnsureIndex_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_EnsureIndex_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error) {
+func (c *scrivaClient) DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DropIndexResponse)
-	err := c.cc.Invoke(ctx, FileDB_DropIndex_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_DropIndex_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error) {
+func (c *scrivaClient) ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListIndexesResponse)
-	err := c.cc.Invoke(ctx, FileDB_ListIndexes_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_ListIndexes_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) BeginTx(ctx context.Context, in *BeginTxRequest, opts ...grpc.CallOption) (*BeginTxResponse, error) {
+func (c *scrivaClient) BeginTx(ctx context.Context, in *BeginTxRequest, opts ...grpc.CallOption) (*BeginTxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BeginTxResponse)
-	err := c.cc.Invoke(ctx, FileDB_BeginTx_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_BeginTx_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) CommitTx(ctx context.Context, in *CommitTxRequest, opts ...grpc.CallOption) (*CommitTxResponse, error) {
+func (c *scrivaClient) CommitTx(ctx context.Context, in *CommitTxRequest, opts ...grpc.CallOption) (*CommitTxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommitTxResponse)
-	err := c.cc.Invoke(ctx, FileDB_CommitTx_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_CommitTx_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error) {
+func (c *scrivaClient) RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RollbackTxResponse)
-	err := c.cc.Invoke(ctx, FileDB_RollbackTx_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_RollbackTx_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error) {
+func (c *scrivaClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[1], FileDB_Watch_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[1], Scriva_Watch_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -360,11 +360,11 @@ func (c *fileDBClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_WatchClient = grpc.ServerStreamingClient[WatchEvent]
+type Scriva_WatchClient = grpc.ServerStreamingClient[WatchEvent]
 
-func (c *fileDBClient) Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AggregateResponse], error) {
+func (c *scrivaClient) Aggregate(ctx context.Context, in *AggregateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AggregateResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[2], FileDB_Aggregate_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[2], Scriva_Aggregate_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -379,31 +379,31 @@ func (c *fileDBClient) Aggregate(ctx context.Context, in *AggregateRequest, opts
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_AggregateClient = grpc.ServerStreamingClient[AggregateResponse]
+type Scriva_AggregateClient = grpc.ServerStreamingClient[AggregateResponse]
 
-func (c *fileDBClient) CollectionStats(ctx context.Context, in *CollectionStatsRequest, opts ...grpc.CallOption) (*CollectionStatsResponse, error) {
+func (c *scrivaClient) CollectionStats(ctx context.Context, in *CollectionStatsRequest, opts ...grpc.CallOption) (*CollectionStatsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CollectionStatsResponse)
-	err := c.cc.Invoke(ctx, FileDB_CollectionStats_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_CollectionStats_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*CompactResponse, error) {
+func (c *scrivaClient) Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*CompactResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CompactResponse)
-	err := c.cc.Invoke(ctx, FileDB_Compact_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Compact_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
+func (c *scrivaClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[3], FileDB_Snapshot_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[3], Scriva_Snapshot_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -418,11 +418,11 @@ func (c *fileDBClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts .
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_SnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
+type Scriva_SnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
 
-func (c *fileDBClient) Replicate(ctx context.Context, in *ReplicateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReplicationRecord], error) {
+func (c *scrivaClient) Replicate(ctx context.Context, in *ReplicateRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReplicationRecord], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &FileDB_ServiceDesc.Streams[4], FileDB_Replicate_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[4], Scriva_Replicate_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -437,32 +437,32 @@ func (c *fileDBClient) Replicate(ctx context.Context, in *ReplicateRequest, opts
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_ReplicateClient = grpc.ServerStreamingClient[ReplicationRecord]
+type Scriva_ReplicateClient = grpc.ServerStreamingClient[ReplicationRecord]
 
-func (c *fileDBClient) ReplicationStatus(ctx context.Context, in *ReplicationStatusRequest, opts ...grpc.CallOption) (*ReplicationStatusResponse, error) {
+func (c *scrivaClient) ReplicationStatus(ctx context.Context, in *ReplicationStatusRequest, opts ...grpc.CallOption) (*ReplicationStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReplicationStatusResponse)
-	err := c.cc.Invoke(ctx, FileDB_ReplicationStatus_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_ReplicationStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *fileDBClient) Promote(ctx context.Context, in *PromoteRequest, opts ...grpc.CallOption) (*PromoteResponse, error) {
+func (c *scrivaClient) Promote(ctx context.Context, in *PromoteRequest, opts ...grpc.CallOption) (*PromoteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PromoteResponse)
-	err := c.cc.Invoke(ctx, FileDB_Promote_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Scriva_Promote_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// FileDBServer is the server API for FileDB service.
-// All implementations must embed UnimplementedFileDBServer
+// ScrivaServer is the server API for Scriva service.
+// All implementations must embed UnimplementedScrivaServer
 // for forward compatibility.
-type FileDBServer interface {
+type ScrivaServer interface {
 	CreateCollection(context.Context, *CreateCollectionRequest) (*CreateCollectionResponse, error)
 	DropCollection(context.Context, *DropCollectionRequest) (*DropCollectionResponse, error)
 	ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error)
@@ -534,716 +534,716 @@ type FileDBServer interface {
 	// This is an admin operation and requires a read-write API key. Promotion is a
 	// one-way transition; automatic leader election is out of scope.
 	Promote(context.Context, *PromoteRequest) (*PromoteResponse, error)
-	mustEmbedUnimplementedFileDBServer()
+	mustEmbedUnimplementedScrivaServer()
 }
 
-// UnimplementedFileDBServer must be embedded to have
+// UnimplementedScrivaServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedFileDBServer struct{}
+type UnimplementedScrivaServer struct{}
 
-func (UnimplementedFileDBServer) CreateCollection(context.Context, *CreateCollectionRequest) (*CreateCollectionResponse, error) {
+func (UnimplementedScrivaServer) CreateCollection(context.Context, *CreateCollectionRequest) (*CreateCollectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateCollection not implemented")
 }
-func (UnimplementedFileDBServer) DropCollection(context.Context, *DropCollectionRequest) (*DropCollectionResponse, error) {
+func (UnimplementedScrivaServer) DropCollection(context.Context, *DropCollectionRequest) (*DropCollectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DropCollection not implemented")
 }
-func (UnimplementedFileDBServer) ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error) {
+func (UnimplementedScrivaServer) ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCollections not implemented")
 }
-func (UnimplementedFileDBServer) Insert(context.Context, *InsertRequest) (*InsertResponse, error) {
+func (UnimplementedScrivaServer) Insert(context.Context, *InsertRequest) (*InsertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Insert not implemented")
 }
-func (UnimplementedFileDBServer) InsertMany(context.Context, *InsertManyRequest) (*InsertManyResponse, error) {
+func (UnimplementedScrivaServer) InsertMany(context.Context, *InsertManyRequest) (*InsertManyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InsertMany not implemented")
 }
-func (UnimplementedFileDBServer) FindById(context.Context, *FindByIdRequest) (*FindResponse, error) {
+func (UnimplementedScrivaServer) FindById(context.Context, *FindByIdRequest) (*FindResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FindById not implemented")
 }
-func (UnimplementedFileDBServer) Find(*FindRequest, grpc.ServerStreamingServer[FindResponse]) error {
+func (UnimplementedScrivaServer) Find(*FindRequest, grpc.ServerStreamingServer[FindResponse]) error {
 	return status.Error(codes.Unimplemented, "method Find not implemented")
 }
-func (UnimplementedFileDBServer) Update(context.Context, *UpdateRequest) (*UpdateResponse, error) {
+func (UnimplementedScrivaServer) Update(context.Context, *UpdateRequest) (*UpdateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Update not implemented")
 }
-func (UnimplementedFileDBServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
+func (UnimplementedScrivaServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
 }
-func (UnimplementedFileDBServer) Upsert(context.Context, *UpsertRequest) (*UpsertResponse, error) {
+func (UnimplementedScrivaServer) Upsert(context.Context, *UpsertRequest) (*UpsertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Upsert not implemented")
 }
-func (UnimplementedFileDBServer) FindByKey(context.Context, *FindByKeyRequest) (*FindResponse, error) {
+func (UnimplementedScrivaServer) FindByKey(context.Context, *FindByKeyRequest) (*FindResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FindByKey not implemented")
 }
-func (UnimplementedFileDBServer) UpdateByKey(context.Context, *UpdateByKeyRequest) (*UpdateResponse, error) {
+func (UnimplementedScrivaServer) UpdateByKey(context.Context, *UpdateByKeyRequest) (*UpdateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateByKey not implemented")
 }
-func (UnimplementedFileDBServer) DeleteByKey(context.Context, *DeleteByKeyRequest) (*DeleteResponse, error) {
+func (UnimplementedScrivaServer) DeleteByKey(context.Context, *DeleteByKeyRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteByKey not implemented")
 }
-func (UnimplementedFileDBServer) UpdateIfRev(context.Context, *UpdateIfRevRequest) (*UpdateIfRevResponse, error) {
+func (UnimplementedScrivaServer) UpdateIfRev(context.Context, *UpdateIfRevRequest) (*UpdateIfRevResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateIfRev not implemented")
 }
-func (UnimplementedFileDBServer) EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error) {
+func (UnimplementedScrivaServer) EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnsureIndex not implemented")
 }
-func (UnimplementedFileDBServer) DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error) {
+func (UnimplementedScrivaServer) DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DropIndex not implemented")
 }
-func (UnimplementedFileDBServer) ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error) {
+func (UnimplementedScrivaServer) ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListIndexes not implemented")
 }
-func (UnimplementedFileDBServer) BeginTx(context.Context, *BeginTxRequest) (*BeginTxResponse, error) {
+func (UnimplementedScrivaServer) BeginTx(context.Context, *BeginTxRequest) (*BeginTxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BeginTx not implemented")
 }
-func (UnimplementedFileDBServer) CommitTx(context.Context, *CommitTxRequest) (*CommitTxResponse, error) {
+func (UnimplementedScrivaServer) CommitTx(context.Context, *CommitTxRequest) (*CommitTxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CommitTx not implemented")
 }
-func (UnimplementedFileDBServer) RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error) {
+func (UnimplementedScrivaServer) RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RollbackTx not implemented")
 }
-func (UnimplementedFileDBServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error {
+func (UnimplementedScrivaServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error {
 	return status.Error(codes.Unimplemented, "method Watch not implemented")
 }
-func (UnimplementedFileDBServer) Aggregate(*AggregateRequest, grpc.ServerStreamingServer[AggregateResponse]) error {
+func (UnimplementedScrivaServer) Aggregate(*AggregateRequest, grpc.ServerStreamingServer[AggregateResponse]) error {
 	return status.Error(codes.Unimplemented, "method Aggregate not implemented")
 }
-func (UnimplementedFileDBServer) CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error) {
+func (UnimplementedScrivaServer) CollectionStats(context.Context, *CollectionStatsRequest) (*CollectionStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CollectionStats not implemented")
 }
-func (UnimplementedFileDBServer) Compact(context.Context, *CompactRequest) (*CompactResponse, error) {
+func (UnimplementedScrivaServer) Compact(context.Context, *CompactRequest) (*CompactResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Compact not implemented")
 }
-func (UnimplementedFileDBServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
+func (UnimplementedScrivaServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
 	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
 }
-func (UnimplementedFileDBServer) Replicate(*ReplicateRequest, grpc.ServerStreamingServer[ReplicationRecord]) error {
+func (UnimplementedScrivaServer) Replicate(*ReplicateRequest, grpc.ServerStreamingServer[ReplicationRecord]) error {
 	return status.Error(codes.Unimplemented, "method Replicate not implemented")
 }
-func (UnimplementedFileDBServer) ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error) {
+func (UnimplementedScrivaServer) ReplicationStatus(context.Context, *ReplicationStatusRequest) (*ReplicationStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReplicationStatus not implemented")
 }
-func (UnimplementedFileDBServer) Promote(context.Context, *PromoteRequest) (*PromoteResponse, error) {
+func (UnimplementedScrivaServer) Promote(context.Context, *PromoteRequest) (*PromoteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Promote not implemented")
 }
-func (UnimplementedFileDBServer) mustEmbedUnimplementedFileDBServer() {}
-func (UnimplementedFileDBServer) testEmbeddedByValue()                {}
+func (UnimplementedScrivaServer) mustEmbedUnimplementedScrivaServer() {}
+func (UnimplementedScrivaServer) testEmbeddedByValue()                {}
 
-// UnsafeFileDBServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to FileDBServer will
+// UnsafeScrivaServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ScrivaServer will
 // result in compilation errors.
-type UnsafeFileDBServer interface {
-	mustEmbedUnimplementedFileDBServer()
+type UnsafeScrivaServer interface {
+	mustEmbedUnimplementedScrivaServer()
 }
 
-func RegisterFileDBServer(s grpc.ServiceRegistrar, srv FileDBServer) {
-	// If the following call panics, it indicates UnimplementedFileDBServer was
+func RegisterScrivaServer(s grpc.ServiceRegistrar, srv ScrivaServer) {
+	// If the following call panics, it indicates UnimplementedScrivaServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&FileDB_ServiceDesc, srv)
+	s.RegisterService(&Scriva_ServiceDesc, srv)
 }
 
-func _FileDB_CreateCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_CreateCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateCollectionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).CreateCollection(ctx, in)
+		return srv.(ScrivaServer).CreateCollection(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_CreateCollection_FullMethodName,
+		FullMethod: Scriva_CreateCollection_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).CreateCollection(ctx, req.(*CreateCollectionRequest))
+		return srv.(ScrivaServer).CreateCollection(ctx, req.(*CreateCollectionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_DropCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_DropCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DropCollectionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).DropCollection(ctx, in)
+		return srv.(ScrivaServer).DropCollection(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_DropCollection_FullMethodName,
+		FullMethod: Scriva_DropCollection_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).DropCollection(ctx, req.(*DropCollectionRequest))
+		return srv.(ScrivaServer).DropCollection(ctx, req.(*DropCollectionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_ListCollections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_ListCollections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListCollectionsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).ListCollections(ctx, in)
+		return srv.(ScrivaServer).ListCollections(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_ListCollections_FullMethodName,
+		FullMethod: Scriva_ListCollections_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).ListCollections(ctx, req.(*ListCollectionsRequest))
+		return srv.(ScrivaServer).ListCollections(ctx, req.(*ListCollectionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Insert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Insert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(InsertRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Insert(ctx, in)
+		return srv.(ScrivaServer).Insert(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Insert_FullMethodName,
+		FullMethod: Scriva_Insert_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Insert(ctx, req.(*InsertRequest))
+		return srv.(ScrivaServer).Insert(ctx, req.(*InsertRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_InsertMany_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_InsertMany_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(InsertManyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).InsertMany(ctx, in)
+		return srv.(ScrivaServer).InsertMany(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_InsertMany_FullMethodName,
+		FullMethod: Scriva_InsertMany_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).InsertMany(ctx, req.(*InsertManyRequest))
+		return srv.(ScrivaServer).InsertMany(ctx, req.(*InsertManyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_FindById_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_FindById_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FindByIdRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).FindById(ctx, in)
+		return srv.(ScrivaServer).FindById(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_FindById_FullMethodName,
+		FullMethod: Scriva_FindById_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).FindById(ctx, req.(*FindByIdRequest))
+		return srv.(ScrivaServer).FindById(ctx, req.(*FindByIdRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Find_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Scriva_Find_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(FindRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(FileDBServer).Find(m, &grpc.GenericServerStream[FindRequest, FindResponse]{ServerStream: stream})
+	return srv.(ScrivaServer).Find(m, &grpc.GenericServerStream[FindRequest, FindResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_FindServer = grpc.ServerStreamingServer[FindResponse]
+type Scriva_FindServer = grpc.ServerStreamingServer[FindResponse]
 
-func _FileDB_Update_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Update_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UpdateRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Update(ctx, in)
+		return srv.(ScrivaServer).Update(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Update_FullMethodName,
+		FullMethod: Scriva_Update_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Update(ctx, req.(*UpdateRequest))
+		return srv.(ScrivaServer).Update(ctx, req.(*UpdateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Delete(ctx, in)
+		return srv.(ScrivaServer).Delete(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Delete_FullMethodName,
+		FullMethod: Scriva_Delete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Delete(ctx, req.(*DeleteRequest))
+		return srv.(ScrivaServer).Delete(ctx, req.(*DeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Upsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Upsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UpsertRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Upsert(ctx, in)
+		return srv.(ScrivaServer).Upsert(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Upsert_FullMethodName,
+		FullMethod: Scriva_Upsert_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Upsert(ctx, req.(*UpsertRequest))
+		return srv.(ScrivaServer).Upsert(ctx, req.(*UpsertRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_FindByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_FindByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FindByKeyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).FindByKey(ctx, in)
+		return srv.(ScrivaServer).FindByKey(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_FindByKey_FullMethodName,
+		FullMethod: Scriva_FindByKey_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).FindByKey(ctx, req.(*FindByKeyRequest))
+		return srv.(ScrivaServer).FindByKey(ctx, req.(*FindByKeyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_UpdateByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_UpdateByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UpdateByKeyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).UpdateByKey(ctx, in)
+		return srv.(ScrivaServer).UpdateByKey(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_UpdateByKey_FullMethodName,
+		FullMethod: Scriva_UpdateByKey_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).UpdateByKey(ctx, req.(*UpdateByKeyRequest))
+		return srv.(ScrivaServer).UpdateByKey(ctx, req.(*UpdateByKeyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_DeleteByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_DeleteByKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteByKeyRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).DeleteByKey(ctx, in)
+		return srv.(ScrivaServer).DeleteByKey(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_DeleteByKey_FullMethodName,
+		FullMethod: Scriva_DeleteByKey_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).DeleteByKey(ctx, req.(*DeleteByKeyRequest))
+		return srv.(ScrivaServer).DeleteByKey(ctx, req.(*DeleteByKeyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_UpdateIfRev_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_UpdateIfRev_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UpdateIfRevRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).UpdateIfRev(ctx, in)
+		return srv.(ScrivaServer).UpdateIfRev(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_UpdateIfRev_FullMethodName,
+		FullMethod: Scriva_UpdateIfRev_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).UpdateIfRev(ctx, req.(*UpdateIfRevRequest))
+		return srv.(ScrivaServer).UpdateIfRev(ctx, req.(*UpdateIfRevRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_EnsureIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_EnsureIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(EnsureIndexRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).EnsureIndex(ctx, in)
+		return srv.(ScrivaServer).EnsureIndex(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_EnsureIndex_FullMethodName,
+		FullMethod: Scriva_EnsureIndex_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).EnsureIndex(ctx, req.(*EnsureIndexRequest))
+		return srv.(ScrivaServer).EnsureIndex(ctx, req.(*EnsureIndexRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_DropIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_DropIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DropIndexRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).DropIndex(ctx, in)
+		return srv.(ScrivaServer).DropIndex(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_DropIndex_FullMethodName,
+		FullMethod: Scriva_DropIndex_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).DropIndex(ctx, req.(*DropIndexRequest))
+		return srv.(ScrivaServer).DropIndex(ctx, req.(*DropIndexRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_ListIndexes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_ListIndexes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListIndexesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).ListIndexes(ctx, in)
+		return srv.(ScrivaServer).ListIndexes(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_ListIndexes_FullMethodName,
+		FullMethod: Scriva_ListIndexes_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).ListIndexes(ctx, req.(*ListIndexesRequest))
+		return srv.(ScrivaServer).ListIndexes(ctx, req.(*ListIndexesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_BeginTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_BeginTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BeginTxRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).BeginTx(ctx, in)
+		return srv.(ScrivaServer).BeginTx(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_BeginTx_FullMethodName,
+		FullMethod: Scriva_BeginTx_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).BeginTx(ctx, req.(*BeginTxRequest))
+		return srv.(ScrivaServer).BeginTx(ctx, req.(*BeginTxRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_CommitTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_CommitTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CommitTxRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).CommitTx(ctx, in)
+		return srv.(ScrivaServer).CommitTx(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_CommitTx_FullMethodName,
+		FullMethod: Scriva_CommitTx_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).CommitTx(ctx, req.(*CommitTxRequest))
+		return srv.(ScrivaServer).CommitTx(ctx, req.(*CommitTxRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_RollbackTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_RollbackTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RollbackTxRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).RollbackTx(ctx, in)
+		return srv.(ScrivaServer).RollbackTx(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_RollbackTx_FullMethodName,
+		FullMethod: Scriva_RollbackTx_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).RollbackTx(ctx, req.(*RollbackTxRequest))
+		return srv.(ScrivaServer).RollbackTx(ctx, req.(*RollbackTxRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Scriva_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(FileDBServer).Watch(m, &grpc.GenericServerStream[WatchRequest, WatchEvent]{ServerStream: stream})
+	return srv.(ScrivaServer).Watch(m, &grpc.GenericServerStream[WatchRequest, WatchEvent]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_WatchServer = grpc.ServerStreamingServer[WatchEvent]
+type Scriva_WatchServer = grpc.ServerStreamingServer[WatchEvent]
 
-func _FileDB_Aggregate_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Scriva_Aggregate_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(AggregateRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(FileDBServer).Aggregate(m, &grpc.GenericServerStream[AggregateRequest, AggregateResponse]{ServerStream: stream})
+	return srv.(ScrivaServer).Aggregate(m, &grpc.GenericServerStream[AggregateRequest, AggregateResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_AggregateServer = grpc.ServerStreamingServer[AggregateResponse]
+type Scriva_AggregateServer = grpc.ServerStreamingServer[AggregateResponse]
 
-func _FileDB_CollectionStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_CollectionStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CollectionStatsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).CollectionStats(ctx, in)
+		return srv.(ScrivaServer).CollectionStats(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_CollectionStats_FullMethodName,
+		FullMethod: Scriva_CollectionStats_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).CollectionStats(ctx, req.(*CollectionStatsRequest))
+		return srv.(ScrivaServer).CollectionStats(ctx, req.(*CollectionStatsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Compact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Compact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CompactRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Compact(ctx, in)
+		return srv.(ScrivaServer).Compact(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Compact_FullMethodName,
+		FullMethod: Scriva_Compact_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Compact(ctx, req.(*CompactRequest))
+		return srv.(ScrivaServer).Compact(ctx, req.(*CompactRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Scriva_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SnapshotRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(FileDBServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotChunk]{ServerStream: stream})
+	return srv.(ScrivaServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SnapshotChunk]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_SnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
+type Scriva_SnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
 
-func _FileDB_Replicate_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Scriva_Replicate_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ReplicateRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(FileDBServer).Replicate(m, &grpc.GenericServerStream[ReplicateRequest, ReplicationRecord]{ServerStream: stream})
+	return srv.(ScrivaServer).Replicate(m, &grpc.GenericServerStream[ReplicateRequest, ReplicationRecord]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type FileDB_ReplicateServer = grpc.ServerStreamingServer[ReplicationRecord]
+type Scriva_ReplicateServer = grpc.ServerStreamingServer[ReplicationRecord]
 
-func _FileDB_ReplicationStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_ReplicationStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReplicationStatusRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).ReplicationStatus(ctx, in)
+		return srv.(ScrivaServer).ReplicationStatus(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_ReplicationStatus_FullMethodName,
+		FullMethod: Scriva_ReplicationStatus_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).ReplicationStatus(ctx, req.(*ReplicationStatusRequest))
+		return srv.(ScrivaServer).ReplicationStatus(ctx, req.(*ReplicationStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileDB_Promote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Scriva_Promote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PromoteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileDBServer).Promote(ctx, in)
+		return srv.(ScrivaServer).Promote(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileDB_Promote_FullMethodName,
+		FullMethod: Scriva_Promote_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileDBServer).Promote(ctx, req.(*PromoteRequest))
+		return srv.(ScrivaServer).Promote(ctx, req.(*PromoteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// FileDB_ServiceDesc is the grpc.ServiceDesc for FileDB service.
+// Scriva_ServiceDesc is the grpc.ServiceDesc for Scriva service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var FileDB_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "filedb.v1.FileDB",
-	HandlerType: (*FileDBServer)(nil),
+var Scriva_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "scriva.v1.Scriva",
+	HandlerType: (*ScrivaServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "CreateCollection",
-			Handler:    _FileDB_CreateCollection_Handler,
+			Handler:    _Scriva_CreateCollection_Handler,
 		},
 		{
 			MethodName: "DropCollection",
-			Handler:    _FileDB_DropCollection_Handler,
+			Handler:    _Scriva_DropCollection_Handler,
 		},
 		{
 			MethodName: "ListCollections",
-			Handler:    _FileDB_ListCollections_Handler,
+			Handler:    _Scriva_ListCollections_Handler,
 		},
 		{
 			MethodName: "Insert",
-			Handler:    _FileDB_Insert_Handler,
+			Handler:    _Scriva_Insert_Handler,
 		},
 		{
 			MethodName: "InsertMany",
-			Handler:    _FileDB_InsertMany_Handler,
+			Handler:    _Scriva_InsertMany_Handler,
 		},
 		{
 			MethodName: "FindById",
-			Handler:    _FileDB_FindById_Handler,
+			Handler:    _Scriva_FindById_Handler,
 		},
 		{
 			MethodName: "Update",
-			Handler:    _FileDB_Update_Handler,
+			Handler:    _Scriva_Update_Handler,
 		},
 		{
 			MethodName: "Delete",
-			Handler:    _FileDB_Delete_Handler,
+			Handler:    _Scriva_Delete_Handler,
 		},
 		{
 			MethodName: "Upsert",
-			Handler:    _FileDB_Upsert_Handler,
+			Handler:    _Scriva_Upsert_Handler,
 		},
 		{
 			MethodName: "FindByKey",
-			Handler:    _FileDB_FindByKey_Handler,
+			Handler:    _Scriva_FindByKey_Handler,
 		},
 		{
 			MethodName: "UpdateByKey",
-			Handler:    _FileDB_UpdateByKey_Handler,
+			Handler:    _Scriva_UpdateByKey_Handler,
 		},
 		{
 			MethodName: "DeleteByKey",
-			Handler:    _FileDB_DeleteByKey_Handler,
+			Handler:    _Scriva_DeleteByKey_Handler,
 		},
 		{
 			MethodName: "UpdateIfRev",
-			Handler:    _FileDB_UpdateIfRev_Handler,
+			Handler:    _Scriva_UpdateIfRev_Handler,
 		},
 		{
 			MethodName: "EnsureIndex",
-			Handler:    _FileDB_EnsureIndex_Handler,
+			Handler:    _Scriva_EnsureIndex_Handler,
 		},
 		{
 			MethodName: "DropIndex",
-			Handler:    _FileDB_DropIndex_Handler,
+			Handler:    _Scriva_DropIndex_Handler,
 		},
 		{
 			MethodName: "ListIndexes",
-			Handler:    _FileDB_ListIndexes_Handler,
+			Handler:    _Scriva_ListIndexes_Handler,
 		},
 		{
 			MethodName: "BeginTx",
-			Handler:    _FileDB_BeginTx_Handler,
+			Handler:    _Scriva_BeginTx_Handler,
 		},
 		{
 			MethodName: "CommitTx",
-			Handler:    _FileDB_CommitTx_Handler,
+			Handler:    _Scriva_CommitTx_Handler,
 		},
 		{
 			MethodName: "RollbackTx",
-			Handler:    _FileDB_RollbackTx_Handler,
+			Handler:    _Scriva_RollbackTx_Handler,
 		},
 		{
 			MethodName: "CollectionStats",
-			Handler:    _FileDB_CollectionStats_Handler,
+			Handler:    _Scriva_CollectionStats_Handler,
 		},
 		{
 			MethodName: "Compact",
-			Handler:    _FileDB_Compact_Handler,
+			Handler:    _Scriva_Compact_Handler,
 		},
 		{
 			MethodName: "ReplicationStatus",
-			Handler:    _FileDB_ReplicationStatus_Handler,
+			Handler:    _Scriva_ReplicationStatus_Handler,
 		},
 		{
 			MethodName: "Promote",
-			Handler:    _FileDB_Promote_Handler,
+			Handler:    _Scriva_Promote_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Find",
-			Handler:       _FileDB_Find_Handler,
+			Handler:       _Scriva_Find_Handler,
 			ServerStreams: true,
 		},
 		{
 			StreamName:    "Watch",
-			Handler:       _FileDB_Watch_Handler,
+			Handler:       _Scriva_Watch_Handler,
 			ServerStreams: true,
 		},
 		{
 			StreamName:    "Aggregate",
-			Handler:       _FileDB_Aggregate_Handler,
+			Handler:       _Scriva_Aggregate_Handler,
 			ServerStreams: true,
 		},
 		{
 			StreamName:    "Snapshot",
-			Handler:       _FileDB_Snapshot_Handler,
+			Handler:       _Scriva_Snapshot_Handler,
 			ServerStreams: true,
 		},
 		{
 			StreamName:    "Replicate",
-			Handler:       _FileDB_Replicate_Handler,
+			Handler:       _Scriva_Replicate_Handler,
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/filedb.proto",
+	Metadata: "proto/scriva.proto",
 }

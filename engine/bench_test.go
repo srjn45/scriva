@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 func benchCfg(mode SyncMode) CollectionConfig {

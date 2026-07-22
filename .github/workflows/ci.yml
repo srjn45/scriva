@@ -55,5 +55,5 @@ jobs:
 
       - name: Build binaries
         run: |
-          go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/filedb
-          go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/filedb-cli
+          go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/scriva
+          go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/scriva-cli

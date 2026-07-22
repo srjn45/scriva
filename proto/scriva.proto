@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package filedb.v1;
+package scriva.v1;
 
-option go_package = "github.com/srjn45/filedbv2/internal/pb/proto";
+option go_package = "github.com/srjn45/scriva/internal/pb/proto";
 
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
@@ -12,7 +12,7 @@ import "google/api/annotations.proto";
 // Service
 // ---------------------------------------------------------------------------
 
-service FileDB {
+service Scriva {
   // --- Collection management ---
 
   rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse) {

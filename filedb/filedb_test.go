@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srjn45/filedbv2/engine"
-	"github.com/srjn45/filedbv2/filedb"
+	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/filedb"
 )
 
 // wardenStore stands up the warden-shaped collection set through the façade in a

@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/srjn45/filedbv2/internal/auth"
+	"github.com/srjn45/scriva/internal/auth"
 )
 
 // Limiter applies server-layer backpressure to incoming RPCs. It combines two

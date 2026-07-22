@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // collectGroups runs an aggregation and returns its emitted groups in stream order.

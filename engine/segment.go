@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/srjn45/filedbv2/store"
+	"github.com/srjn45/scriva/store"
 )
 
 // ErrRecordTooLarge is returned by Append when an encoded record (including its

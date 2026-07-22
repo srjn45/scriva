@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/srjn45/filedbv2/query"
+	"github.com/srjn45/scriva/query"
 )
 
 // collectStream runs ScanStream with the given options and returns the emitted
