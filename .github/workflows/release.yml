@@ -15,6 +15,11 @@ jobs:
     name: GoReleaser
     runs-on: ubuntu-latest
 
+    # Surfaced as an env var so the conditional Docker Hub login step can test it
+    # (the `secrets` context is not available in step `if:` conditions).
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +52,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Only runs when Docker Hub creds are configured; skipped otherwise so the
+      # release still succeeds (ghcr.io is authed via the built-in GITHUB_TOKEN).
       - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

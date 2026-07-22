@@ -38,12 +38,13 @@ embedding-specific contract.
 
 ---
 
-## v1.0.0 — ScrivaDB (unreleased)
+## v1.2.0 — ScrivaDB — 2026-07-23
 
 **The project formerly known as FileDB v2 is now ScrivaDB.** This is a rename —
 the same storage engine, wire semantics, and on-disk format as FileDB v1.1.0,
-re-baselined to **v1.0.0** under a new name (`scriva`), a new Go module path, and
-new distribution channels. There is **no data migration**: an existing data
+re-baselined as **v1.2.0** — the next tag after FileDB's `v1.1.0`, since the
+`v1.0.0`/`v1.1.0` tags are already published under the old name — under a new
+name (`scriva`), a new Go module path, and new distribution channels. There is **no data migration**: an existing data
 directory opens unchanged. The break is entirely in identifiers — import paths,
 the proto package, binary/env/metric names — so anything that references those
 must be updated. See the [migration note](#formerly-filedb-v2) below.
@@ -99,7 +100,7 @@ must be updated. See the [migration note](#formerly-filedb-v2) below.
 ### Formerly FileDB v2
 
 ScrivaDB is a continuation of **FileDB v2**, not a new project — the FileDB v1.1.0
-codebase renamed and re-tagged as ScrivaDB v1.0.0. The two do **not** share a
+codebase renamed and re-tagged as ScrivaDB v1.2.0. The two do **not** share a
 module path or a version line, so upgrading is a deliberate migration, not a
 `go get -u`:
 
@@ -107,8 +108,8 @@ module path or a version line, so upgrading is a deliberate migration, not a
   `github.com/srjn45/filedbv2` (and its `/engine`, `/store`, `/query`
   sub-packages) keeps building against the existing FileDB tags (`v1.1.0` and
   earlier). Those tags are frozen and remain resolvable.
-- **New users adopt ScrivaDB at v1.0.0.** Depend on `github.com/srjn45/scriva`
-  (façade) or `github.com/srjn45/scriva/engine` at `v1.0.0`, install the new
+- **New users adopt ScrivaDB at v1.2.0.** Depend on `github.com/srjn45/scriva`
+  (façade) or `github.com/srjn45/scriva/engine` at `v1.2.0`, install the new
   binaries/SDKs above, and update the renamed identifiers listed under *Breaking
   changes*.
 - The on-disk segment/index format is byte-for-byte identical to FileDB v1.1.0,

@@ -96,6 +96,9 @@ homebrew_casks:
       owner: srjn45
       name: homebrew-scriva
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Auto-enable only when the tap token is present; skip cleanly otherwise so
+    # a release without the secret still succeeds (publishes the other channels).
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
     homepage: https://github.com/srjn45/scriva
     description: ScrivaDB — an embedded append-only document database
     binaries:
@@ -113,6 +116,8 @@ scoops:
       owner: srjn45
       name: scoop-scriva
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Same auto-enable guard as the Homebrew cask above.
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
     homepage: https://github.com/srjn45/scriva
     description: ScrivaDB — an embedded append-only document database
     license: MIT
@@ -134,7 +139,9 @@ aurs:
     skip_upload: "{{ if .Env.AUR_SSH_PRIVATE_KEY }}false{{ else }}true{{ end }}"
 
 # Docker multi-arch images (linux/amd64 + linux/arm64) via dockers_v2
-# Single entry builds and fuses the manifest for both ghcr.io and docker.io
+# Publishes to ghcr.io (authed via the built-in GITHUB_TOKEN — no extra secret).
+# Docker Hub mirror: add `- docker.io/srjn45/scriva` below once DOCKERHUB_USERNAME/
+# DOCKERHUB_TOKEN secrets exist (the release workflow logs in to Docker Hub only then).
 # Requires: docker buildx + QEMU in the release environment (via setup-qemu-action + setup-buildx-action)
 dockers_v2:
   - id: scriva
@@ -145,7 +152,6 @@ dockers_v2:
       - linux/arm64
     images:
       - ghcr.io/srjn45/scriva
-      - docker.io/srjn45/scriva
     tags:
       - "{{ .Tag }}"
       - latest
