@@ -9,8 +9,11 @@ homepage = "https://github.com/srjn45/scriva"
 documentation = "https://docs.rs/scriva"
 keywords = ["scriva", "grpc", "database", "tonic", "client"]
 categories = ["database", "api-bindings", "asynchronous"]
+# `proto/` MUST ship in the crate: build.rs runs tonic-build against
+# proto/scriva.proto (and its google/api/*.proto imports) at build time, so
+# excluding it would break every downstream `cargo build` and docs.rs.
 readme = "README.md"
-exclude = ["proto/", "examples/"]
+exclude = ["examples/"]
 
 [lib]
 name = "scriva"
