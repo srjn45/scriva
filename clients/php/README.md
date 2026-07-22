@@ -1,8 +1,8 @@
-# FileDB v2 — PHP Client
+# ScrivaDB — PHP Client
 
-PHP 8.1+ gRPC client for [FileDB v2](../../README.md).
+PHP 8.1+ gRPC client for [ScrivaDB](../../README.md).
 
-**Packagist package:** `srjn45/filedbv2`
+**Packagist package:** `srjn45/scriva`
 
 ---
 
@@ -11,14 +11,14 @@ PHP 8.1+ gRPC client for [FileDB v2](../../README.md).
 - PHP 8.1+
 - The [gRPC PHP extension](https://grpc.io/docs/languages/php/quickstart/) (`pecl install grpc`)
 - The [Protobuf PHP extension](https://github.com/protocolbuffers/protobuf/tree/main/php) (`pecl install protobuf`) — or the pure-PHP implementation shipped with `google/protobuf`
-- A running FileDB v2 server (`make run` from the repo root)
+- A running ScrivaDB server (`make run` from the repo root)
 
 ---
 
 ## Install
 
 ```bash
-composer require srjn45/filedbv2
+composer require srjn45/scriva
 ```
 
 ---
@@ -30,7 +30,7 @@ cd clients/php
 composer install
 ```
 
-To regenerate the gRPC stubs from `proto/filedb.proto`:
+To regenerate the gRPC stubs from `proto/scriva.proto`:
 
 ```bash
 # Requires only buf — plugins are pulled from the Buf Schema Registry.
@@ -45,9 +45,9 @@ To regenerate the gRPC stubs from `proto/filedb.proto`:
 <?php
 require 'vendor/autoload.php';
 
-use FileDBv2\FileDB;
+use ScrivaDB\ScrivaDB;
 
-$db = new FileDB('localhost', 5433, 'dev-key');
+$db = new ScrivaDB('localhost', 5433, 'dev-key');
 
 $db->createCollection('users');
 
@@ -73,10 +73,10 @@ $db->dropCollection('users');
 
 ```php
 // Plaintext (no TLS)
-$db = new FileDB('localhost', 5433, 'dev-key');
+$db = new ScrivaDB('localhost', 5433, 'dev-key');
 
 // TLS — verify the server against a CA certificate
-$db = new FileDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+$db = new ScrivaDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
 ```
 
 ### Collection management
@@ -131,14 +131,14 @@ optimistic-concurrency updates.
 
 ```php
 // Insert under an explicit key. A key already held by a live record throws
-// FileDBv2\AlreadyExistsException. (Keyed inserts ignore ttlSeconds.)
+// ScrivaDB\AlreadyExistsException. (Keyed inserts ignore ttlSeconds.)
 int $id = $db->insert('col', ['name' => 'Alice'], key: 'user:alice');
 
 // Upsert = insert-or-replace, atomically. Returns the resulting record array
 // (with 'key' and 'rev'); rev increments on every replace.
 array $rec = $db->upsert('col', 'user:alice', ['name' => 'Alice', 'age' => 30]);
 
-// Fetch / update / delete by key. A missing key throws FileDBv2\NotFoundException.
+// Fetch / update / delete by key. A missing key throws ScrivaDB\NotFoundException.
 array $rec  = $db->findByKey('col', 'user:alice');
 array $res  = $db->updateByKey('col', 'user:alice', ['name' => 'Alice', 'age' => 31]);
 //   $res = ['id' => '1', 'key' => 'user:alice', 'rev' => 3, 'date_modified' => '...']
@@ -340,18 +340,18 @@ foreach ($db->snapshot() as $chunk) {
 
 ## Error handling
 
-Failed RPCs throw `FileDBv2\FileDBException` (which extends `\RuntimeException`,
+Failed RPCs throw `ScrivaDB\ScrivaDBException` (which extends `\RuntimeException`,
 so existing `catch (\RuntimeException)` blocks keep working). Two gRPC status
 codes get their own subclass for idiomatic keyed-CRUD handling:
 
 | Exception | gRPC status | Raised by |
 |---|---|---|
-| `FileDBv2\NotFoundException`      | `NOT_FOUND`      | `findByKey`, `updateByKey`, `deleteByKey` on a missing key |
-| `FileDBv2\AlreadyExistsException` | `ALREADY_EXISTS` | `insert(..., key: ...)` when the key is already taken |
-| `FileDBv2\FileDBException`        | any other        | all other RPC failures |
+| `ScrivaDB\NotFoundException`      | `NOT_FOUND`      | `findByKey`, `updateByKey`, `deleteByKey` on a missing key |
+| `ScrivaDB\AlreadyExistsException` | `ALREADY_EXISTS` | `insert(..., key: ...)` when the key is already taken |
+| `ScrivaDB\ScrivaDBException`        | any other        | all other RPC failures |
 
 ```php
-use FileDBv2\NotFoundException;
+use ScrivaDB\NotFoundException;
 
 try {
     $rec = $db->findByKey('col', 'user:missing');
@@ -415,7 +415,7 @@ Composites can be nested arbitrarily.
 ## TLS
 
 ```php
-$db = new FileDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+$db = new ScrivaDB('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
 ```
 
 When no CA cert path is supplied the client connects over plaintext.
@@ -429,7 +429,7 @@ When no CA cert path is supplied the client connects over plaintext.
 ./generate.sh
 ```
 
-The script reads `../../proto/filedb.proto` and writes to `src/Proto/`. It uses
+The script reads `../../proto/scriva.proto` and writes to `src/Proto/`. It uses
 `buf` with the `protocolbuffers/php` and `grpc/php` remote plugins (pinned to
 versions matching the `google/protobuf: ^3.25` runtime), so no local `protoc` or
 `grpc_php_plugin` install is needed.

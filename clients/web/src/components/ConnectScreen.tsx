@@ -17,7 +17,7 @@ export default function ConnectScreen() {
       <div className="w-full max-w-sm bg-gray-900 rounded-xl border border-gray-700 shadow-2xl p-6">
         <div className="flex items-center gap-2 mb-6">
           <span className="text-2xl">⬡</span>
-          <span className="text-lg font-bold text-gray-100">FileDB</span>
+          <span className="text-lg font-bold text-gray-100">ScrivaDB</span>
         </div>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">

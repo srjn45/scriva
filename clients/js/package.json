@@ -1,7 +1,16 @@
 {
-  "name": "filedbv2",
-  "version": "0.1.0",
-  "description": "TypeScript/JavaScript client for FileDB v2",
+  "name": "scriva",
+  "version": "1.0.0",
+  "description": "TypeScript/JavaScript client for ScrivaDB — a file-based document database with a gRPC API",
+  "author": "srjn45",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/srjn45/scriva.git"
+  },
+  "homepage": "https://github.com/srjn45/scriva",
+  "bugs": {
+    "url": "https://github.com/srjn45/scriva/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -34,7 +43,7 @@
     "node": ">=18"
   },
   "keywords": [
-    "filedb",
+    "scriva",
     "grpc",
     "database",
     "client"

@@ -2,19 +2,19 @@
  * test_watch.ts — demonstrates the Watch streaming RPC.
  *
  * Prerequisites:
- *   - FileDB server running: `make run` from the repo root
+ *   - ScrivaDB server running: `make run` from the repo root
  *
  * Run:
  *   npx ts-node examples/test_watch.ts
  */
 
-import { FileDB } from '../src';
+import { ScrivaDB } from '../src';
 
 const COLLECTION = 'watch_test_js';
 const INSERT_COUNT = 5;
 
 async function main(): Promise<void> {
-  const db = new FileDB('localhost', 5433, 'dev-key');
+  const db = new ScrivaDB('localhost', 5433, 'dev-key');
 
   // Clean up from any previous run.
   const existing = await db.listCollections();

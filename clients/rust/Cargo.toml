@@ -1,19 +1,19 @@
 [package]
-name = "filedbv2"
-version = "0.1.0"
+name = "scriva"
+version = "1.0.0"
 edition = "2021"
-description = "Rust gRPC client for FileDB v2"
+description = "Rust gRPC client for ScrivaDB"
 license = "MIT"
-repository = "https://github.com/srjn45/filedbv2"
-homepage = "https://github.com/srjn45/filedbv2"
-documentation = "https://docs.rs/filedbv2"
-keywords = ["filedb", "grpc", "database", "tonic", "client"]
+repository = "https://github.com/srjn45/scriva"
+homepage = "https://github.com/srjn45/scriva"
+documentation = "https://docs.rs/scriva"
+keywords = ["scriva", "grpc", "database", "tonic", "client"]
 categories = ["database", "api-bindings", "asynchronous"]
 readme = "README.md"
 exclude = ["proto/", "examples/"]
 
 [lib]
-name = "filedbv2"
+name = "scriva"
 path = "src/lib.rs"
 
 [dependencies]

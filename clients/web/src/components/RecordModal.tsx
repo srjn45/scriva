@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { FileDBRecord, RecordData } from '../api/types'
+import type { ScrivaDBRecord, RecordData } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'
 
 interface Props {
   collection: string
-  record: FileDBRecord | null  // null = insert
+  record: ScrivaDBRecord | null  // null = insert
   onClose: () => void
   onSaved: () => void
 }

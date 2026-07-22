@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# examples/test_watch.rb — Watch streaming demo for the FileDBv2 Ruby client.
+# examples/test_watch.rb — Watch streaming demo for the Scriva Ruby client.
 #
 # Start the server first:
 #   make run   (from the repo root)
@@ -8,17 +8,17 @@
 #   bundle exec ruby examples/test_watch.rb
 
 $LOAD_PATH.unshift File.join(__dir__, "..", "lib")
-require "filedbv2"
+require "scriva"
 require "thread"
 
-HOST    = ENV.fetch("FILEDB_HOST",    "localhost")
-PORT    = ENV.fetch("FILEDB_PORT",    "5433").to_i
-API_KEY = ENV.fetch("FILEDB_API_KEY", "dev-key")
+HOST    = ENV.fetch("SCRIVA_HOST",    "localhost")
+PORT    = ENV.fetch("SCRIVA_PORT",    "5433").to_i
+API_KEY = ENV.fetch("SCRIVA_API_KEY", "dev-key")
 COLL    = "watch_demo_ruby"
 
 # Two independent clients: one to watch, one to insert.
-watcher_db = FileDBv2::Client.new(host: HOST, port: PORT, api_key: API_KEY)
-writer_db  = FileDBv2::Client.new(host: HOST, port: PORT, api_key: API_KEY)
+watcher_db = Scriva::Client.new(host: HOST, port: PORT, api_key: API_KEY)
+writer_db  = Scriva::Client.new(host: HOST, port: PORT, api_key: API_KEY)
 
 writer_db.drop_collection(COLL) rescue nil
 writer_db.create_collection(COLL)

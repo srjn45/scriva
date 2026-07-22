@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { FileDBRecord } from '../api/types'
+import type { ScrivaDBRecord } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'
 import BrowseTab from './BrowseTab'
@@ -26,8 +26,8 @@ export default function CollectionView({ collection, onDropped }: Props) {
   const { client } = useApp()
   const { showToast } = useToast()
   const [tab, setTab] = useState<Tab>('browse')
-  const [modalRecord, setModalRecord] = useState<FileDBRecord | null | undefined>(undefined)
-  // undefined = closed, null = insert, FileDBRecord = edit
+  const [modalRecord, setModalRecord] = useState<ScrivaDBRecord | null | undefined>(undefined)
+  // undefined = closed, null = insert, ScrivaDBRecord = edit
   const [browseKey, setBrowseKey] = useState(0)
 
   async function handleDrop() {

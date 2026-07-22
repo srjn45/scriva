@@ -1,4 +1,4 @@
-export { FileDB } from './client';
+export { ScrivaDB } from './client';
 export type {
   DBRecord,
   WatchEvent,

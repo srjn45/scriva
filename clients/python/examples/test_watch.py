@@ -1,7 +1,7 @@
 """test_watch.py — demonstrates the Watch streaming RPC.
 
 Prerequisites:
-    - FileDB server running: `make run` from the repo root.
+    - ScrivaDB server running: `make run` from the repo root.
     - Client installed:      `pip install .` from clients/python.
 
 Run:
@@ -11,14 +11,14 @@ Run:
 import threading
 import time
 
-from filedbv2 import FileDB
+from scriva import ScrivaDB
 
 COLLECTION = "watch_test_py"
 INSERT_COUNT = 5
 
 
 def main() -> None:
-    db = FileDB("localhost", 5433, "dev-key")
+    db = ScrivaDB("localhost", 5433, "dev-key")
 
     # Clean up from any previous run.
     if COLLECTION in db.list_collections():
@@ -30,7 +30,7 @@ def main() -> None:
     # Insert in a background thread so the main thread can consume the stream.
     def inserter() -> None:
         # A separate client/channel for the writer.
-        writer = FileDB("localhost", 5433, "dev-key")
+        writer = ScrivaDB("localhost", 5433, "dev-key")
         for i in range(1, INSERT_COUNT + 1):
             time.sleep(0.3)
             rid = writer.insert(

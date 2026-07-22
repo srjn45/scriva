@@ -1,17 +1,17 @@
 /**
- * test_basic.ts — end-to-end example for the FileDB v2 TypeScript client.
+ * test_basic.ts — end-to-end example for the ScrivaDB TypeScript client.
  *
  * Prerequisites:
- *   - FileDB server running: `make run` from the repo root
+ *   - ScrivaDB server running: `make run` from the repo root
  *
  * Run:
  *   npx ts-node examples/test_basic.ts
  */
 
-import { FileDB } from '../src';
+import { ScrivaDB } from '../src';
 
 async function main(): Promise<void> {
-  const db = new FileDB('localhost', 5433, 'dev-key');
+  const db = new ScrivaDB('localhost', 5433, 'dev-key');
 
   // --- Collection management ---
   console.log('=== Collections ===');
@@ -175,8 +175,8 @@ async function main(): Promise<void> {
 
   // --- Backup ---
   console.log('\n=== Snapshot ===');
-  const bytes = await db.snapshotToFile('filedb-backup.tar.gz');
-  console.log(`Wrote ${bytes} bytes to filedb-backup.tar.gz (restore with: tar xzf ...)`);
+  const bytes = await db.snapshotToFile('scriva-backup.tar.gz');
+  console.log(`Wrote ${bytes} bytes to scriva-backup.tar.gz (restore with: tar xzf ...)`);
 
   // --- Cleanup ---
   console.log('\n=== Cleanup ===');

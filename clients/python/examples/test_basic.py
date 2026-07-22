@@ -1,18 +1,18 @@
-"""test_basic.py — end-to-end example for the FileDB v2 Python client.
+"""test_basic.py — end-to-end example for the ScrivaDB Python client.
 
 Prerequisites:
-    - FileDB server running: `make run` from the repo root.
+    - ScrivaDB server running: `make run` from the repo root.
     - Client installed:      `pip install .` from clients/python.
 
 Run:
     python examples/test_basic.py
 """
 
-from filedbv2 import AlreadyExistsError, FileDB, NotFoundError
+from scriva import AlreadyExistsError, ScrivaDB, NotFoundError
 
 
 def main() -> None:
-    db = FileDB("localhost", 5433, "dev-key")
+    db = ScrivaDB("localhost", 5433, "dev-key")
 
     # --- Collection management ---
     print("=== Collections ===")
@@ -185,8 +185,8 @@ def main() -> None:
 
     # --- Backup ---
     print("\n=== Snapshot ===")
-    n = db.snapshot_to_file("filedb-backup.tar.gz")
-    print(f"Wrote {n} bytes to filedb-backup.tar.gz (restore with: tar xzf ...)")
+    n = db.snapshot_to_file("scriva-backup.tar.gz")
+    print(f"Wrote {n} bytes to scriva-backup.tar.gz (restore with: tar xzf ...)")
 
     # --- Cleanup ---
     print("\n=== Cleanup ===")

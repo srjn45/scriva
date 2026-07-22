@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Regenerate PHP protobuf + gRPC stubs from proto/filedb.proto using buf.
+# Regenerate PHP protobuf + gRPC stubs from proto/scriva.proto using buf.
 #
 # The stubs are vendored under clients/php/src/Proto/ so that `composer require`
-# users don't need protoc. Regenerate them whenever proto/filedb.proto changes.
+# users don't need protoc. Regenerate them whenever proto/scriva.proto changes.
 #
 # Requirements:
 #   - buf (https://buf.build/docs/installation) — the only tool needed; the
@@ -31,11 +31,11 @@ if ! command -v buf >/dev/null 2>&1; then
 fi
 
 # Generate from a temp workspace rooted at the proto directory so that the
-# generated GPBMetadata class is \GPBMetadata\Filedb (file path "filedb.proto"),
+# generated GPBMetadata class is \GPBMetadata\Scriva (file path "scriva.proto"),
 # matching the vendored layout.
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-cp "$REPO_ROOT/proto/filedb.proto" "$WORK/filedb.proto"
+cp "$REPO_ROOT/proto/scriva.proto" "$WORK/scriva.proto"
 
 cat > "$WORK/buf.yaml" <<'YAML'
 version: v2

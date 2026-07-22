@@ -1,16 +1,16 @@
-//! test_basic — end-to-end example for the FileDB v2 Rust client.
+//! test_basic — end-to-end example for the ScrivaDB Rust client.
 //!
 //! Prerequisites:
-//!   - FileDB server running: `make run` from the repo root.
+//!   - ScrivaDB server running: `make run` from the repo root.
 //!   - Run: `cargo run --example test_basic` from clients/rust/.
 
-use filedbv2::{
-    AggregateOp, AggregateOptions, FileDB, FileDbError, FilterInput, FilterOp, FindOptions, OrderBy,
+use scriva::{
+    AggregateOp, AggregateOptions, ScrivaDB, ScrivaDbError, FilterInput, FilterOp, FindOptions, OrderBy,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut db = FileDB::connect("localhost", 5433, "dev-key").await?;
+    let mut db = ScrivaDB::connect("localhost", 5433, "dev-key").await?;
 
     // --- Collection management ---
     println!("=== Collections ===");
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // NotFound is a typed error.
     match db.find_by_key("test_rs", "nope").await {
-        Err(FileDbError::NotFound(_)) => println!("FindByKey('nope') -> NotFound (expected)"),
+        Err(ScrivaDbError::NotFound(_)) => println!("FindByKey('nope') -> NotFound (expected)"),
         other => println!("Unexpected: {:?}", other),
     }
 
@@ -130,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bob_id = db.insert_with_key("test_rs", serde_json::json!({"name": "Bob"}), "bob").await?;
     println!("Keyed insert 'bob' -> id {}", bob_id);
     match db.insert_with_key("test_rs", serde_json::json!({"name": "Bob2"}), "bob").await {
-        Err(FileDbError::AlreadyExists(_)) => println!("Re-insert 'bob' -> AlreadyExists (expected)"),
+        Err(ScrivaDbError::AlreadyExists(_)) => println!("Re-insert 'bob' -> AlreadyExists (expected)"),
         other => println!("Unexpected: {:?}", other),
     }
 
@@ -224,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // --- Snapshot (whole-database backup) ---
     println!("\n=== Snapshot ===");
-    let backup = std::env::temp_dir().join("filedb_rust_snapshot.tar.gz");
+    let backup = std::env::temp_dir().join("scriva_rust_snapshot.tar.gz");
     let bytes = db.snapshot_to_file(&backup).await?;
     println!("Snapshot: wrote {} bytes to {}", bytes, backup.display());
     let _ = std::fs::remove_file(&backup);

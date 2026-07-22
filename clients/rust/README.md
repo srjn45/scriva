@@ -1,6 +1,6 @@
-# filedbv2 — Rust client
+# scriva — Rust client
 
-Async Rust gRPC client for [FileDB v2](https://github.com/srjn45/filedbv2).
+Async Rust gRPC client for [ScrivaDB](https://github.com/srjn45/scriva).
 
 Built on [tonic](https://github.com/hyperium/tonic) + [prost](https://github.com/tokio-rs/prost), using Tokio for async I/O.
 
@@ -16,7 +16,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-filedbv2 = "0.1"
+scriva = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -24,16 +24,16 @@ serde_json = "1"
 ## Connect
 
 ```rust
-use filedbv2::FileDB;
+use scriva::ScrivaDB;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Plaintext (default for local development)
-    let mut db = FileDB::connect("localhost", 5433, "dev-key").await?;
+    let mut db = ScrivaDB::connect("localhost", 5433, "dev-key").await?;
 
     // With TLS — pass PEM bytes of the CA certificate
     let ca_pem = std::fs::read("/path/to/ca.pem")?;
-    let mut db = FileDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
+    let mut db = ScrivaDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
 
     Ok(())
 }
@@ -92,7 +92,7 @@ Records may carry a caller-supplied string primary **key**, giving natural upser
 and optimistic-concurrency (compare-and-swap on `rev`) semantics.
 
 ```rust
-use filedbv2::FileDbError;
+use scriva::ScrivaDbError;
 
 // Insert under a key. A key already held by a live record is AlreadyExists.
 let id = db.insert_with_key("users", json!({"name": "Alice"}), "alice").await?;
@@ -117,7 +117,7 @@ if cas.swapped {
 
 // NotFound / AlreadyExists are dedicated error variants you can match on.
 match db.find_by_key("users", "ghost").await {
-    Err(FileDbError::NotFound(_)) => println!("no such key"),
+    Err(ScrivaDbError::NotFound(_)) => println!("no such key"),
     Ok(rec) => println!("{}", rec.data),
     Err(e) => return Err(e.into()),
 }
@@ -150,7 +150,7 @@ overrides it. Negative values are rejected by the server.
 ## Find (querying)
 
 ```rust
-use filedbv2::{FilterInput, FilterOp, FindOptions};
+use scriva::{FilterInput, FilterOp, FindOptions};
 
 // Collect all results into a Vec<Record>.
 let admins = db.find("users", FindOptions {
@@ -210,7 +210,7 @@ is always the final tiebreaker, so the order is total). Use `find_page` to walk
 results page by page with a keyset cursor — O(page), not O(offset):
 
 ```rust
-use filedbv2::OrderBy;
+use scriva::OrderBy;
 
 let mut page_token = String::new();
 loop {
@@ -295,7 +295,7 @@ db.commit_tx(&tx_id).await?;
 
 ```rust
 use futures::StreamExt;
-use filedbv2::WatchOp;
+use scriva::WatchOp;
 
 let mut events = db.watch("users", None).await?;
 while let Some(event) = events.next().await {
@@ -322,7 +322,7 @@ Compute `count` and numeric aggregations (`sum`/`avg`/`min`/`max`) entirely in t
 engine — optionally grouped by a field, honouring the same filter as `find`.
 
 ```rust
-use filedbv2::{AggregateOp, AggregateOptions, FilterInput, FilterOp};
+use scriva::{AggregateOp, AggregateOptions, FilterInput, FilterOp};
 
 // Count matching records.
 let n = db.count("users", Some(FilterInput::field("role", FilterOp::Eq, "admin"))).await?;
@@ -390,7 +390,7 @@ while let Some(chunk) = chunks.next().await {
 
 ```rust
 let ca_pem = std::fs::read("/path/to/ca.crt").expect("ca cert");
-let mut db = FileDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
+let mut db = ScrivaDB::connect_tls("myserver.example.com", 5433, "api-key", &ca_pem).await?;
 ```
 
 Generate a self-signed CA for local testing:
@@ -402,7 +402,7 @@ openssl req -x509 -newkey rsa:4096 -nodes \
 ```
 
 Then start the server with `--tls-cert cert.pem --tls-key key.pem` and connect
-with `FileDB::connect_tls("localhost", 5433, "api-key", &std::fs::read("cert.pem")?).await?`.
+with `ScrivaDB::connect_tls("localhost", 5433, "api-key", &std::fs::read("cert.pem")?).await?`.
 
 ## Examples
 

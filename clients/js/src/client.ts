@@ -22,7 +22,7 @@ import {
 // Proto loading — done once at module load time
 // ---------------------------------------------------------------------------
 
-const PROTO_PATH = path.join(__dirname, '..', 'proto', 'filedb.proto');
+const PROTO_PATH = path.join(__dirname, '..', 'proto', 'scriva.proto');
 const INCLUDE_DIR = path.join(__dirname, '..', 'proto');
 
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
@@ -35,7 +35,7 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 });
 
 const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as any;
-const FileDBStub = protoDescriptor.filedb.v1.FileDB as grpc.ServiceClientConstructor;
+const ScrivaDBStub = protoDescriptor.scriva.v1.Scriva as grpc.ServiceClientConstructor;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -217,15 +217,15 @@ function toRecord(raw: any): DBRecord {
 }
 
 // ---------------------------------------------------------------------------
-// FileDB client
+// ScrivaDB client
 // ---------------------------------------------------------------------------
 
 /**
- * TypeScript/JavaScript client for FileDB v2.
+ * TypeScript/JavaScript client for ScrivaDB.
  *
  * @example
  * ```ts
- * const db = new FileDB('localhost', 5433, 'dev-key');
+ * const db = new ScrivaDB('localhost', 5433, 'dev-key');
  *
  * await db.createCollection('users');
  * const id = await db.insert('users', { name: 'Alice', age: 30 });
@@ -236,12 +236,12 @@ function toRecord(raw: any): DBRecord {
  * db.close();
  * ```
  */
-export class FileDB {
+export class ScrivaDB {
   private readonly stub: grpc.Client & Record<string, Function>;
   private readonly apiKey: string;
 
   /**
-   * Connect to a FileDB server.
+   * Connect to a ScrivaDB server.
    *
    * @param host       gRPC host (e.g. `'localhost'`)
    * @param port       gRPC port (default `5433`)
@@ -254,7 +254,7 @@ export class FileDB {
     const credentials = tlsCaCert
       ? grpc.credentials.createSsl(tlsCaCert)
       : grpc.credentials.createInsecure();
-    this.stub = new FileDBStub(`${host}:${port}`, credentials) as any;
+    this.stub = new ScrivaDBStub(`${host}:${port}`, credentials) as any;
   }
 
   /**
@@ -270,8 +270,8 @@ export class FileDB {
     port: number,
     apiKey: string,
     tlsCaCertPath: string,
-  ): FileDB {
-    return new FileDB(host, port, apiKey, fs.readFileSync(tlsCaCertPath));
+  ): ScrivaDB {
+    return new ScrivaDB(host, port, apiKey, fs.readFileSync(tlsCaCertPath));
   }
 
   private meta(): grpc.Metadata {

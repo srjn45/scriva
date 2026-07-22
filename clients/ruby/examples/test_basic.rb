@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# examples/test_basic.rb — end-to-end smoke test for the FileDBv2 Ruby client.
+# examples/test_basic.rb — end-to-end smoke test for the Scriva Ruby client.
 #
 # Start the server first:
 #   make run   (from the repo root)
@@ -8,14 +8,14 @@
 #   bundle exec ruby examples/test_basic.rb
 
 $LOAD_PATH.unshift File.join(__dir__, "..", "lib")
-require "filedbv2"
+require "scriva"
 
-HOST    = ENV.fetch("FILEDB_HOST",    "localhost")
-PORT    = ENV.fetch("FILEDB_PORT",    "5433").to_i
-API_KEY = ENV.fetch("FILEDB_API_KEY", "dev-key")
+HOST    = ENV.fetch("SCRIVA_HOST",    "localhost")
+PORT    = ENV.fetch("SCRIVA_PORT",    "5433").to_i
+API_KEY = ENV.fetch("SCRIVA_API_KEY", "dev-key")
 COLL    = "test_ruby"
 
-db = FileDBv2::Client.new(host: HOST, port: PORT, api_key: API_KEY)
+db = Scriva::Client.new(host: HOST, port: PORT, api_key: API_KEY)
 
 # ── setup ──────────────────────────────────────────────────────────────────────
 db.drop_collection(COLL) rescue nil   # clean slate if a previous run left debris
@@ -120,7 +120,7 @@ puts "upsert (replace): rev=#{r["rev"]}"
 db.insert(KEYED, { name: "Bob" }, key: "user:bob")
 begin
   db.insert(KEYED, { name: "Bob again" }, key: "user:bob")
-rescue FileDBv2::AlreadyExistsError => e
+rescue Scriva::AlreadyExistsError => e
   puts "keyed insert dup rejected: #{e.class}"
 end
 
@@ -131,7 +131,7 @@ upd = db.update_by_key(KEYED, "user:alice", { name: "Alice", age: 32 })
 puts "update_by_key: id=#{upd["id"]} rev=#{upd["rev"]}"
 begin
   db.find_by_key(KEYED, "user:ghost")
-rescue FileDBv2::NotFoundError => e
+rescue Scriva::NotFoundError => e
   puts "find_by_key(missing) raised: #{e.class}"
 end
 
@@ -177,7 +177,7 @@ db.drop_collection(PAGED)
 
 # ── snapshot (whole-database backup) ───────────────────────────────────────────
 require "tmpdir"
-backup = File.join(Dir.tmpdir, "filedb_ruby_snapshot.tar.gz")
+backup = File.join(Dir.tmpdir, "scriva_ruby_snapshot.tar.gz")
 bytes  = db.snapshot_to_file(backup)
 puts "Snapshot: wrote #{bytes} bytes to #{backup}"
 File.delete(backup) if File.exist?(backup)

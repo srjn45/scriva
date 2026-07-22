@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.srjn45"
-version = "0.1.0"
+version = "1.0.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -18,11 +18,11 @@ repositories {
     mavenCentral()
 }
 
-// `gradle run -PmainClass=com.srjn45.filedbv2.examples.BasicExample`
+// `gradle run -PmainClass=com.srjn45.scriva.examples.BasicExample`
 application {
     mainClass.set(
         (project.findProperty("mainClass") as String?)
-            ?: "com.srjn45.filedbv2.examples.BasicExample"
+            ?: "com.srjn45.scriva.examples.BasicExample"
     )
 }
 

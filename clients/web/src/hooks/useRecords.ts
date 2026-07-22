@@ -1,12 +1,12 @@
 import { useCallback, useState } from 'react'
-import type { FileDBRecord, FindRequest } from '../api/types'
+import type { ScrivaDBRecord, FindRequest } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 
 const DEFAULT_LIMIT = 20
 
 export function useRecords(collection: string) {
   const { client } = useApp()
-  const [records, setRecords] = useState<FileDBRecord[]>([])
+  const [records, setRecords] = useState<ScrivaDBRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastReq, setLastReq] = useState<FindRequest>({ limit: DEFAULT_LIMIT, offset: 0 })

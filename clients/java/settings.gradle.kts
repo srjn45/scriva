@@ -1,1 +1,1 @@
-rootProject.name = "filedbv2-client"
+rootProject.name = "scriva-client"
