@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scriva"
-version = "1.0.0"
+version = "1.2.0"
 description = "Official Python client for ScrivaDB — a file-based document database with a gRPC API"
 readme = "README.md"
 requires-python = ">=3.9"

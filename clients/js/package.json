@@ -1,6 +1,6 @@
 {
   "name": "scriva",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "TypeScript/JavaScript client for ScrivaDB — a file-based document database with a gRPC API",
   "author": "srjn45",
   "repository": {
