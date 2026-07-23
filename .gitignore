@@ -23,5 +23,18 @@ data/
 clients/java/.gradle/
 clients/java/build/
 
+# JVM client build output
+clients/kotlin/.gradle/
+clients/kotlin/build/
+clients/scala/target/
+clients/scala/project/target/
+clients/scala/project/project/
+clients/scala/.bsp/
+clients/clojure/target/
+clients/clojure/.cpcache/
+clients/clojure/.nrepl-port
+clients/clojure/.lein-failures
+clients/clojure/.lein-repl-history
+
 # GoReleaser build output
 dist/
