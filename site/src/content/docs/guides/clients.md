@@ -44,6 +44,45 @@ for rec in db.find("users", {"field": "age", "op": "gt", "value": 18}):
     print(rec["data"])
 ```
 
+## Example (JavaScript / TypeScript)
+
+`find` is a server-streaming RPC — iterate it with `for await`.
+
+```typescript
+import { ScrivaDB } from 'scriva';
+
+const db = new ScrivaDB('localhost', 5433, 'dev-key');
+
+const id = await db.insert('users', { name: 'Alice', age: 30 });
+console.log(await db.findById('users', id));
+
+for await (const rec of db.find('users', {
+  filter: { field: 'age', op: 'gt', value: 18 },
+})) {
+  console.log(rec.data);
+}
+
+db.close();
+```
+
+## Example (Java)
+
+```java
+import com.srjn45.scriva.ScrivaDBClient;
+import java.util.List;
+import java.util.Map;
+
+try (ScrivaDBClient db = new ScrivaDBClient("localhost", 5433, "dev-key")) {
+    long id = db.insert("users", Map.of("name", "Alice", "age", 30));
+    System.out.println(db.findById("users", id).get("name")); // Alice
+
+    List<ScrivaDBClient.Record> adults = db.find("users",
+            Map.of("field", "age", "op", "gt", "value", "18"),
+            0, 0, null, false);
+    adults.forEach(r -> System.out.println(r.get("name")));
+}
+```
+
 ## Example (Kotlin)
 
 Kotlin calls are `suspend` functions; streaming RPCs return a `Flow`.
@@ -56,14 +95,14 @@ import kotlinx.coroutines.runBlocking
 runBlocking {
     ScrivaClient.connect("localhost", 5433, "dev-key").use { db ->
         val id = db.insert("users", mapOf("name" to "Alice", "age" to 30))
-        val record = db.findById("users", id)
-        println(record["name"])           // Alice
+        println(db.findById("users", id)["name"])  // Alice
 
         // Streaming find returns a Flow<Record>
-        val admins: List<Record> = db.find(
+        val adults: List<Record> = db.find(
             "users",
-            filter = field("role", FilterOp.EQ, "admin"),
+            filter = field("age", FilterOp.GT, 18),
         ).toList()
+        adults.forEach { println(it["name"]) }
     }
 }
 ```
@@ -81,10 +120,10 @@ val db = ScrivaClient.connect("localhost", 5433, "dev-key")
 for {
   id     <- db.insert("users", Map("name" -> "Alice", "age" -> 30))
   r      <- db.findById("users", id)
-  admins <- db.find("users", filter = Some(Filter.field("role", FilterOp.Eq, "admin")))
+  adults <- db.find("users", filter = Some(Filter.field("age", FilterOp.Gt, 18)))
 } yield {
   println(r("name"))    // Alice
-  println(admins)
+  adults.foreach(r => println(r("name")))
 }
 
 db.close()
@@ -99,15 +138,98 @@ Functions take and return plain Clojure maps; `find-records` returns a lazy seq.
 
 (let [db (scriva/connect {:host "localhost" :port 5433 :api-key "dev-key"})]
   (try
-    (scriva/create-collection db "users")
     (let [id (scriva/insert db "users" {"name" "Alice" "age" 30})]
-      (let [record (scriva/find-by-id db "users" id)]
-        (println (get-in record [:data "name"])))  ; Alice
-      (doseq [r (scriva/find-records db "users"
-                                     :filter {:field "role" :op :eq :value "admin"})]
-        (println r)))
+      (println (get-in (scriva/find-by-id db "users" id) [:data "name"])))  ; Alice
+    (doseq [r (scriva/find-records db "users"
+                                   :filter {:field "age" :op :gt :value 18})]
+      (println r))
     (finally (scriva/close db))))
 ```
+
+## Example (Ruby)
+
+```ruby
+require "scriva"
+
+db = Scriva::Client.new(host: "localhost", port: 5433, api_key: "dev-key")
+
+id = db.insert("users", { name: "Alice", age: 30 })
+puts db.find_by_id("users", id).dig("data", "name")  # Alice
+
+db.find("users", filter: { field: "age", op: "gt", value: 18 }).each do |rec|
+  puts rec["data"]["name"]
+end
+
+db.close
+```
+
+## Example (Rust)
+
+Async client built on Tokio; `find` collects results, `find_stream` streams them.
+
+```rust
+use scriva::{ScrivaDB, FilterInput, FilterOp, FindOptions};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut db = ScrivaDB::connect("localhost", 5433, "dev-key").await?;
+
+    let id = db.insert("users", json!({"name": "Alice", "age": 30})).await?;
+    println!("{}", db.find_by_id("users", id).await?.data);
+
+    let adults = db.find("users", FindOptions {
+        filter: Some(FilterInput::field("age", FilterOp::Gt, "18")),
+        ..Default::default()
+    }).await?;
+    for rec in &adults { println!("{}", rec.data); }
+
+    Ok(())
+}
+```
+
+## Example (C# / .NET)
+
+`FindAsync` is server-streaming — iterate with `await foreach`.
+
+```csharp
+using Scriva.Client;
+
+await using var db = new ScrivaDB("localhost", 5433, "dev-key");
+
+ulong id = await db.InsertAsync("users", new() { ["name"] = "Alice", ["age"] = 30 });
+var record = await db.FindByIdAsync("users", id);
+Console.WriteLine(record["name"]);  // Alice
+
+await foreach (var r in db.FindAsync("users",
+    filter: new() { ["field"] = "age", ["op"] = "gt", ["value"] = "18" }))
+{
+    Console.WriteLine(r["name"]);
+}
+```
+
+## Example (PHP)
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+use ScrivaDB\ScrivaDB;
+
+$db = new ScrivaDB('localhost', 5433, 'dev-key');
+
+$id = $db->insert('users', ['name' => 'Alice', 'age' => 30]);
+$record = $db->findById('users', $id);
+echo $record['data']['name'] . "\n";  // Alice
+
+$adults = $db->find('users', ['field' => 'age', 'op' => 'gt', 'value' => '18']);
+foreach ($adults as $r) {
+    echo $r['data']['name'] . "\n";
+}
+```
+
+> See the [PHP install note above](#) — this package is not on Packagist and requires
+> a Composer VCS entry pointing at the GitHub repository.
 
 ## Generate your own
 
