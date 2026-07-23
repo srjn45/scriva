@@ -10,7 +10,7 @@ talking to a local server.
 ## Source of truth
 
 The entire API is defined in a single proto file,
-[`proto/filedb.proto`](https://github.com/srjn45/scriva/blob/main/proto/filedb.proto).
+[`proto/scriva.proto`](https://github.com/srjn45/scriva/blob/main/proto/scriva.proto).
 The gRPC stubs, the REST gateway, and the OpenAPI spec are all generated from it.
 
 ## RPC surface
@@ -45,7 +45,7 @@ curl -H "x-api-key: dev-key" \
 ## OpenAPI
 
 A generated OpenAPI/Swagger spec lives at
-[`docs/openapi/filedb.swagger.json`](https://github.com/srjn45/scriva/blob/main/docs/openapi/filedb.swagger.json)
+[`docs/openapi/scriva.swagger.json`](https://github.com/srjn45/scriva/blob/main/docs/openapi/scriva.swagger.json)
 and covers every RPC. Generate a client for any language with
 [openapi-generator](https://openapi-generator.tech/), or use one of the
 [hand-written SDKs](/scriva/guides/clients/).

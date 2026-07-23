@@ -23,7 +23,7 @@ scriva serve --config scriva.yaml
 ```
 
 See the fully commented
-[`filedb.example.yaml`](https://github.com/srjn45/scriva/blob/main/filedb.example.yaml).
+[`scriva.example.yaml`](https://github.com/srjn45/scriva/blob/main/scriva.example.yaml).
 
 ## Core flags
 

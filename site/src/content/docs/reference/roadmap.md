@@ -18,7 +18,7 @@ and backwards compatibility is maintained from here.
   optional group-by); live `Watch`.
 - **Records** — caller-supplied string keys, monotonic revisions,
   compare-and-swap, upsert, TTL, optimistic transactions.
-- **APIs** — dual gRPC + REST from one binary, generated OpenAPI, and seven
+- **APIs** — dual gRPC + REST from one binary, generated OpenAPI, and ten
   hand-written client SDKs.
 - **Distribution** — standalone server (Homebrew / apt / GHCR / release
   binaries) **and** an embeddable Go engine with zero heavy dependencies.
