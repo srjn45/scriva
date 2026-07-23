@@ -18,6 +18,11 @@
 #   Tier 2: NUGET_API_KEY,
 #           MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD,
 #           MAVEN_GPG_PRIVATE_KEY, MAVEN_GPG_PASSPHRASE
+#           (the Maven Central + GPG secrets are shared by the java, kotlin and
+#            scala jobs)
+#   Tier 3: CLOJARS_USERNAME, CLOJARS_TOKEN  (Clojars deploy token for the
+#           clojure job — the maintainer must create these; the job references
+#           them but nothing publishes until they exist)
 
 name: Publish Clients
 
@@ -40,6 +45,9 @@ on:
           - ruby
           - php
           - java
+          - kotlin
+          - scala
+          - clojure
           - csharp
 
 # Least privilege by default; jobs that need more widen it locally.
@@ -233,6 +241,102 @@ jobs:
         run: ./gradlew publishToMavenLocal --no-daemon
       - name: Publish to Maven Central Portal
         run: ./gradlew publishAndReleaseToMavenCentral --no-daemon --no-configuration-cache
+
+  # ─────────────────────── Maven Central (Kotlin) ──────────────────────────
+  # Publishes io.github.srjn45:scriva-client-kotlin to the Sonatype Central
+  # Portal. Reuses the SAME secrets as the java job (vanniktech reads them as
+  # ORG_GRADLE_PROJECT_*). grpc-kotlin stubs are generated from proto/scriva.proto.
+  kotlin:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'kotlin' }}
+    name: Maven Central (kotlin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/kotlin
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # Validate BEFORE publishing: builds signed jar + sources + javadoc + POM
+      # into the local Maven repo (no network push) and runs the hermetic tests.
+      - name: Validate (build + publishToMavenLocal)
+        run: ./gradlew build publishToMavenLocal --no-daemon
+      - name: Publish to Maven Central Portal
+        run: ./gradlew publishAndReleaseToMavenCentral --no-daemon --no-configuration-cache
+
+  # ──────────────────────── Maven Central (Scala) ──────────────────────────
+  # Publishes io.github.srjn45:scriva-client-scala_2.13 via sbt-sonatype +
+  # sbt-pgp to the Central Portal. Reuses the SAME Maven Central + GPG secrets.
+  scala:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'scala' }}
+    name: Maven Central (scala)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/scala
+    env:
+      # sbt-sonatype reads these; the Central Portal host is set in build.sbt.
+      SONATYPE_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      PGP_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: sbt/setup-sbt@v1
+      # Import the signing key so `publishSigned` can sign non-interactively.
+      - name: Import GPG key
+        run: echo "${{ secrets.MAVEN_GPG_PRIVATE_KEY }}" | gpg --batch --import
+      # Validate BEFORE publishing: compile + run the hermetic in-process tests.
+      - name: Validate (sbt clean test)
+        run: sbt -batch -no-colors clean test
+      - name: Publish to Maven Central Portal
+        run: sbt -batch -no-colors publishSigned sonatypeBundleRelease
+
+  # ────────────────────────────── Clojars (Clojure) ────────────────────────
+  # Publishes io.github.srjn45/scriva-client-clojure to Clojars (the Clojure
+  # registry). NEW secrets the maintainer must create — the job references them
+  # but cannot publish until they exist:
+  #   CLOJARS_USERNAME  (a Clojars username)
+  #   CLOJARS_TOKEN     (a Clojars deploy token, NOT the account password)
+  # lein-protoc downloads protoc + the grpc-java plugin during the build.
+  clojure:
+    if: ${{ github.event_name == 'push' || github.event.inputs.language == 'all' || github.event.inputs.language == 'clojure' }}
+    name: Clojars (clojure)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/clojure
+    env:
+      CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+      CLOJARS_TOKEN: ${{ secrets.CLOJARS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          lein: "2.11.2"
+      # Validate BEFORE publishing: generate the Java stubs, then run the
+      # hermetic in-process tests and build the jar.
+      - name: Validate (lein test + jar)
+        run: |
+          lein test
+          lein jar
+      - name: Publish to Clojars
+        run: lein deploy clojars
 
   # ───────────────────────────── NuGet (C#) ────────────────────────────────
   # Secret: NUGET_API_KEY (a nuget.org API key with push rights for Scriva.Client).

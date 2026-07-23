@@ -87,7 +87,7 @@ Key properties:
 - **TTL / expiring records** — per-record deadlines (`--ttl` / `ttl_seconds` on Insert & Update), a per-collection default (`create-collection --default-ttl`, persisted), and a server-wide default (`--default-ttl`); expired records are hidden from reads immediately and reclaimed by compaction
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
 - **OpenAPI spec** — `docs/openapi/scriva.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
-- **Official client SDKs** — idiomatic, hand-written libraries for 7 languages (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, C#/.NET) under `clients/`
+- **Official client SDKs** — idiomatic, hand-written libraries for 10 languages (Python, JavaScript/TypeScript, PHP, Java, Kotlin, Scala, Clojure, Ruby, Rust, C#/.NET) under `clients/`
 - **Scoped API keys** — multiple named keys with `read` or `read-write` scope; a read-only key is refused on writes, and keys hot-reload on `SIGHUP` for rotation without a restart
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config scriva.yaml` with CLI flag overrides always winning
@@ -155,7 +155,7 @@ versioning/stability policy, and a migration guide.
 
 ## Client SDKs
 
-Idiomatic, hand-written client libraries are available for seven languages. Each
+Idiomatic, hand-written client libraries are available for ten languages. Each
 wraps the same gRPC API, takes the same connection config (`host`, `port`,
 `api_key`, optional TLS CA cert), and exposes every RPC including the streaming
 `Find` and `Watch` calls.
@@ -166,6 +166,9 @@ wraps the same gRPC API, takes the same connection config (`host`, `port`,
 | JavaScript / TypeScript | `npm i scriva` | [clients/js](clients/js/README.md) |
 | PHP | `composer require srjn45/scriva` | [clients/php](clients/php/README.md) |
 | Java | `io.github.srjn45:scriva-client` (Maven Central) | [clients/java](clients/java/README.md) |
+| Kotlin | `io.github.srjn45:scriva-client-kotlin:1.2.1` (Gradle, Maven Central) | [clients/kotlin](clients/kotlin/README.md) |
+| Scala | `"io.github.srjn45" %% "scriva-client-scala" % "1.2.1"` (sbt, Maven Central) | [clients/scala](clients/scala/README.md) |
+| Clojure | `io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}` (Clojars) | [clients/clojure](clients/clojure/README.md) |
 | Ruby | `gem install scriva` | [clients/ruby](clients/ruby/README.md) |
 | Rust | `cargo add scriva` | [clients/rust](clients/rust/README.md) |
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](clients/csharp/README.md) |
