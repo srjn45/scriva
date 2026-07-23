@@ -1339,7 +1339,7 @@ iterator/stream style.
 | Python | `pip install scriva` | [clients/python](../clients/python/README.md) |
 | JavaScript / TypeScript | `npm install scriva` | [clients/js](../clients/js/README.md) |
 | PHP | `composer require srjn45/scriva` | [clients/php](../clients/php/README.md) |
-| Java | `com.srjn45:scriva-client` (Maven Central) | [clients/java](../clients/java/README.md) |
+| Java | `io.github.srjn45:scriva-client` (Maven Central) | [clients/java](../clients/java/README.md) |
 | Ruby | `gem install scriva` | [clients/ruby](../clients/ruby/README.md) |
 | Rust | `cargo add scriva` | [clients/rust](../clients/rust/README.md) |
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](../clients/csharp/README.md) |
@@ -1501,7 +1501,7 @@ Add the dependency to your Gradle or Maven project:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.srjn45:scriva-client:0.1.0")
+    implementation("io.github.srjn45:scriva-client:1.2.1")
 }
 ```
 

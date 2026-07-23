@@ -165,7 +165,7 @@ wraps the same gRPC API, takes the same connection config (`host`, `port`,
 | Python | `pip install scriva` | [clients/python](clients/python/README.md) |
 | JavaScript / TypeScript | `npm i scriva` | [clients/js](clients/js/README.md) |
 | PHP | `composer require srjn45/scriva` | [clients/php](clients/php/README.md) |
-| Java | `com.srjn45:scriva-client` (Maven Central) | [clients/java](clients/java/README.md) |
+| Java | `io.github.srjn45:scriva-client` (Maven Central) | [clients/java](clients/java/README.md) |
 | Ruby | `gem install scriva` | [clients/ruby](clients/ruby/README.md) |
 | Rust | `cargo add scriva` | [clients/rust](clients/rust/README.md) |
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](clients/csharp/README.md) |
