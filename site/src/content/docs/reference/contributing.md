@@ -23,7 +23,7 @@ engine layer is never mocked, because the whole point is testing real disk I/O.
 
 The proto is the source of truth. To add or change an RPC:
 
-1. Edit [`proto/filedb.proto`](https://github.com/srjn45/scriva/blob/main/proto/filedb.proto).
+1. Edit [`proto/scriva.proto`](https://github.com/srjn45/scriva/blob/main/proto/scriva.proto).
 2. Run `make proto` (requires the [buf](https://buf.build/docs/installation) CLI)
    to regenerate stubs. **Never** hand-edit files under `internal/pb/proto/`.
 3. Implement the server handler, then the engine method.
