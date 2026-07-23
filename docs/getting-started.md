@@ -725,7 +725,7 @@ openapi-generator generate \
 ```
 
 This is the quickest path to language coverage; the hand-written SDKs under
-`clients/` (Python, JavaScript/TypeScript, PHP, Java, Ruby, Rust, and C#) exist
+`clients/` (Python, JavaScript/TypeScript, PHP, Java, Kotlin, Scala, Clojure, Ruby, Rust, and C#) exist
 where a more ergonomic, idiomatic wrapper is worth the maintenance — see the
 [Client SDKs](#client-sdks) reference below.
 
@@ -1328,7 +1328,7 @@ Serve `dist/` with any static file server; point it at a running ScrivaDB REST g
 
 ## Client SDKs
 
-ScrivaDB ships hand-written, idiomatic client libraries for seven languages. Every
+ScrivaDB ships hand-written, idiomatic client libraries for ten languages. Every
 SDK wraps the same gRPC API (`proto/scriva.proto`), takes the same connection
 config (`host`, `port`, `api_key`, optional TLS CA cert), and exposes every RPC —
 including the streaming `Find` and `Watch` calls in each language's native
@@ -1340,6 +1340,9 @@ iterator/stream style.
 | JavaScript / TypeScript | `npm install scriva` | [clients/js](../clients/js/README.md) |
 | PHP | `composer require srjn45/scriva` | [clients/php](../clients/php/README.md) |
 | Java | `io.github.srjn45:scriva-client` (Maven Central) | [clients/java](../clients/java/README.md) |
+| Kotlin | `io.github.srjn45:scriva-client-kotlin:1.2.1` (Gradle) | [clients/kotlin](../clients/kotlin/README.md) |
+| Scala | `"io.github.srjn45" %% "scriva-client-scala" % "1.2.1"` (sbt) | [clients/scala](../clients/scala/README.md) |
+| Clojure | `io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}` (Clojars) | [clients/clojure](../clients/clojure/README.md) |
 | Ruby | `gem install scriva` | [clients/ruby](../clients/ruby/README.md) |
 | Rust | `cargo add scriva` | [clients/rust](../clients/rust/README.md) |
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](../clients/csharp/README.md) |
@@ -1535,6 +1538,122 @@ ScrivaDBClient db = new ScrivaDBClient("myserver.example.com", 5433, "api-key",
 ```
 
 See [clients/java/README.md](../clients/java/README.md) for the full API reference, filter syntax, and transaction usage.
+
+---
+
+## Kotlin SDK
+
+Coroutine-based, built on `grpc-kotlin`. Unary calls are `suspend` functions;
+streaming `Find`/`Watch` return a `Flow`.
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("io.github.srjn45:scriva-client-kotlin:1.2.1")
+}
+```
+
+```kotlin
+import io.github.srjn45.scriva.*
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+
+runBlocking {
+    ScrivaClient.connect("localhost", 5433, "dev-key").use { db ->
+        db.createCollection("users")
+        val id = db.insert("users", mapOf("name" to "Alice", "age" to 30))
+
+        val record = db.findById("users", id)
+
+        val admins: List<Record> = db.find("users",
+            filter = field("role", FilterOp.EQ, "admin")).toList()
+
+        db.update("users", id, mapOf("name" to "Alice", "age" to 31))
+        db.delete("users", id)
+        db.dropCollection("users")
+    }
+}
+```
+
+With TLS:
+
+```kotlin
+val db = ScrivaClient.connectTls("myserver.example.com", 5433, "api-key",
+        java.io.File("/path/to/ca.crt"))
+```
+
+See [clients/kotlin/README.md](../clients/kotlin/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
+## Scala SDK
+
+Built on ScalaPB. Unary RPCs return `scala.concurrent.Future`; `Find` streams via
+an `Iterator`, and `Watch` uses a cancellable callback.
+
+```scala
+libraryDependencies += "io.github.srjn45" %% "scriva-client-scala" % "1.2.1"
+```
+
+```scala
+import io.github.srjn45.scriva._
+import scala.concurrent.ExecutionContext.Implicits.global
+
+val db = ScrivaClient.connect("localhost", 5433, "dev-key")
+
+for {
+  _  <- db.createCollection("users")
+  id <- db.insert("users", Map("name" -> "Alice", "age" -> 30))
+  r  <- db.findById("users", id)
+  admins <- db.find("users", filter = Some(Filter.field("role", FilterOp.Eq, "admin")))
+} yield println(r("name"))
+
+db.close()
+```
+
+With TLS:
+
+```scala
+val db = ScrivaClient.connectTls("myserver.example.com", 5433, "api-key",
+        new java.io.File("/path/to/ca.crt"))
+```
+
+See [clients/scala/README.md](../clients/scala/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
+## Clojure SDK
+
+Idiomatic maps and lazy seqs over the Java gRPC stubs. Published to Clojars.
+
+```clojure
+;; deps.edn
+io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}
+```
+
+```clojure
+(require '[scriva.client :as scriva])
+
+(let [db (scriva/connect {:host "localhost" :port 5433 :api-key "dev-key"})]
+  (try
+    (scriva/create-collection db "users")
+    (let [id (scriva/insert db "users" {"name" "Alice" "age" 30})]
+      (scriva/find-by-id db "users" id)
+
+      ;; find-records returns a lazy seq of record maps
+      (doseq [r (scriva/find-records db "users"
+                                     :filter {:field "role" :op :eq :value "admin"})]
+        (println r))
+
+      (scriva/update-record db "users" id {"name" "Alice" "age" 31})
+      (scriva/delete db "users" id))
+    (scriva/drop-collection db "users")
+    (finally (scriva/close db))))
+```
+
+With TLS, pass `:tls-ca-cert "/path/to/ca.crt"` to `connect`.
+
+See [clients/clojure/README.md](../clients/clojure/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
 
 ---
 
