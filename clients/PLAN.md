@@ -17,7 +17,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/scriva.proto`.
 | 1 | Python | PyPI (`pip install scriva`) | `clients/python/` | ✅ Done |
 | 2 | TypeScript / JavaScript | npm (`npm install scriva`) | `clients/js/` | ✅ Done |
 | 3 | PHP | Packagist (`composer require srjn45/scriva`) | `clients/php/` | ✅ Done |
-| 4 | Java | Maven Central (`com.srjn45:scriva-client`) | `clients/java/` | ✅ Done |
+| 4 | Java | Maven Central (`io.github.srjn45:scriva-client`) | `clients/java/` | ✅ Done |
 | 5 | Ruby | RubyGems (`gem install scriva`) | `clients/ruby/` | ✅ Done |
 | 6 | Rust | crates.io (`scriva`) | `clients/rust/` | ✅ Done |
 | 7 | C# / .NET | NuGet (`Scriva.Client`) | `clients/csharp/` | ✅ Done |
