@@ -6,7 +6,8 @@
   },
   "tags": [
     {
-      "name": "Scriva"
+      "name": "Scriva",
+      "description": "--- Collection management ---"
     }
   ],
   "consumes": [
@@ -1277,7 +1278,7 @@
         "REGEX"
       ],
       "default": "FILTER_OP_UNSPECIFIED",
-      "title": "- EQ: equal\n - NEQ: not equal\n - GT: greater than\n - GTE: greater than or equal\n - LT: less than\n - LTE: less than or equal\n - CONTAINS: string contains\n - REGEX: regular expression match"
+      "description": "- EQ: equal\n - NEQ: not equal\n - GT: greater than\n - GTE: greater than or equal\n - LT: less than\n - LTE: less than or equal\n - CONTAINS: string contains\n - REGEX: regular expression match"
     },
     "v1FindResponse": {
       "type": "object",
