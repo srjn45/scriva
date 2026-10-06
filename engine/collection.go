@@ -140,6 +140,9 @@ type CollectionConfig struct {
 	// set, so one base config can carry distinct policies for several collections.
 	// It mirrors Quotas. Unlisted collections stay unencrypted.
 	EncryptionByCollection map[string]*EncryptionPolicy
+
+	// test hook invoked between compaction snapshot and swap
+	preSwapHook func()
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -181,6 +184,7 @@ type Collection struct {
 	active    *Segment
 	index     *Index
 	idSeq     atomic.Uint64 // monotonically increasing id counter
+	segSeq    atomic.Uint64 // monotonically increasing segment id counter
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -371,6 +375,15 @@ func (c *Collection) load() error {
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
+
+	var maxSeg uint64
+	for _, s := range all {
+		var n uint64
+		if _, err := fmt.Sscanf(filepath.Base(s.Path()), "seg_%d.ndjson", &n); err == nil && n > maxSeg {
+			maxSeg = n
+		}
+	}
+	c.segSeq.Store(maxSeg)
 
 	// Try loading the persisted index.
 	indexPath := filepath.Join(c.dir, "index.json")
@@ -965,20 +978,8 @@ func (c *Collection) rotateSegment() error {
 	}
 	c.sealed = append(c.sealed, c.active)
 
-	// Number the new active segment one past the highest segment on disk.
-	// Counting live segments is not enough: compaction renumbers the sealed
-	// set to seg_000001..m while the active segment keeps its original higher
-	// number, so a count-based name collides with — and appends to — the
-	// segment that was just sealed, which the next compaction then deletes
-	// out from under the collection (#68).
-	maxSeg := uint64(0)
-	for _, s := range c.sealed {
-		var n uint64
-		if _, err := fmt.Sscanf(filepath.Base(s.Path()), "seg_%d.ndjson", &n); err == nil && n > maxSeg {
-			maxSeg = n
-		}
-	}
-	newPath := c.segmentPath(maxSeg + 1)
+	// Number the new active segment globally to avoid collisions with compactor.
+	newPath := c.segmentPath(c.segSeq.Add(1))
 	active, err := openActiveSegment(newPath)
 	if err != nil {
 		return err
