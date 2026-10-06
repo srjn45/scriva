@@ -173,7 +173,6 @@ func findCmd(flags *cliFlags) *cobra.Command {
 				Limit:         limit,
 				Offset:        offset,
 				OrderByFields: orderByFields,
-				Descending:    descending,
 				PageToken:     pageToken,
 				Fields:        fields,
 			}

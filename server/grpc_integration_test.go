@@ -227,8 +227,8 @@ func TestIntegration_Find_FilterAndOrder(t *testing.T) {
 	// Find all, ordered descending.
 	stream, err := c.Find(ctx(), &pb.FindRequest{
 		Collection: "nums",
-		OrderBy:    "v",
-		Descending: true,
+		OrderBy:    "v",  //nolint:staticcheck // exercises deprecated field
+		Descending: true, //nolint:staticcheck // exercises deprecated field
 	})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
@@ -273,7 +273,7 @@ func TestIntegration_Find_OrderNumericNotLexical(t *testing.T) {
 		c.Insert(ctx(), &pb.InsertRequest{Collection: "spread", Data: d})
 	}
 
-	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "spread", OrderBy: "score"})
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: "spread", OrderBy: "score"}) //nolint:staticcheck // exercises deprecated field
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestIntegration_Find_LimitOffset(t *testing.T) {
 
 	stream, err := c.Find(ctx(), &pb.FindRequest{
 		Collection: "paged",
-		OrderBy:    "n",
+		OrderBy:    "n", //nolint:staticcheck // exercises deprecated field
 		Offset:     3,
 		Limit:      4,
 	})
@@ -486,8 +486,8 @@ func TestIntegration_Find_DeprecatedScalarOrderBy(t *testing.T) {
 
 	stream, err := c.Find(ctx(), &pb.FindRequest{
 		Collection: "legacy",
-		OrderBy:    "v", // deprecated scalar path
-		Descending: true,
+		OrderBy:    "v",  // deprecated scalar path
+		Descending: true, //nolint:staticcheck // exercises deprecated field
 	})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
