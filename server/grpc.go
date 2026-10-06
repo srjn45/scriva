@@ -226,6 +226,9 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 	}
 	r, err := col.Get(req.Id)
 	if err != nil {
+		if errors.Is(err, engine.ErrIndexCorrupt) {
+			return nil, status.Errorf(codes.DataLoss, "%v", err)
+		}
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 	// Field projection (N2): id/key/rev are passed separately and always kept.
@@ -297,6 +300,9 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) erro
 		}
 		if errors.Is(err, engine.ErrInvalidPageToken) {
 			return status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		if errors.Is(err, engine.ErrIndexCorrupt) {
+			return status.Errorf(codes.DataLoss, "%v", err)
 		}
 		if _, ok := status.FromError(err); ok {
 			return err // already a gRPC status (stream.Send / marshal error) — preserve its code
@@ -693,6 +699,9 @@ func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_Aggreg
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return status.FromContextError(err).Err()
 		}
+		if errors.Is(err, engine.ErrIndexCorrupt) {
+			return status.Errorf(codes.DataLoss, "%v", err)
+		}
 		if _, ok := status.FromError(err); ok {
 			return err // already a gRPC status (stream.Send / marshal error)
 		}
@@ -1023,6 +1032,8 @@ func (s *GRPCServer) writeErr(collection, action string, err error) error {
 // oversized record is INVALID_ARGUMENT. Anything else is Internal.
 func keyedErr(err error) error {
 	switch {
+	case errors.Is(err, engine.ErrIndexCorrupt):
+		return status.Error(codes.DataLoss, err.Error())
 	case errors.Is(err, engine.ErrKeyNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, engine.ErrDuplicateKey):

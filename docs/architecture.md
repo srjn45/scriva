@@ -356,6 +356,14 @@ map[uint64]IndexEntry{
 - Loaded on startup; rebuilt from segment scans if checksum fails
 - Rebuilt after compaction (offsets change)
 
+### Identity verification & integrity protection
+
+When retrieving a record via an indexed offset (`Get`/`getStored`, `GetByKey`, or CAS), the engine verifies that the decoded entry's `id` strictly matches the requested/indexed `id` after reading the segment. If the offset is corrupted or points to a different entry, the engine returns a typed `*IntegrityError` (which wraps `engine.ErrIndexCorrupt` and details `ID`, `FoundID`, `SegmentPath`, and `Offset`). This ensures valid JSON at the wrong physical location never returns another record as a false match.
+
+During scans (`ScanStream` and `streamLive`), if an entry in a segment is encountered whose physical offset disagrees with the primary index, the engine does not blindly skip it as stale: it verifies whether the index's target location points to a legitimate newer version of that record. If the target entry does not exist, fails to decode, or has a mismatched ID, the engine surfaces the integrity error immediately instead of silently shortening scan results.
+
+At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.DataLoss` rather than `NotFound` across `FindById`, `FindByKey`, `Find`, and `Aggregate`.
+
 ---
 
 ## Secondary Indexes
@@ -639,6 +647,9 @@ whether the dropped events would have matched.
 
 ## Concurrency Model
 
+**Directory-level exclusive lock:**
+When `engine.Open` is called, it acquires an exclusive OS-level advisory lock (using `flock` on Unix or `LockFileEx` on Windows) on a `LOCK` file in the data directory. This fast-fails any second attempt to open the same directory (from another process, or another DB instance within the same process) with `ErrDatabaseLocked`. This protects the append-only segments and segment-rotation logic from concurrent writers, which would otherwise silently corrupt data. To share access across multiple processes, run the gRPC server.
+
 **Pessimistic locking per collection using `sync.RWMutex`:**
 
 | Operation | Lock |
@@ -679,6 +690,12 @@ A third, explicit trigger exists — see [On-demand compaction](#on-demand-compa
 12. Retire the swap manifest
 13. Fire OnCompaction hook (used by Prometheus metrics)
 ```
+
+### Compaction and Segment Rotation Interaction
+
+While compaction runs (steps 3-5), concurrent writes might fill the active segment and trigger a segment rotation, sealing the active segment and creating a new one. To prevent collisions and dropped data:
+- **Naming:** Compaction reuses the file names of the segments it read, and draws any additional names from a globally monotonic sequence (`segSeq`). This guarantees its output files never overwrite segments that were newly sealed during the pass.
+- **Swap:** At step 7, compaction only replaces the segments it explicitly snapshotted. Any segments sealed during the pass (which were appended to `c.sealed` outside the snapshot) are preserved and appended after the new segments.
 
 ### Crash consistency
 

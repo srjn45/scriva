@@ -40,6 +40,9 @@ type DB struct {
 	lastLeaderLSN atomic.Uint64
 	roleMu        sync.Mutex
 	onPromote     func()
+
+	// lock guarantees exclusive access to the database directory.
+	lock *dirLock
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -48,10 +51,17 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("db: mkdir %q: %w", dataDir, err)
 	}
+
+	dl, err := lockDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+
 	db := &DB{
 		dataDir:     dataDir,
 		defaultCfg:  cfg,
 		collections: make(map[string]*Collection),
+		lock:        dl,
 	}
 	// A node opened as a follower starts in the follower role so the read-only
 	// guard rejects writes until an operator promotes it (R3).
@@ -220,5 +230,12 @@ func (db *DB) Close() error {
 			firstErr = fmt.Errorf("db: persist replication state: %w", err)
 		}
 	}
+
+	if db.lock != nil {
+		if err := db.lock.release(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("db: release directory lock: %w", err)
+		}
+	}
+
 	return firstErr
 }

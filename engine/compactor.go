@@ -133,7 +133,12 @@ func (c *Collection) compact(force bool) error {
 	renames := make(map[string]string, len(tempSegs))
 	finals := make(map[string]struct{}, len(tempSegs))
 	for i, seg := range tempSegs {
-		final := c.segmentPath(uint64(i + 1))
+		var final string
+		if i < len(toCompact) {
+			final = toCompact[i].Path()
+		} else {
+			final = c.segmentPath(c.segSeq.Add(1))
+		}
 		renames[seg.Path()] = final
 		finals[final] = struct{}{}
 	}
@@ -145,6 +150,10 @@ func (c *Collection) compact(force bool) error {
 	}
 	if err := writeCompactManifest(c.dir, compactManifest{Renames: renames, Removals: removals}); err != nil {
 		return fmt.Errorf("compactor: write manifest: %w", err)
+	}
+
+	if c.cfg.preSwapHook != nil {
+		c.cfg.preSwapHook()
 	}
 
 	c.mu.Lock()
@@ -170,6 +179,11 @@ func (c *Collection) compact(force bool) error {
 	}
 	for _, p := range removals {
 		_ = os.Remove(p)
+	}
+
+	// Keep segments sealed during this compaction pass.
+	if len(c.sealed) > len(toCompact) {
+		newSegs = append(newSegs, c.sealed[len(toCompact):]...)
 	}
 
 	c.sealed = newSegs
