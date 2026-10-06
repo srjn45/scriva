@@ -425,7 +425,9 @@ func (c *Collection) load() error {
 		if rbErr := c.index.Rebuild(all); rbErr != nil {
 			return fmt.Errorf("collection: rebuild index: %w", rbErr)
 		}
-		_ = c.index.Persist(indexPath)
+		if snap, snErr := c.index.Snapshot(all); snErr == nil {
+			_ = snap.Persist(indexPath)
+		}
 	}
 
 	// Reload any previously persisted secondary indexes.
@@ -1270,7 +1272,12 @@ func (c *Collection) Close() error {
 	if err := c.active.Close(); err != nil {
 		return err
 	}
-	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+	closeSegs := append(append([]*Segment(nil), c.sealed...), c.active)
+	snap, err := c.index.Snapshot(closeSegs)
+	if err != nil {
+		return err
+	}
+	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
 		return err
 	}
 	c.sidxMu.RLock()

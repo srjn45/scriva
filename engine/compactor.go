@@ -196,13 +196,18 @@ func (c *Collection) compact(force bool) error {
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: rebuild index: %w", err)
 	}
+	snap, err := c.index.Snapshot(all)
+	if err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("compactor: snapshot index: %w", err)
+	}
 
 	c.mu.Unlock()
 
 	// Persist updated primary index. On failure the manifest is deliberately
 	// left in place so the next open rebuilds from the segments instead of
 	// trusting a stale index.
-	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
 		return fmt.Errorf("compactor: persist index: %w", err)
 	}
 
