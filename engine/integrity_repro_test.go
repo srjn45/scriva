@@ -219,10 +219,9 @@ func TestSecondaryIndexSurvivesCompactionWrites(t *testing.T) {
 // TestCommitTxAllOrNothingOnIOError: a write failure on the Kth append inside
 // CommitTx must leave no op of the batch visible and no stray bytes on disk.
 func TestCommitTxAllOrNothingOnIOError(t *testing.T) {
-	t.Skip("gap: CommitTx applies ops one by one with no rollback on append failure; fixed by the atomic-batch-append task (index data-integrity phase 2, #107)")
 	dir := t.TempDir()
 	fs := newFaultFS()
-	_, col := openFaulty(t, dir, fs, CollectionConfig{})
+	db, col := openFaulty(t, dir, fs, CollectionConfig{})
 	if err := col.EnsureIndex("name"); err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +229,8 @@ func TestCommitTxAllOrNothingOnIOError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, events, cancel := col.Subscribe()
+	defer cancel()
 	ids := []uint64{col.ReserveID(), col.ReserveID(), col.ReserveID()}
 	ops := make([]txOp, len(ids))
 	for i, id := range ids {
@@ -256,5 +257,105 @@ func TestCommitTxAllOrNothingOnIOError(t *testing.T) {
 		if _, ok := rep.Live[id]; ok {
 			t.Errorf("id %d of the failed batch is durable in the segment", id)
 		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db2, err := Open(dir, CollectionConfig{})
+	if err != nil {
+		t.Fatalf("reopen after failed commit: %v", err)
+	}
+	defer db2.Close()
+	col2, err := db2.Collection("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLookupScanAgree(t, col2, map[uint64]map[string]any{base: {"name": "base"}}, ids...)
+	select {
+	case ev := <-events:
+		t.Errorf("failed commit emitted watch event: %+v", ev)
+	default:
+	}
+}
+
+// InsertMany uses the same append-and-index shape as CommitTx. Keep it covered
+// explicitly so a future implementation cannot reintroduce partial batches.
+func TestInsertManyAllOrNothingOnIOError(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFaultFS()
+	_, col := openFaulty(t, dir, fs, CollectionConfig{})
+	base, _, err := col.Insert(map[string]any{"name": "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.failWriteAt(fs.count("write")+2, 5, syscall.ENOSPC)
+	if _, _, err := col.InsertMany([]map[string]any{
+		{"name": "one"}, {"name": "two"}, {"name": "three"},
+	}, time.Time{}); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("want ENOSPC, got %v", err)
+	}
+	assertLookupScanAgree(t, col, map[uint64]map[string]any{base: {"name": "base"}})
+	rep := diskState(t, colDirOf(dir))
+	if len(rep.Bad) != 0 || len(rep.Live) != 1 {
+		t.Fatalf("failed batch left disk state live=%v bad=%v", rep.Live, rep.Bad)
+	}
+}
+
+func TestCommitTxRollbackRestoresExistingIndexAndSecondaryIndex(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFaultFS()
+	_, col := openFaulty(t, dir, fs, CollectionConfig{})
+	if err := col.EnsureIndex("name"); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := col.Insert(map[string]any{"name": "before"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID := col.ReserveID()
+	fs.failWriteAt(fs.count("write")+2, 4, syscall.ENOSPC)
+	err = col.CommitTx([]txOp{
+		{kind: txOpUpdate, id: id, data: map[string]any{"name": "after"}, ts: time.Now().UTC()},
+		{kind: txOpInsert, id: newID, data: map[string]any{"name": "new"}, ts: time.Now().UTC()},
+	})
+	if !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("want ENOSPC, got %v", err)
+	}
+	rec, err := col.Get(id)
+	if err != nil || rec.Data["name"] != "before" || rec.Rev != 1 {
+		t.Fatalf("existing record not restored: rec=%+v err=%v", rec, err)
+	}
+	if got, ok := col.IndexLookup("name", "before"); !ok || len(got) != 1 || got[0] != id {
+		t.Fatalf("old secondary entry = %v ok=%v, want [%d]", got, ok, id)
+	}
+	if got, _ := col.IndexLookup("name", "after"); len(got) != 0 {
+		t.Fatalf("new secondary entry survived rollback: %v", got)
+	}
+}
+
+func TestCommitTxRollsBackOnSyncError(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFaultFS()
+	_, col := openFaulty(t, dir, fs, CollectionConfig{SyncMode: SyncModeAlways})
+	base, _, err := col.Insert(map[string]any{"name": "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, events, cancel := col.Subscribe()
+	defer cancel()
+	ids := []uint64{col.ReserveID(), col.ReserveID()}
+	fs.failSyncAt(fs.count("sync")+1, syscall.EIO)
+	err = col.CommitTx([]txOp{
+		{kind: txOpInsert, id: ids[0], data: map[string]any{"name": "one"}, ts: time.Now().UTC()},
+		{kind: txOpInsert, id: ids[1], data: map[string]any{"name": "two"}, ts: time.Now().UTC()},
+	})
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("want EIO, got %v", err)
+	}
+	assertLookupScanAgree(t, col, map[uint64]map[string]any{base: {"name": "base"}}, ids...)
+	select {
+	case ev := <-events:
+		t.Errorf("sync-failed commit emitted watch event: %+v", ev)
+	default:
 	}
 }
