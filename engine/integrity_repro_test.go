@@ -70,7 +70,6 @@ func TestCrashStaleIndex(t *testing.T) {
 // TestPartialWriteKeepsOffsetsCorrect: after an Append that persisted a partial
 // line and errored, later writes must stay decodable and reopen must succeed.
 func TestPartialWriteKeepsOffsetsCorrect(t *testing.T) {
-	t.Skip("gap: failed partial Append leaves torn bytes and desyncs later offsets; fixed by the append-rollback/torn-tail task (index data-integrity phase 2, #107)")
 	dir := t.TempDir()
 	fs := newFaultFS()
 	db, col := openFaulty(t, dir, fs, CollectionConfig{})

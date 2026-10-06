@@ -13,7 +13,7 @@ import (
 
 func colDirOf(dir string) string { return filepath.Join(dir, "c") }
 
-func TestFaultFS_ShortWriteLeavesExactPrefix(t *testing.T) {
+func TestFaultFS_ShortWriteIsRolledBack(t *testing.T) {
 	dir := t.TempDir()
 	fs := newFaultFS()
 	_, col := openFaulty(t, dir, fs, CollectionConfig{})
@@ -29,12 +29,13 @@ func TestFaultFS_ShortWriteLeavesExactPrefix(t *testing.T) {
 		t.Fatalf("want ENOSPC, got %v", err)
 	}
 	after, _ := os.ReadFile(segPath)
-	if len(after) != len(before)+7 || string(after[:len(before)]) != string(before) {
-		t.Fatalf("want exactly 7 extra bytes, before=%d after=%d", len(before), len(after))
+	// The injected 7-byte torn prefix must have been rolled back by Append.
+	if string(after) != string(before) {
+		t.Fatalf("torn bytes not rolled back, before=%d after=%d", len(before), len(after))
 	}
 	rep := diskState(t, colDirOf(dir))
-	if len(rep.Bad) != 1 || len(rep.Live) != 1 {
-		t.Fatalf("want 1 live + 1 torn line, got live=%d bad=%v", len(rep.Live), rep.Bad)
+	if len(rep.Bad) != 0 || len(rep.Live) != 1 {
+		t.Fatalf("want 1 live and no torn line, got live=%d bad=%v", len(rep.Live), rep.Bad)
 	}
 }
 
