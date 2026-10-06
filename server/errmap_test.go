@@ -26,3 +26,11 @@ func TestWriteErrMapsRecordTooLarge(t *testing.T) {
 		t.Errorf("keyedErr: got %v, want InvalidArgument", got)
 	}
 }
+
+func TestErrMapsIndexCorrupt(t *testing.T) {
+	err := fmt.Errorf("lookup failed: %w", engine.ErrIndexCorrupt)
+
+	if got := status.Code(keyedErr(err)); got != codes.DataLoss {
+		t.Errorf("keyedErr: got %v, want DataLoss", got)
+	}
+}

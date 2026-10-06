@@ -16,6 +16,29 @@ import (
 // not match, indicating the index must be rebuilt from segment files.
 var ErrIndexStale = errors.New("index: checksum mismatch — rebuild required")
 
+// ErrIndexCorrupt is returned when an indexed offset points to an entry whose
+// record identity disagrees with the index.
+var ErrIndexCorrupt = errors.New("engine: index corrupt")
+
+// IntegrityError records an identity mismatch between an index entry and the
+// on-disk segment data it points to. It wraps ErrIndexCorrupt so callers can check
+// errors.Is(err, ErrIndexCorrupt) as well as inspect the details via errors.As.
+type IntegrityError struct {
+	ID          uint64
+	FoundID     uint64
+	SegmentPath string
+	Offset      int64
+}
+
+func (e *IntegrityError) Error() string {
+	return fmt.Sprintf("collection: integrity error: index for id %d points to id %d in %q at offset %d: %v",
+		e.ID, e.FoundID, e.SegmentPath, e.Offset, ErrIndexCorrupt)
+}
+
+func (e *IntegrityError) Unwrap() error {
+	return ErrIndexCorrupt
+}
+
 // IndexEntry records the location of the latest version of a record, plus its
 // current revision so callers can read the rev without a segment read.
 type IndexEntry struct {

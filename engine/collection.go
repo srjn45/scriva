@@ -834,6 +834,14 @@ func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 	if err != nil {
 		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: %w", err)
 	}
+	if e.ID != id {
+		return store.Entry{}, IndexEntry{}, &IntegrityError{
+			ID:          id,
+			FoundID:     e.ID,
+			SegmentPath: loc.SegmentPath,
+			Offset:      loc.Offset,
+		}
+	}
 	return e, loc, nil
 }
 
@@ -865,7 +873,14 @@ func (c *Collection) GetByKey(key string) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	return c.Get(id)
+	rec, err := c.Get(id)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.Key != "" && rec.Key != key {
+		return Record{}, fmt.Errorf("collection: get by key %q: record carries key %q: %w", key, rec.Key, ErrIndexCorrupt)
+	}
+	return rec, nil
 }
 
 // FindByID returns the data and timestamp for the given id. It is a thin wrapper
@@ -1520,6 +1535,15 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 	if err != nil {
 		c.mu.Unlock()
 		return false, fmt.Errorf("collection: cas: %w", err)
+	}
+	if curEntry.ID != id {
+		c.mu.Unlock()
+		return false, &IntegrityError{
+			ID:          id,
+			FoundID:     curEntry.ID,
+			SegmentPath: loc.SegmentPath,
+			Offset:      loc.Offset,
+		}
 	}
 
 	// The predicate operates on the logical (plaintext) record, so decrypt the
