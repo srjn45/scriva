@@ -356,6 +356,14 @@ map[uint64]IndexEntry{
 - Loaded on startup; rebuilt from segment scans if checksum fails
 - Rebuilt after compaction (offsets change)
 
+### Identity verification & integrity protection
+
+When retrieving a record via an indexed offset (`Get`/`getStored`, `GetByKey`, or CAS), the engine verifies that the decoded entry's `id` strictly matches the requested/indexed `id` after reading the segment. If the offset is corrupted or points to a different entry, the engine returns a typed `*IntegrityError` (which wraps `engine.ErrIndexCorrupt` and details `ID`, `FoundID`, `SegmentPath`, and `Offset`). This ensures valid JSON at the wrong physical location never returns another record as a false match.
+
+During scans (`ScanStream` and `streamLive`), if an entry in a segment is encountered whose physical offset disagrees with the primary index, the engine does not blindly skip it as stale: it verifies whether the index's target location points to a legitimate newer version of that record. If the target entry does not exist, fails to decode, or has a mismatched ID, the engine surfaces the integrity error immediately instead of silently shortening scan results.
+
+At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.DataLoss` rather than `NotFound` across `FindById`, `FindByKey`, `Find`, and `Aggregate`.
+
 ---
 
 ## Secondary Indexes

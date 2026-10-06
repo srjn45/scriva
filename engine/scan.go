@@ -334,6 +334,9 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		// yield boundary keeps it to a single pass — matching streamLive.
 		e, loc, err := c.getStored(id)
 		if err != nil {
+			if errors.Is(err, ErrIndexCorrupt) {
+				return err
+			}
 			continue // deleted since the index was consulted
 		}
 		stats.RowsScanned++ // a live candidate examined against the filter
@@ -368,8 +371,40 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *Scan
 				return err
 			}
 			loc, ok := c.index.Get(e.ID)
-			if !ok || loc.SegmentPath != path || loc.Offset != offset {
-				return nil // stale version, or the record was deleted
+			if !ok {
+				return nil // record was deleted
+			}
+			if loc.SegmentPath != path || loc.Offset != offset {
+				// The index points to a different location for e.ID.
+				// Verify whether the target location contains a valid newer version of e.ID
+				// or if the index is corrupted.
+				targetSeg := c.segmentByPath(loc.SegmentPath)
+				if targetSeg == nil {
+					return &IntegrityError{
+						ID:          e.ID,
+						FoundID:     0,
+						SegmentPath: loc.SegmentPath,
+						Offset:      loc.Offset,
+					}
+				}
+				targetEntry, err := targetSeg.ReadAt(loc.Offset)
+				if err != nil {
+					return &IntegrityError{
+						ID:          e.ID,
+						FoundID:     0,
+						SegmentPath: loc.SegmentPath,
+						Offset:      loc.Offset,
+					}
+				}
+				if targetEntry.ID != e.ID {
+					return &IntegrityError{
+						ID:          e.ID,
+						FoundID:     targetEntry.ID,
+						SegmentPath: loc.SegmentPath,
+						Offset:      loc.Offset,
+					}
+				}
+				return nil // genuine stale version
 			}
 			if e.Op == store.OpDelete {
 				return nil
