@@ -206,6 +206,10 @@ func (c *Collection) compact(force bool) error {
 		return fmt.Errorf("compactor: persist index: %w", err)
 	}
 
+	if c.cfg.preSidxRebuildHook != nil {
+		c.cfg.preSidxRebuildHook()
+	}
+
 	// Rebuild and persist every secondary index from the new segment layout.
 	c.sidxMu.RLock()
 	sidxCopy := make(map[string]*SecondaryIndex, len(c.sidxMap))

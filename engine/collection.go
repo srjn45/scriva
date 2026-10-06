@@ -143,6 +143,9 @@ type CollectionConfig struct {
 
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
+	// test hook invoked after the post-swap primary index persist, before the
+	// secondary indexes are rebuilt from the new segment layout
+	preSidxRebuildHook func()
 
 	// test seams (nil in production): decorate segment files and intercept the
 	// compactor's renames. See faultfs_test.go.
@@ -238,6 +241,9 @@ type Collection struct {
 	// channel, which tests close directly just to stop the background goroutine
 	// while still driving compact() by hand.
 	closeDone bool
+	// indexRebuilds counts full primary-index rebuilds performed by load()
+	// (test-visible: asserts a clean reopen reuses the persisted index).
+	indexRebuilds atomic.Int64
 	closeOnce sync.Once
 	closed    chan struct{}
 }
@@ -414,6 +420,7 @@ func (c *Collection) load() error {
 		rebuilt = err != nil
 	}
 	if rebuilt {
+		c.indexRebuilds.Add(1)
 		// Stale, missing, or dangling — rebuild from the segments.
 		if rbErr := c.index.Rebuild(all); rbErr != nil {
 			return fmt.Errorf("collection: rebuild index: %w", rbErr)
