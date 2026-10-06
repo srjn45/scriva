@@ -486,7 +486,7 @@ func TestIntegration_Find_DeprecatedScalarOrderBy(t *testing.T) {
 
 	stream, err := c.Find(ctx(), &pb.FindRequest{
 		Collection: "legacy",
-		OrderBy:    "v",  // deprecated scalar path
+		OrderBy:    "v",  //nolint:staticcheck // deprecated scalar path
 		Descending: true, //nolint:staticcheck // exercises deprecated field
 	})
 	if err != nil {
@@ -650,7 +650,7 @@ func TestIntegration_Find_RangeIndexed(t *testing.T) {
 		Filter: &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{
 			Field: "age", Op: pb.FilterOp_GTE, Value: "10",
 		}}},
-		OrderBy: "age",
+		OrderBy: "age", //nolint:staticcheck // exercises deprecated field
 	})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
