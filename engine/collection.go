@@ -143,6 +143,11 @@ type CollectionConfig struct {
 
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
+
+	// test seams (nil in production): decorate segment files and intercept the
+	// compactor's renames. See faultfs_test.go.
+	wrapFile fileWrapper
+	renameFn renameFunc
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -365,7 +370,7 @@ func (c *Collection) load() error {
 		}
 	}
 
-	active, err := openActiveSegment(activePath)
+	active, err := openActiveSegmentWith(activePath, c.cfg.wrapFile)
 	if err != nil {
 		return fmt.Errorf("collection: open active segment: %w", err)
 	}
@@ -995,7 +1000,7 @@ func (c *Collection) rotateSegment() error {
 
 	// Number the new active segment globally to avoid collisions with compactor.
 	newPath := c.segmentPath(c.segSeq.Add(1))
-	active, err := openActiveSegment(newPath)
+	active, err := openActiveSegmentWith(newPath, c.cfg.wrapFile)
 	if err != nil {
 		return err
 	}

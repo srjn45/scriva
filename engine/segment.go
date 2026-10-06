@@ -44,16 +44,54 @@ type Segment struct {
 	path   string
 	size   int64
 	sealed bool
-	file   *os.File // non-nil only for the active (write) segment
+	file   segFile // non-nil only for the active (write) segment
+}
+
+// segFile is the set of file operations the active segment performs. *os.File
+// satisfies it, and an *os.File stored in the interface is a plain pointer, so
+// the production path pays one indirect call per op and no allocation. It is a
+// test seam: see fileWrapper and the fault harness in faultfs_test.go.
+type segFile interface {
+	Write(b []byte) (int, error)
+	Sync() error
+	Truncate(size int64) error
+	Close() error
+	Stat() (os.FileInfo, error)
+	ReadAt(b []byte, off int64) (int, error)
+	Seek(offset int64, whence int) (int64, error)
+}
+
+// fileWrapper lets tests decorate the file backing an active segment. Nil in
+// production (CollectionConfig.wrapFile).
+type fileWrapper func(path string, f segFile) segFile
+
+// renameFunc is the rename seam used by compaction; nil means os.Rename.
+type renameFunc func(oldpath, newpath string) error
+
+func doRename(fn renameFunc, oldpath, newpath string) error {
+	if fn != nil {
+		return fn(oldpath, newpath)
+	}
+	return os.Rename(oldpath, newpath)
 }
 
 // openActiveSegment opens (or creates) an active segment at path.
 // On open it scans to the last valid newline and truncates any partial
 // trailing line left by a previous crash.
 func openActiveSegment(path string) (*Segment, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	return openActiveSegmentWith(path, nil)
+}
+
+// openActiveSegmentWith is openActiveSegment with an optional file wrapper
+// applied before crash recovery, so recovery truncation is interceptable too.
+func openActiveSegmentWith(path string, wrap fileWrapper) (*Segment, error) {
+	osf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("segment: open %q: %w", path, err)
+	}
+	var f segFile = osf
+	if wrap != nil {
+		f = wrap(path, f)
 	}
 
 	size, err := recoverPartialLine(f)
@@ -72,7 +110,7 @@ func openSealedSegment(path string, size int64) *Segment {
 
 // recoverPartialLine seeks backwards from EOF to find the last complete line
 // (ending in '\n'), truncates any bytes after it, and returns the valid size.
-func recoverPartialLine(f *os.File) (int64, error) {
+func recoverPartialLine(f segFile) (int64, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return 0, err

@@ -166,7 +166,7 @@ func (c *Collection) compact(force bool) error {
 	var newSegs []*Segment
 	for i, seg := range tempSegs {
 		finalPath := c.segmentPath(uint64(i + 1))
-		if err := os.Rename(seg.Path(), finalPath); err != nil {
+		if err := doRename(c.cfg.renameFn, seg.Path(), finalPath); err != nil {
 			c.mu.Unlock()
 			return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
 		}
@@ -409,7 +409,7 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 	newSeg := func() (*Segment, error) {
 		path := fmt.Sprintf("%s%06d.ndjson", tempPrefix, segIdx)
 		segIdx++
-		return openActiveSegment(path)
+		return openActiveSegmentWith(path, c.cfg.wrapFile)
 	}
 
 	var err error
