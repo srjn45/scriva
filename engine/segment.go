@@ -45,7 +45,15 @@ type Segment struct {
 	size   int64
 	sealed bool
 	file   segFile // non-nil only for the active (write) segment
+	// poisoned is set when a failed Append could not be rolled back, so the
+	// file may hold torn bytes past s.size. Every later Append is refused;
+	// reopening runs recoverPartialLine, which trims the torn tail.
+	poisoned error
 }
+
+// ErrSegmentPoisoned is returned by Append on an active segment whose earlier
+// failed write could not be rolled back.
+var ErrSegmentPoisoned = errors.New("segment: poisoned by unrecoverable partial write")
 
 // segFile is the set of file operations the active segment performs. *os.File
 // satisfies it, and an *os.File stored in the interface is a plain pointer, so
@@ -192,8 +200,25 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 		return 0, fmt.Errorf("%w: record id=%d encodes to %d bytes, limit is %d", ErrRecordTooLarge, e.ID, len(b), maxScanTokenSize)
 	}
 
+	if s.poisoned != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+
 	offset = s.size
-	if _, err = s.file.Write(b); err != nil {
+	n, err := s.file.Write(b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		if n > 0 {
+			// A partial line may be on disk; roll the file back to the last
+			// committed size so later offsets stay correct. If that fails the
+			// tail is unknown, so poison the segment instead of appending
+			// after garbage.
+			if terr := s.file.Truncate(s.size); terr != nil {
+				s.poisoned = fmt.Errorf("rollback truncate: %w", terr)
+			}
+		}
 		return 0, fmt.Errorf("segment: write %q: %w", s.path, err)
 	}
 	s.size += int64(len(b))
