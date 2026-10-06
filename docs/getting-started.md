@@ -1300,7 +1300,11 @@ Expiry semantics:
 - Deadlines are **durable**: they survive server restarts.
 
 **Embedded engine.** Finer-grained, per-record deadlines are available through
-the embeddable Go engine (`import "github.com/srjn45/scriva/engine"`):
+the embeddable Go engine (`import "github.com/srjn45/scriva/engine"`). The
+engine acquires an exclusive OS-level advisory lock on the database directory.
+Only one writer (one process, or one DB instance within a process) may open a
+directory at a time; a second `Open` will fail with `ErrDatabaseLocked`. To share
+a database across multiple processes, use the gRPC server instead of embedding.
 
 ```go
 // Explicit per-record deadline, overriding any collection default.

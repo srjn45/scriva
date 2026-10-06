@@ -70,6 +70,7 @@ ScrivaDB stores each collection as a set of **NDJSON segment files** — one JSO
 
 Key properties:
 
+- **Exclusive directory lock** — the engine takes an OS-level advisory lock (`LOCK` file) on the data directory to prevent corruption from concurrent writers; a second process trying to open the directory fails fast
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
 - **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
 - **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
