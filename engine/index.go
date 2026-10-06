@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/srjn45/scriva/store"
@@ -61,16 +65,54 @@ type IndexEntry struct {
 	Epoch uint64 `json:"epoch,omitempty"`
 }
 
-// indexFile is the on-disk representation persisted to index.json.
-type indexFile struct {
+// indexFormatV2 is the self-describing on-disk index format. v1 files (the
+// bare {entries, checksum} shape with absolute segment paths) carry no version
+// field and are still accepted by Load.
+const indexFormatV2 = 2
+
+// SegmentCoverage records how much of one segment a persisted index describes:
+// the segment's base name, the number of bytes covered, and the SHA-256 of
+// exactly those bytes. A later task uses it to decide whether the index is
+// current, needs a tail replay, or must be rebuilt.
+type SegmentCoverage struct {
+	Segment  string `json:"segment"`
+	Size     int64  `json:"size"`
+	Checksum string `json:"checksum"`
+}
+
+// indexPayload is the canonical (checksummed) body of a v2 index file. Encoding
+// is deterministic: struct fields marshal in declaration order and map keys are
+// sorted by encoding/json.
+type indexPayload struct {
+	Version  int                   `json:"version"`
 	Entries  map[uint64]IndexEntry `json:"entries"`
+	Coverage []SegmentCoverage     `json:"coverage"`
+}
+
+// indexFile is the on-disk representation persisted to index.json. Version 0
+// (absent) is the legacy v1 layout, whose checksum covers only Entries.
+type indexFile struct {
+	Version  int                   `json:"version,omitempty"`
+	Entries  map[uint64]IndexEntry `json:"entries"`
+	Coverage []SegmentCoverage     `json:"coverage,omitempty"`
 	Checksum string                `json:"checksum"`
+}
+
+// IndexSnapshot is a point-in-time copy of the index entries together with the
+// segment coverage they correspond to. Take it under the collection lock so the
+// two are consistent, then persist it without holding the lock.
+type IndexSnapshot struct {
+	entries  map[uint64]IndexEntry
+	coverage []SegmentCoverage
 }
 
 // Index is the in-memory id → location map for a single collection.
 type Index struct {
 	mu      sync.RWMutex
 	entries map[uint64]IndexEntry
+	// coverage is what the last successful Load reported (nil for v1 files or
+	// an index that was never loaded).
+	coverage []SegmentCoverage
 }
 
 // newIndex creates an empty index.
@@ -124,27 +166,90 @@ func (idx *Index) countAtEpoch(epoch uint64) (total, atEpoch int) {
 	return total, atEpoch
 }
 
-// Persist serialises the index to path with an embedded SHA-256 checksum.
-func (idx *Index) Persist(path string) error {
+// Coverage returns the segment coverage recorded by the last Load, or nil when
+// the file was a v1 index (which carries none).
+func (idx *Index) Coverage() []SegmentCoverage {
 	idx.mu.RLock()
-	snapshot := make(map[uint64]IndexEntry, len(idx.entries))
+	defer idx.mu.RUnlock()
+	return append([]SegmentCoverage(nil), idx.coverage...)
+}
+
+// Snapshot copies the entries and captures coverage for segs. Callers must hold
+// the lock that stops writes to segs so the coverage matches the entries.
+func (idx *Index) Snapshot(segs []*Segment) (*IndexSnapshot, error) {
+	cov := make([]SegmentCoverage, 0, len(segs))
+	for _, seg := range segs {
+		c, err := captureCoverage(seg)
+		if err != nil {
+			return nil, err
+		}
+		cov = append(cov, c)
+	}
+	sort.Slice(cov, func(i, j int) bool { return cov[i].Segment < cov[j].Segment })
+	idx.mu.RLock()
+	snap := make(map[uint64]IndexEntry, len(idx.entries))
 	for k, v := range idx.entries {
-		snapshot[k] = v
+		snap[k] = v
 	}
 	idx.mu.RUnlock()
+	return &IndexSnapshot{entries: snap, coverage: cov}, nil
+}
 
-	payload, err := json.Marshal(snapshot)
+// captureCoverage hashes the first Size() bytes of seg.
+func captureCoverage(seg *Segment) (SegmentCoverage, error) {
+	size := seg.Size()
+	f, err := os.Open(seg.Path())
+	if err != nil {
+		return SegmentCoverage{}, fmt.Errorf("index: coverage open %q: %w", seg.Path(), err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.CopyN(h, f, size); err != nil {
+		return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
+	}
+	return SegmentCoverage{
+		Segment:  filepath.Base(seg.Path()),
+		Size:     size,
+		Checksum: hex.EncodeToString(h.Sum(nil)),
+	}, nil
+}
+
+// Persist serialises the index to path in the v2 format without segment
+// coverage. Use Snapshot + IndexSnapshot.Persist to record coverage.
+func (idx *Index) Persist(path string) error {
+	idx.mu.RLock()
+	snap := make(map[uint64]IndexEntry, len(idx.entries))
+	for k, v := range idx.entries {
+		snap[k] = v
+	}
+	idx.mu.RUnlock()
+	return (&IndexSnapshot{entries: snap}).Persist(path)
+}
+
+// Persist writes the snapshot to path as a v2 index. Segment paths are stored
+// relative to path's directory so the data directory can be moved.
+func (s *IndexSnapshot) Persist(path string) error {
+	dir := filepath.Dir(path)
+	rel := make(map[uint64]IndexEntry, len(s.entries))
+	for id, e := range s.entries {
+		e.SegmentPath = relSegmentPath(dir, e.SegmentPath)
+		rel[id] = e
+	}
+	cov := s.coverage
+	if cov == nil {
+		cov = []SegmentCoverage{}
+	}
+	payload, err := json.Marshal(indexPayload{Version: indexFormatV2, Entries: rel, Coverage: cov})
 	if err != nil {
 		return fmt.Errorf("index: marshal: %w", err)
 	}
-
 	sum := sha256.Sum256(payload)
-	file := indexFile{
-		Entries:  snapshot,
+	b, err := json.Marshal(indexFile{
+		Version:  indexFormatV2,
+		Entries:  rel,
+		Coverage: cov,
 		Checksum: hex.EncodeToString(sum[:]),
-	}
-
-	b, err := json.Marshal(file)
+	})
 	if err != nil {
 		return fmt.Errorf("index: marshal file: %w", err)
 	}
@@ -156,8 +261,32 @@ func (idx *Index) Persist(path string) error {
 	return nil
 }
 
-// Load reads a persisted index from path and verifies its checksum.
-// Returns ErrIndexStale on checksum mismatch; the caller should Rebuild.
+// relSegmentPath returns p relative to dir, or its base name when p is not
+// under dir (segments always live directly in the collection directory).
+func relSegmentPath(dir, p string) string {
+	if !filepath.IsAbs(p) {
+		return filepath.ToSlash(p)
+	}
+	if r, err := filepath.Rel(dir, p); err == nil && !strings.HasPrefix(r, "..") {
+		return filepath.ToSlash(r)
+	}
+	return filepath.Base(p)
+}
+
+// resolveSegmentPath maps a stored segment path to an absolute path under dir.
+// Absolute paths (v1 files) are reduced to their base name: they name a
+// location that may no longer exist if the directory was moved.
+func resolveSegmentPath(dir, p string) string {
+	p = filepath.FromSlash(p)
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		p = filepath.Base(p)
+	}
+	return filepath.Join(dir, p)
+}
+
+// Load reads a persisted index from path (v1 or v2) and verifies its checksum.
+// Segment paths are resolved against path's directory. Returns ErrIndexStale on
+// checksum mismatch or an unknown format version; the caller should Rebuild.
 func (idx *Index) Load(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -169,8 +298,19 @@ func (idx *Index) Load(path string) error {
 		return fmt.Errorf("index: unmarshal: %w", err)
 	}
 
-	// Verify checksum.
-	payload, err := json.Marshal(file.Entries)
+	var payload []byte
+	switch file.Version {
+	case 0: // v1: checksum over the entries map alone.
+		payload, err = json.Marshal(file.Entries)
+	case indexFormatV2:
+		cov := file.Coverage
+		if cov == nil {
+			cov = []SegmentCoverage{}
+		}
+		payload, err = json.Marshal(indexPayload{Version: indexFormatV2, Entries: file.Entries, Coverage: cov})
+	default:
+		return ErrIndexStale
+	}
 	if err != nil {
 		return fmt.Errorf("index: re-marshal for checksum: %w", err)
 	}
@@ -179,8 +319,16 @@ func (idx *Index) Load(path string) error {
 		return ErrIndexStale
 	}
 
+	dir := filepath.Dir(path)
+	entries := make(map[uint64]IndexEntry, len(file.Entries))
+	for id, e := range file.Entries {
+		e.SegmentPath = resolveSegmentPath(dir, e.SegmentPath)
+		entries[id] = e
+	}
+
 	idx.mu.Lock()
-	idx.entries = file.Entries
+	idx.entries = entries
+	idx.coverage = file.Coverage
 	idx.mu.Unlock()
 	return nil
 }

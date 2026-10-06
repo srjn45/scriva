@@ -108,9 +108,8 @@ func TestPartialWriteKeepsOffsetsCorrect(t *testing.T) {
 }
 
 // TestIndexRelativePaths: a cleanly closed data dir that is moved must reopen
-// without a full index rebuild. index.json stores absolute segment paths today.
+// without a full index rebuild (index.json stores segment paths relative to its directory).
 func TestIndexRelativePaths(t *testing.T) {
-	t.Skip("gap: index.json stores absolute segment paths, so a moved data dir forces a full rebuild; fixed by the relative-path index task (index data-integrity phase 2, #107)")
 	src := filepath.Join(t.TempDir(), "src")
 	cfg := CollectionConfig{SegmentMaxSize: 512, CompactInterval: time.Hour}
 	db, err := Open(src, cfg)
