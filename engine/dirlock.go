@@ -36,7 +36,7 @@ func lockDir(dir string) (*dirLock, error) {
 		registryMu.Unlock()
 		return nil, ErrDatabaseLocked
 	}
-	
+
 	dl, err := lockDirOS(dir)
 	if err != nil {
 		registryMu.Unlock()
@@ -55,4 +55,25 @@ func (l *dirLock) release() error {
 	delete(openDirs, l.path)
 	registryMu.Unlock()
 	return l.unlockOS()
+}
+
+// probeDirLock reports whether the data directory's LOCK is currently held,
+// by this process (another DB instance) or another one. It is read-only: it
+// never creates the LOCK file or acquires ownership.
+func probeDirLock(dir string) (bool, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false, err
+	}
+	realPath, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		realPath = abs
+	}
+	registryMu.Lock()
+	_, inProc := openDirs[realPath]
+	registryMu.Unlock()
+	if inProc {
+		return true, nil
+	}
+	return probeDirLockOS(dir)
 }
