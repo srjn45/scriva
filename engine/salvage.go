@@ -61,6 +61,14 @@ type SegmentReport struct {
 // This is a salvage primitive, not an index-replay path: callers must decide
 // how (or whether) recovered entries are safe to use.
 func ScanSegmentTolerant(path string) (SegmentReport, error) {
+	return scanSegmentTolerantLimit(path, -1)
+}
+
+// scanSegmentTolerantLimit is ScanSegmentTolerant bounded to the first limit
+// bytes of the file (limit < 0 means the whole file). Online verification uses
+// it to scan exactly the prefix that existed when its snapshot was taken, so a
+// concurrent append can never appear as a torn line.
+func scanSegmentTolerantLimit(path string, limit int64) (SegmentReport, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return SegmentReport{}, fmt.Errorf("salvage: open %q: %w", path, err)
@@ -72,7 +80,14 @@ func ScanSegmentTolerant(path string) (SegmentReport, error) {
 		return SegmentReport{}, fmt.Errorf("salvage: stat %q: %w", path, err)
 	}
 	report := SegmentReport{Path: path, Size: info.Size()}
-	reader := bufio.NewReaderSize(f, 64*1024)
+	var src io.Reader = f
+	if limit >= 0 {
+		src = io.LimitReader(f, limit)
+		if limit < report.Size {
+			report.Size = limit
+		}
+	}
+	reader := bufio.NewReaderSize(src, 64*1024)
 	var offset int64
 
 	for {

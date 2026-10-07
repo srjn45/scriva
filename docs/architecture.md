@@ -383,6 +383,69 @@ At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.D
 
 ---
 
+### Integrity verification (`Verify`)
+
+`engine/verify.go` is a read-only detector. It reports what is wrong and where; it never repairs, trims, resolves or rewrites anything (repair, the CLI surface and the open-time policy are separate layers built on its report).
+
+| Entry point | Runs against | Notes |
+|---|---|---|
+| `(*DB).Verify(ctx, VerifyOptions)` | every open collection (or `VerifyOptions.Collections`) | online |
+| `(*Collection).Verify(ctx, VerifyOptions)` | one open collection | online |
+| `engine.VerifyDir(ctx, dataDir, VerifyOptions)` | a directory that is **not** opened | offline; also validates the persisted `index.json` / `sidx_*.json` / `meta.json` exactly as they sit on disk, without running open-time recovery |
+
+All three return an `*IntegrityReport`: database-level `Findings` (lock state) plus one `CollectionReport` per collection (`Stats`, `Findings`, and `Truncated` counts once `MaxFindingsPerCode`, default 1000, is hit). Helpers: `AllFindings()`, `MaxSeverity()`, `Clean()` (nothing above `info`), `Has(code)`, `Codes()`. Each `Finding` carries a `Severity`, a stable machine-readable `Code`, a `Location` (`Segment` base name, `Offset`, `ID`, `Field`) and a human `Message`.
+
+**Online snapshot.** An online run holds `compactMu` for its whole duration (compaction is the only thing that replaces sealed files) and, under `c.mu.RLock`, copies the primary index, every secondary index's buckets, the id counter and each segment's size. Every writer mutates segment + indexes inside one `c.mu.Lock` section, so that copy is a consistent cut. The lock is then released and the segments are scanned only up to the snapshotted sizes — appends extend files past them and are never seen, so writers are not blocked and a concurrent append can never look like a torn line. `ensureIndex` registers a new secondary index under `c.mu` too, so a snapshot never observes an index that is registered but not yet built.
+
+**Ground truth.** In `full` mode every segment is scanned with the tolerant salvage scanner (`scanSegmentTolerantLimit`) and folded, segment by segment, into a per-id replay that applies exactly the `Index.Rebuild` semantics (last line wins, revision = max(replay count, revision on the line), delete resets). Memory is proportional to the number of ids and entries, not to the data size. The primary and secondary indexes are then compared against that truth. History that a single in-order writer cannot produce is reported as a `conflict` and never resolved.
+
+**Interrupted compaction.** If `compact.manifest` is present, an offline run reads the layout that open will roll forward to (each outstanding temp stands in for its final segment, listed removals are ignored) so superseded history sitting next to its compacted form is not misread as conflicting writers. The files themselves are not touched.
+
+**Modes.** `quick` validates persisted-index coverage and fingerprints the same way open does, spot-checks a deterministic sample of index entries (the 16 newest ids plus up to 64 evenly spaced), checks the file set, the id counter and parses only the newest segment. `full` (the default) additionally parses every segment and runs the truth comparison.
+
+Severities, in increasing order: `info` (expected or self-healing at open), `repairable-index` (a derived structure disagrees with the segments; rebuilding from segments fixes it without data loss), `data-corruption` (segment bytes are damaged), `conflict` (ambiguous history; must not be auto-resolved).
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `segment-torn-tail` | info / data-corruption | partial last line of the newest segment (info: open trims it); anywhere else it is corruption |
+| `segment-bad-region` | data-corruption | a complete line that is not a valid record |
+| `segment-glued-line` | data-corruption | a partial record glued in front of a valid one on the same line |
+| `segment-unreadable` | data-corruption | a segment (or the collection directory) cannot be read |
+| `orphan-segment-file` | info | a `seg_*` file the naming scheme does not reach, a `seg_*.ndjson` with no number (open still replays it), or — online — a segment on disk the open handle does not hold |
+| `leftover-temp-file` | info | `.compact_*` not named by a manifest, or a `*.tmp` (offline only) |
+| `compaction-manifest-pending` | repairable-index | an interrupted swap; open rolls it forward and rebuilds |
+| `compaction-manifest-corrupt` | data-corruption | manifest unparseable; open refuses to guess |
+| `lock-held` | info | another holder has the directory `LOCK` (offline run) |
+| `lock-held-by-this-process` | info | always present on `DB.Verify` |
+| `lock-probe-failed` | info | lock state could not be determined |
+| `meta-missing` | info | open recomputes the id counter |
+| `meta-unreadable` | repairable-index | |
+| `idcounter-behind` | repairable-index | counter below the highest id present (after the active-segment reconciliation open performs) |
+| `record-expired-live` | info | past its TTL, not yet reaped |
+| `duplicate-record-identical` | info | the same write appears twice with identical content and revision |
+| `conflict-duplicate-id` | conflict | a live id is inserted again with different content or revision |
+| `conflict-id-reuse-after-delete` | conflict | an id is inserted again after its delete |
+| `conflict-write-after-delete` | conflict | an id is updated after its delete |
+| `conflict-revision-regression` | conflict | an update's revision goes backwards, or two different updates share one revision |
+| `index-missing` / `index-unreadable` | repairable-index | `index.json` absent with data present / fails checksum or parse |
+| `index-coverage-unknown` | repairable-index | v1 file without coverage |
+| `index-coverage-mismatch` | repairable-index | covered bytes shrank, changed, or a non-newest covered segment grew |
+| `index-coverage-segment-missing` | repairable-index | covers a segment that is not on disk |
+| `index-stale-tail` | repairable-index | bytes appended after the last persist (unclean stop); open replays them |
+| `index-segment-unlisted` | repairable-index | a segment older than covered ones is absent from coverage |
+| `index-spotcheck-failed` | repairable-index | quick mode: a sampled entry does not point at a record with its id |
+| `index-missing-record` | repairable-index | a live record is absent from the index |
+| `index-stale-record` | repairable-index | entry points at an older version, or its rev / expiry / epoch differ |
+| `index-wrong-record` | repairable-index | the offset holds a record with a different id |
+| `index-dangling-offset` | repairable-index | the offset is not the start of any record |
+| `index-dangling-entry` | repairable-index | no segment holds any record for the id |
+| `index-resurrected-delete` | repairable-index | the id's latest record is a delete |
+| `sidx-unreadable`, `sidx-coverage-unknown`, `sidx-coverage-mismatch`, `sidx-coverage-segment-missing`, `sidx-stale-tail`, `sidx-segment-unlisted` | repairable-index | as the `index-*` equivalents, per field (`Location.Field`) |
+| `sidx-missing-entry` / `sidx-extra-entry` / `sidx-wrong-bucket` | repairable-index | secondary index disagrees with the record's value |
+| `sidx-unique-violation` | conflict | several live records share a value under a unique index |
+
+The engine emits no metrics from `Verify`; callers that want them instrument around the call.
+
 ## Secondary Indexes
 
 Secondary indexes are per-field inverted indexes stored in memory and on disk:
