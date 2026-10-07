@@ -19,7 +19,6 @@ import (
 // crash (no Close), must all be visible after the next open. Today the stale
 // but checksum-valid index.json from the first Close is trusted.
 func TestCrashStaleIndex(t *testing.T) {
-	t.Skip("gap: stale-but-valid index.json trusted after crash; fixed by the index-vs-segment reconciliation task (index data-integrity phase 2, #107)")
 	dir := t.TempDir()
 
 	db0, err := Open(dir, CollectionConfig{})

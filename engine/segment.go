@@ -327,15 +327,26 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 // Returning an error from yield stops the scan and returns that error, which
 // lets callers terminate early (e.g. once a limit is reached).
 func (s *Segment) ScanFrom(yield func(offset int64, e store.Entry) error) error {
+	return s.ScanFromOffset(0, yield)
+}
+
+// ScanFromOffset is ScanFrom starting at byte offset from, which must be a
+// record boundary. Offsets passed to yield are absolute within the file.
+func (s *Segment) ScanFromOffset(from int64, yield func(offset int64, e store.Entry) error) error {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return fmt.Errorf("segment: scanfrom open %q: %w", s.path, err)
 	}
 	defer func() { _ = f.Close() }()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return fmt.Errorf("segment: scanfrom seek %d in %q: %w", from, s.path, err)
+		}
+	}
 
 	scanner := newSegmentScanner(f)
 
-	var off int64
+	off := from
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
