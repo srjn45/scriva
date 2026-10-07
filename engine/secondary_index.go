@@ -444,6 +444,18 @@ func (s *SecondaryIndex) PersistWithCoverage(path string, cov []SegmentCoverage)
 }
 
 func (s *SecondaryIndex) persist(path string, cov []SegmentCoverage, v2 bool) error {
+	return s.snapshot().write(path, cov, v2)
+}
+
+// sidxSnapshot is a point-in-time copy of an index's buckets, taken under the
+// collection lock so it can be written with matching coverage afterwards.
+type sidxSnapshot struct {
+	field, kind string
+	unique      bool
+	buckets     map[string][]uint64
+}
+
+func (s *SecondaryIndex) snapshot() *sidxSnapshot {
 	s.mu.RLock()
 	bucketsJSON := make(map[string][]uint64, len(s.buckets))
 	for val, ids := range s.buckets {
@@ -453,14 +465,18 @@ func (s *SecondaryIndex) persist(path string, cov []SegmentCoverage, v2 bool) er
 		}
 		bucketsJSON[val] = slice
 	}
-	kind := s.kind.String()
-	unique := s.unique
+	sn := &sidxSnapshot{field: s.field, kind: s.kind.String(), unique: s.unique, buckets: bucketsJSON}
 	s.mu.RUnlock()
+	return sn
+}
 
+// write persists the snapshot; cov is recorded only when v2.
+func (sn *sidxSnapshot) write(path string, cov []SegmentCoverage, v2 bool) error {
+	bucketsJSON := sn.buckets
 	f := sidxFile{
-		Field:   s.field,
-		Unique:  unique,
-		Kind:    kind,
+		Field:   sn.field,
+		Unique:  sn.unique,
+		Kind:    sn.kind,
 		Buckets: bucketsJSON,
 	}
 	var payload []byte

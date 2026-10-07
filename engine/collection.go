@@ -441,6 +441,16 @@ func (c *Collection) persistIndexes() error {
 	}
 	segs = append(segs, c.active)
 	snap, err := c.index.snapshotCached(segs, sealed, c.sealedCov)
+	// Secondary buckets are copied under the same lock so their coverage is
+	// exactly snap.coverage.
+	sidxSnaps := make(map[string]*sidxSnapshot)
+	if err == nil {
+		c.sidxMu.RLock()
+		for field, sidx := range c.sidxMap {
+			sidxSnaps[field] = sidx.snapshot()
+		}
+		c.sidxMu.RUnlock()
+	}
 	c.mu.RUnlock()
 	if err != nil {
 		return err
@@ -448,10 +458,13 @@ func (c *Collection) persistIndexes() error {
 	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
 		return err
 	}
-	c.sidxMu.RLock()
+	c.sidxMu.RLock() // excludes DropIndex so a dropped index's file isn't resurrected
 	defer c.sidxMu.RUnlock()
-	for field, sidx := range c.sidxMap {
-		if err := sidx.Persist(sidxFilePath(c.dir, field)); err != nil {
+	for field, sn := range sidxSnaps {
+		if _, live := c.sidxMap[field]; !live {
+			continue
+		}
+		if err := sn.write(sidxFilePath(c.dir, field), snap.coverage, true); err != nil {
 			return err
 		}
 	}
