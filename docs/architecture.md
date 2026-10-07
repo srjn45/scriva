@@ -354,8 +354,23 @@ map[uint64]IndexEntry{
 - Updated on every write (same write lock scope)
 - Persisted to `index.json` with a SHA-256 checksum on every close
 - Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and the SHA-256 of those bytes. The checksum covers version, entries and coverage. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
-- Loaded on startup; rebuilt from segment scans if checksum fails
+- Loaded on startup and **validated against the segments, never trusted** (see below); rebuilt from segment scans if the checksum fails
 - Rebuilt after compaction (offsets change)
+
+### Load-time validation and tail replay
+
+After an unclean stop the persisted `index.json` is checksum-valid but stale (it was written by the last clean close or compaction). On open the engine reconciles it with the segments using its v2 `coverage`, ordering segments by **numeric** id (not lexical name):
+
+| Condition | Action |
+|---|---|
+| every covered segment exists, its first `size` bytes hash to the recorded SHA-256, and only the newest covered segment grew | replay only `[covered, EOF)` of that segment onto the loaded index |
+| unlisted segments newer than all covered ones (rotation after the last persist) | replay them in full |
+| v1 file (no coverage), corrupt/truncated file, missing or shorter covered segment, hash mismatch, a non-newest covered segment grew, an unlisted segment older than the covered range | full rebuild from all segments |
+| a spot check fails: up to 64 random plus the 16 newest entries must each point at a line boundary whose decoded `id` matches | full rebuild |
+
+Replay and `Rebuild` share one routine (`applyEntries`), so insert/update (rev bump, last-writer-wins) and delete (entry removed — deletes are not resurrected) behave identically. A torn last line in the active segment is trimmed by `recoverPartialLine` before replay. The recovered index is persisted and the secondary indexes are rebuilt from the segments whenever the primary changed. Cost: validating coverage hashes the covered bytes (sequential read), far cheaper than a full decode-and-rebuild; replay cost is bounded by the unpersisted tail.
+
+Recovery is observable: `Collection.IndexRecoveryStats()` exposes replay/rebuild/spot-check-failure counters and replayed bytes, and `CollectionConfig.OnIndexRecovery(collection, kind, bytes, dur)` fires with kind `replay`, `rebuild` or `spotcheck_fail` (not at all on a clean reopen).
 
 ### Identity verification & integrity protection
 

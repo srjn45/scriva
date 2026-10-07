@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,6 +140,13 @@ type CollectionConfig struct {
 	// It mirrors Quotas. Unlisted collections stay unencrypted.
 	EncryptionByCollection map[string]*EncryptionPolicy
 
+	// OnIndexRecovery, when non-nil, is called at open for each index recovery
+	// action: kind is IndexRecoveryReplay (bytes = replayed segment bytes),
+	// IndexRecoveryRebuild (bytes = total segment bytes scanned) or
+	// IndexRecoverySpotCheckFail, with the elapsed time. Not called when the
+	// persisted index is fully current.
+	OnIndexRecovery func(collection, kind string, bytes int64, dur time.Duration)
+
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
 	// test hook invoked after the post-swap primary index persist, before the
@@ -244,6 +250,10 @@ type Collection struct {
 	// indexRebuilds counts full primary-index rebuilds performed by load()
 	// (test-visible: asserts a clean reopen reuses the persisted index).
 	indexRebuilds atomic.Int64
+	// load-time recovery counters (see IndexRecoveryStats).
+	indexReplays      atomic.Int64
+	indexReplayBytes  atomic.Int64
+	spotCheckFailures atomic.Int64
 	closeOnce sync.Once
 	closed    chan struct{}
 }
@@ -358,7 +368,16 @@ func (c *Collection) load() error {
 	if err != nil {
 		return fmt.Errorf("collection: glob segments: %w", err)
 	}
-	sort.Strings(paths)
+	// Order by numeric segment id, not lexically, so the active (newest)
+	// segment is last even past seg_999999.
+	sort.SliceStable(paths, func(i, j int) bool {
+		ni, _ := segmentNum(paths[i])
+		nj, _ := segmentNum(paths[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return paths[i] < paths[j]
+	})
 
 	// Identify the active (latest) segment — the one we'll append to.
 	// All others are sealed.
@@ -396,35 +415,14 @@ func (c *Collection) load() error {
 	}
 	c.segSeq.Store(maxSeg)
 
-	// Try loading the persisted index.
+	// Validate the persisted index against the segments (tail replay or full
+	// rebuild); see recoverIndex.
 	indexPath := filepath.Join(c.dir, "index.json")
-	rebuilt := swapRecovered
-	if !rebuilt {
-		err = c.index.Load(indexPath)
-		if err != nil && !errors.Is(err, ErrIndexStale) && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("collection: load index: %w", err)
-		}
-		if err == nil {
-			// The checksum only guards the index's own contents. Verify every
-			// entry points inside a segment that actually exists — an index
-			// persisted by a Close() that raced a compaction swap validates its
-			// checksum yet references segments the swap deleted (#68).
-			sizes := make(map[string]int64, len(all))
-			for _, seg := range all {
-				sizes[seg.Path()] = seg.Size()
-			}
-			if !c.index.segmentsValid(sizes) {
-				err = ErrIndexStale
-			}
-		}
-		rebuilt = err != nil
+	rebuilt, err := c.recoverIndex(all, indexPath, swapRecovered)
+	if err != nil {
+		return err
 	}
 	if rebuilt {
-		c.indexRebuilds.Add(1)
-		// Stale, missing, or dangling — rebuild from the segments.
-		if rbErr := c.index.Rebuild(all); rbErr != nil {
-			return fmt.Errorf("collection: rebuild index: %w", rbErr)
-		}
 		if snap, snErr := c.index.Snapshot(all); snErr == nil {
 			_ = snap.Persist(indexPath)
 		}

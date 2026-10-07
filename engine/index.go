@@ -113,6 +113,10 @@ type Index struct {
 	// coverage is what the last successful Load reported (nil for v1 files or
 	// an index that was never loaded).
 	coverage []SegmentCoverage
+	// coverageKnown is true when the last Load read a v2 file, i.e. coverage
+	// (possibly empty) is authoritative. False for v1 files and never-loaded
+	// indexes: "coverage unknown", which recovery treats as stale.
+	coverageKnown bool
 }
 
 // newIndex creates an empty index.
@@ -329,6 +333,7 @@ func (idx *Index) Load(path string) error {
 	idx.mu.Lock()
 	idx.entries = entries
 	idx.coverage = file.Coverage
+	idx.coverageKnown = file.Version == indexFormatV2
 	idx.mu.Unlock()
 	return nil
 }
@@ -360,73 +365,64 @@ func (idx *Index) segmentsValid(sizes map[string]int64) bool {
 // A delete clears the counter so a re-inserted id restarts at rev 1.
 func (idx *Index) Rebuild(segments []*Segment) error {
 	fresh := make(map[uint64]IndexEntry)
-
-	for _, seg := range segments {
-		entries, err := seg.ScanAll()
-		if err != nil {
-			return fmt.Errorf("index: rebuild scan %q: %w", seg.Path(), err)
-		}
-
-		// Re-scan with byte offsets so we know each entry's position.
-		offsets, err := scanOffsets(seg)
-		if err != nil {
+	for _, seg := range sortSegments(segments) {
+		if err := applyEntries(fresh, seg, 0); err != nil {
 			return err
 		}
-
-		for i, e := range entries {
-			switch e.Op {
-			case store.OpInsert, store.OpUpdate:
-				rev := fresh[e.ID].Rev + 1
-				if e.Rev > rev {
-					rev = e.Rev
-				}
-				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch}
-			case store.OpDelete:
-				delete(fresh, e.ID)
-			}
-		}
 	}
-
 	idx.mu.Lock()
 	idx.entries = fresh
 	idx.mu.Unlock()
 	return nil
 }
 
-// scanOffsets returns the byte offset of each entry in a segment.
-func scanOffsets(seg *Segment) ([]int64, error) {
-	f, err := os.Open(seg.Path())
+// applyEntries replays seg's records from byte offset from (a record boundary)
+// onto m, with the semantics Rebuild and tail replay share: each insert/update
+// bumps the per-id revision (never below the revision the line carries), a
+// delete removes the entry so it is not resurrected, last writer wins.
+func applyEntries(m map[uint64]IndexEntry, seg *Segment, from int64) error {
+	err := seg.ScanFromOffset(from, func(off int64, e store.Entry) error {
+		switch e.Op {
+		case store.OpInsert, store.OpUpdate:
+			rev := m[e.ID].Rev + 1
+			if e.Rev > rev {
+				rev = e.Rev
+			}
+			m[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: off, Rev: rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch}
+		case store.OpDelete:
+			delete(m, e.ID)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("index: scanOffsets open %q: %w", seg.Path(), err)
+		return fmt.Errorf("index: replay %q from %d: %w", seg.Path(), from, err)
 	}
-	defer func() { _ = f.Close() }()
+	return nil
+}
 
-	var offsets []int64
-	var pos int64
-	buf := make([]byte, 1)
-
-	// Efficient line-boundary detection.
-	lineStart := int64(0)
-	inLine := false
-	readBuf := make([]byte, 32*1024)
-
-	for {
-		n, err := f.Read(readBuf)
-		for i := 0; i < n; i++ {
-			_ = buf
-			if !inLine {
-				lineStart = pos + int64(i)
-				inLine = true
-			}
-			if readBuf[i] == '\n' {
-				offsets = append(offsets, lineStart)
-				inLine = false
-			}
-		}
-		pos += int64(n)
-		if err != nil {
-			break
-		}
+// segmentNum parses N from a seg_N.ndjson path.
+func segmentNum(path string) (uint64, bool) {
+	var n uint64
+	if _, err := fmt.Sscanf(filepath.Base(path), "seg_%d.ndjson", &n); err != nil {
+		return 0, false
 	}
-	return offsets, nil
+	return n, true
+}
+
+// sortSegments returns segs ordered by numeric segment id (not lexical name, so
+// seg_1000000 sorts after seg_999999). Unparseable names sort last, by name.
+func sortSegments(segs []*Segment) []*Segment {
+	out := append([]*Segment(nil), segs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ni, oki := segmentNum(out[i].Path())
+		nj, okj := segmentNum(out[j].Path())
+		switch {
+		case oki && okj && ni != nj:
+			return ni < nj
+		case oki != okj:
+			return oki
+		}
+		return out[i].Path() < out[j].Path()
+	})
+	return out
 }
