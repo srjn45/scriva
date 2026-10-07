@@ -821,6 +821,27 @@ final line), not against *lost* writes — a write acknowledged under `--sync=no
 can still be lost if the machine loses power before the OS flushes its page
 cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that window.
 
+### Recovery cost and performance guardrails
+
+Measured with `engine/bench_*_test.go` (1,000,000 records of ~170 B, 4 MiB
+segments, `SyncModeNone`, Intel i7-7700HQ, tmpfs-class `/tmp`; wall time per
+`OpenCollection`). Baseline is `main` before the integrity work (`f643158`).
+Reproduce: `SCRIVA_BENCH_N=1000000 go test ./engine -run xxx -bench 'Open|Persist' -benchtime=3x`.
+
+| Scenario | Baseline | Now | Notes |
+|---|---|---|---|
+| Clean reopen (valid v2 coverage) | 3.9 s | 4.8 s | +~21%: coverage validation + spot checks |
+| Crash reopen, tail of 1k / 10k records | n/a (stale index trusted silently) | 11.2 s / 9.6 s | tail replay plus full coverage verification of sealed segments |
+| v1 index upgrade (one-time rebuild) | n/a | 24.7 s | rewritten as v2; next open is a clean reopen |
+| One index persist pass (1M entries) | n/a | 7.7 s | background goroutine; writers are not blocked (max concurrent insert latency 31 µs) |
+
+Write path (`Insert`/`Update`/`Delete`, per `SyncMode`): the success path issues
+exactly the same syscalls as before (one `write` and, for `always`, one `fsync`
+per operation; verified with `strace -c`). Measured CPU cost is within noise
+for `Update` and about +11-13% for `Insert`/`Delete` in sustained benchmarks;
+the extra work is the background index persist triggered on every 4 MiB segment
+rotation (see below), not the append itself.
+
 ---
 
 ## Backup / snapshot
