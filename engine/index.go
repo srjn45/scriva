@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -74,11 +75,24 @@ const indexFormatV2 = 2
 // the segment's base name, the number of bytes covered, and the SHA-256 of
 // exactly those bytes. A later task uses it to decide whether the index is
 // current, needs a tail replay, or must be rebuilt.
+//
+// Checksum (full SHA-256) is recorded for the segment that was active at
+// capture time; sealed, immutable segments record only Tail — the SHA-256 of
+// the last coverageTailBytes covered bytes — so persisting and re-validating a
+// large data set costs O(segments), not O(bytes). Index files written before
+// Tail existed carry Checksum only and are verified by the full hash. Either
+// way a mismatch forces a rebuild, and the bounded identity spot-check still
+// runs.
 type SegmentCoverage struct {
 	Segment  string `json:"segment"`
 	Size     int64  `json:"size"`
 	Checksum string `json:"checksum"`
+	Tail     string `json:"tail,omitempty"`
 }
+
+// coverageTailBytes is how many trailing covered bytes the tail fingerprint
+// hashes.
+const coverageTailBytes = 64 << 10
 
 // indexPayload is the canonical (checksummed) body of a v2 index file. Encoding
 // is deterministic: struct fields marshal in declaration order and map keys are
@@ -181,7 +195,13 @@ func (idx *Index) Coverage() []SegmentCoverage {
 // Snapshot copies the entries and captures coverage for segs. Callers must hold
 // the lock that stops writes to segs so the coverage matches the entries.
 func (idx *Index) Snapshot(segs []*Segment) (*IndexSnapshot, error) {
-	return idx.snapshotCached(segs, nil, nil)
+	// segs end with the active segment; earlier ones are sealed and get the
+	// cheap tail fingerprint.
+	sealed := make(map[*Segment]bool, len(segs))
+	for i := 0; i+1 < len(segs); i++ {
+		sealed[segs[i]] = true
+	}
+	return idx.snapshotCached(segs, sealed, nil)
 }
 
 // snapshotCached is Snapshot for a periodic persister: coverage of sealed
@@ -199,7 +219,7 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 				continue
 			}
 		}
-		c, err := captureCoverage(seg)
+		c, err := captureCoverage(seg, !sealed[seg])
 		if err != nil {
 			return nil, err
 		}
@@ -218,23 +238,46 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 	return &IndexSnapshot{entries: snap, coverage: cov}, nil
 }
 
-// captureCoverage hashes the first Size() bytes of seg.
-func captureCoverage(seg *Segment) (SegmentCoverage, error) {
+// captureCoverage records the first Size() bytes of seg: always the tail
+// fingerprint, plus the full SHA-256 when full is set (the active segment).
+func captureCoverage(seg *Segment, full bool) (SegmentCoverage, error) {
 	size := seg.Size()
 	f, err := os.Open(seg.Path())
 	if err != nil {
 		return SegmentCoverage{}, fmt.Errorf("index: coverage open %q: %w", seg.Path(), err)
 	}
 	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.CopyN(h, f, size); err != nil {
-		return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
+	cv := SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: size}
+	if full {
+		h := sha256.New()
+		if _, err := io.CopyN(h, f, size); err != nil {
+			return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
+		}
+		cv.Checksum = hex.EncodeToString(h.Sum(nil))
 	}
-	return SegmentCoverage{
-		Segment:  filepath.Base(seg.Path()),
-		Size:     size,
-		Checksum: hex.EncodeToString(h.Sum(nil)),
-	}, nil
+	tail, err := tailFingerprint(f, size)
+	if err != nil {
+		return SegmentCoverage{}, fmt.Errorf("index: coverage tail %q: %w", seg.Path(), err)
+	}
+	cv.Tail = tail
+	return cv, nil
+}
+
+// tailFingerprint hashes the last coverageTailBytes of the first size bytes of f.
+func tailFingerprint(f *os.File, size int64) (string, error) {
+	off := size - coverageTailBytes
+	if off < 0 {
+		off = 0
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.NewSectionReader(f, off, size-off))
+	if err != nil {
+		return "", err
+	}
+	if n != size-off {
+		return "", io.ErrUnexpectedEOF // file shorter than the covered size
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Persist serialises the index to path in the v2 format without segment
@@ -266,16 +309,16 @@ func (s *IndexSnapshot) Persist(path string) error {
 	if err != nil {
 		return fmt.Errorf("index: marshal: %w", err)
 	}
+	// The file is the payload with the checksum field appended, so it is
+	// built from the single marshal above (same keys, same order) and Load can
+	// hash the raw bytes without re-marshalling.
 	sum := sha256.Sum256(payload)
-	b, err := json.Marshal(indexFile{
-		Version:  indexFormatV2,
-		Entries:  rel,
-		Coverage: cov,
-		Checksum: hex.EncodeToString(sum[:]),
-	})
-	if err != nil {
-		return fmt.Errorf("index: marshal file: %w", err)
-	}
+	b := make([]byte, 0, len(payload)+len(checksumKey)+sha256.Size*2+3)
+	b = append(b, payload[:len(payload)-1]...)
+	b = append(b, checksumKey...)
+	b = append(b, '"')
+	b = append(b, hex.EncodeToString(sum[:])...)
+	b = append(b, '"', '}')
 
 	// Write atomically and durably (temp file → fsync → rename → fsync dir).
 	if err := writeFileAtomic(path, b, 0o644); err != nil {
@@ -321,6 +364,10 @@ func (idx *Index) Load(path string) error {
 		return fmt.Errorf("index: unmarshal: %w", err)
 	}
 
+	if file.Version == indexFormatV2 && rawChecksumOK(b, file.Checksum) {
+		return idx.install(path, file)
+	}
+
 	var payload []byte
 	switch file.Version {
 	case 0: // v1: checksum over the entries map alone.
@@ -342,6 +389,31 @@ func (idx *Index) Load(path string) error {
 		return ErrIndexStale
 	}
 
+	return idx.install(path, file)
+}
+
+// checksumKey is the literal that precedes the checksum value in a persisted
+// v2 file (see IndexSnapshot.Persist).
+const checksumKey = `,"checksum":`
+
+// rawChecksumOK reports whether the SHA-256 of b with its trailing checksum
+// field replaced by a closing brace equals want, without re-marshalling the
+// entries. A false result is not an error: callers fall back to the canonical
+// re-marshal check, so this only ever accepts byte-exact canonical files.
+func rawChecksumOK(b []byte, want string) bool {
+	suffix := checksumKey + `"` + want + `"}`
+	if want == "" || !bytes.HasSuffix(b, []byte(suffix)) {
+		return false
+	}
+	h := sha256.New()
+	h.Write(b[:len(b)-len(suffix)])
+	h.Write([]byte{'}'})
+	return hex.EncodeToString(h.Sum(nil)) == want
+}
+
+// install resolves segment paths against path's directory and adopts file's
+// contents as the in-memory index.
+func (idx *Index) install(path string, file indexFile) error {
 	dir := filepath.Dir(path)
 	entries := make(map[uint64]IndexEntry, len(file.Entries))
 	for id, e := range file.Entries {

@@ -40,6 +40,12 @@ const DefaultSyncInterval = time.Second
 // CollectionConfig.IndexPersistInterval is zero.
 const DefaultIndexPersistInterval = 30 * time.Second
 
+// DefaultIndexPersistMinInterval is the minimum spacing between background
+// persist passes when CollectionConfig.IndexPersistMinInterval is zero. Segment
+// rotations only request a persist; requests inside this window coalesce into a
+// single deferred pass.
+const DefaultIndexPersistMinInterval = 10 * time.Second
+
 // DefaultWatchBufferSize is the per-subscriber channel buffer used when no size
 // is configured.
 const DefaultWatchBufferSize = 64
@@ -67,6 +73,16 @@ type CollectionConfig struct {
 	// DefaultIndexPersistInterval; a negative value disables periodic persists
 	// (rotation, compaction and Close still persist). Default: 30s.
 	IndexPersistInterval time.Duration
+
+	// IndexPersistMinInterval is the minimum time between background persist
+	// passes. A segment rotation only requests a persist; requests arriving
+	// within this window of the previous pass coalesce into one deferred pass,
+	// so a heavy write load does not re-encode the whole index every rotation.
+	// The effective spacing is also at least 4x the duration of the previous
+	// pass, capping persister CPU at ~20%. Close and compaction persist
+	// unconditionally. Zero selects DefaultIndexPersistMinInterval; a negative
+	// value disables debouncing. Default: 10s.
+	IndexPersistMinInterval time.Duration
 
 	// WatchBufferSize is the per-subscriber channel buffer for Watch. A slow
 	// subscriber that fills its buffer receives an OpOverflow sentinel rather
@@ -287,6 +303,8 @@ type Collection struct {
 	persistWG  sync.WaitGroup
 	sealedCov  map[string]SegmentCoverage
 	persistErr atomic.Int64 // failed background persists (test/observability)
+	// persistPasses counts background persist passes (test/observability).
+	persistPasses atomic.Int64
 }
 
 // OpenCollection opens or creates the collection rooted at dir.
@@ -320,6 +338,9 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 	if cfg.IndexPersistInterval == 0 {
 		cfg.IndexPersistInterval = DefaultIndexPersistInterval
+	}
+	if cfg.IndexPersistMinInterval == 0 {
+		cfg.IndexPersistMinInterval = DefaultIndexPersistMinInterval
 	}
 	// Overlay a per-collection quota (S4) if one is configured for this name.
 	// Quotas is DB-wide (the server builds it from config); the embedded façade
@@ -402,17 +423,52 @@ func (c *Collection) persistLoop() {
 		defer t.Stop()
 		tick = t.C
 	}
+	last := time.Now() // start of the previous pass (open counts: load persisted)
+	var lastDur time.Duration
 	for {
 		select {
 		case <-c.closed:
 			return
 		case <-tick:
 		case <-c.persistC:
+			// Rotation request: debounce so bursts of rotations coalesce into
+			// one pass. Timer ticks are already rate-limited and run as-is.
+			if wait := c.persistDelay(last, lastDur); wait > 0 {
+				t := time.NewTimer(wait)
+				select {
+				case <-c.closed:
+					t.Stop()
+					return
+				case <-t.C:
+				}
+				// Drop a request that arrived while waiting; this pass covers it.
+				select {
+				case <-c.persistC:
+				default:
+				}
+			}
 		}
+		last = time.Now()
+		c.persistPasses.Add(1)
 		if err := c.persistIndexes(); err != nil {
 			c.persistErr.Add(1)
 		}
+		lastDur = time.Since(last)
 	}
+}
+
+// persistDelay returns how long a rotation-requested persist must still wait:
+// the larger of the configured minimum interval and 4x the previous pass
+// duration, measured from the previous pass's start.
+func (c *Collection) persistDelay(last time.Time, lastDur time.Duration) time.Duration {
+	if c.cfg.IndexPersistMinInterval < 0 {
+		return 0
+	}
+	min := c.cfg.IndexPersistMinInterval
+	if d := 4 * lastDur; d > min {
+		min = d
+	}
+	return min - time.Since(last)
 }
 
 // persistIndexes writes a consistent point-in-time primary index (with segment
