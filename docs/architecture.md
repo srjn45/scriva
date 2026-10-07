@@ -399,6 +399,7 @@ map[string]map[string][]uint64
 - Maintained automatically on every Insert / Update / Delete (same write lock scope)
 - Persisted to `sidx_<field>.json` with a SHA-256 checksum
 - Reloaded on startup; rebuilt from segments if the checksum fails
+- **v2 format with coverage**: like `index.json`, a cleanly persisted `sidx_<field>.json` records the segment bytes it describes (segment name, size, SHA-256 of those bytes) inside its checksum. On load the same rules as the primary index apply: the newest covered segment may have grown and newer unlisted segments are replayed onto the buckets (tail replay, last writer wins, unique flag preserved); any other growth, a missing/shorter segment, a hash mismatch, a corrupt file, or a **v1 file (no coverage)** forces a full rebuild, after which the file is rewritten as v2. `IndexRecoveryStats` exposes `SecondaryReplays`/`SecondaryRebuilds`.
 - Rebuilt transparently after each compaction run
 
 ### Range queries (ordered key view)

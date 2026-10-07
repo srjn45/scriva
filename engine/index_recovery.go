@@ -37,6 +37,9 @@ type IndexRecoveryStats struct {
 	ReplayedBytes     int64 // segment bytes replayed across those loads
 	FullRebuilds      int64 // full rebuilds from segments
 	SpotCheckFailures int64 // spot checks that forced a rebuild
+
+	SecondaryReplays  int64 // secondary indexes brought current by tail replay
+	SecondaryRebuilds int64 // secondary indexes rebuilt from segments at load
 }
 
 // IndexRecoveryStats returns the load-time recovery counters.
@@ -46,6 +49,8 @@ func (c *Collection) IndexRecoveryStats() IndexRecoveryStats {
 		ReplayedBytes:     c.indexReplayBytes.Load(),
 		FullRebuilds:      c.indexRebuilds.Load(),
 		SpotCheckFailures: c.spotCheckFailures.Load(),
+		SecondaryReplays:  c.sidxReplays.Load(),
+		SecondaryRebuilds: c.sidxRebuilds.Load(),
 	}
 }
 
@@ -143,6 +148,13 @@ func (c *Collection) planReplay(all []*Segment) (plan []replayStep, ok bool) {
 	cov := append([]SegmentCoverage(nil), c.index.coverage...)
 	nEntries := len(c.index.entries)
 	c.index.mu.RUnlock()
+	return planReplayFor(all, known, cov, nEntries)
+}
+
+// planReplayFor is planReplay over explicit coverage, shared by the primary and
+// secondary indexes: known=false (v1) means coverage is unknown, and nEntries>0
+// with empty coverage means entries nothing proves.
+func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int) (plan []replayStep, ok bool) {
 	if !known {
 		return nil, false // v1: coverage unknown -> stale
 	}
@@ -278,4 +290,55 @@ func totalSize(segs []*Segment) (n int64) {
 		n += s.Size()
 	}
 	return n
+}
+
+// recoverSecondary reconciles a loaded secondary index with the segments: a v2
+// file is trusted as far as its coverage proves (same rules as the primary
+// index) and brought current by replaying the tail; anything else — v1, corrupt,
+// uncovered, mismatching — is rebuilt. It reports whether sidx changed and so
+// must be re-persisted with fresh coverage.
+func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Segment, force bool) (changed bool, err error) {
+	rebuild := func() (bool, error) {
+		c.sidxRebuilds.Add(1)
+		if err := sidx.rebuild(all); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if force {
+		return rebuild()
+	}
+	if err := sidx.Load(p); err != nil {
+		return rebuild()
+	}
+	sidx.mu.RLock()
+	known, cov, n := sidx.coverageKnown, append([]SegmentCoverage(nil), sidx.coverage...), len(sidx.buckets)
+	sidx.mu.RUnlock()
+	plan, ok := planReplayFor(all, known, cov, n)
+	if !ok {
+		return rebuild()
+	}
+	for _, st := range plan {
+		if err := sidx.replay(st.seg, st.from); err != nil {
+			return rebuild()
+		}
+	}
+	if len(plan) > 0 {
+		c.sidxReplays.Add(1)
+	}
+	return len(plan) > 0, nil
+}
+
+// persistSecondary writes sidx with coverage of segs. Callers must hold the
+// lock that excludes writes to segs.
+func persistSecondary(sidx *SecondaryIndex, p string, segs []*Segment) error {
+	cov := make([]SegmentCoverage, 0, len(segs))
+	for _, seg := range segs {
+		cv, err := captureCoverage(seg)
+		if err != nil {
+			return err
+		}
+		cov = append(cov, cv)
+	}
+	return sidx.PersistWithCoverage(p, cov)
 }

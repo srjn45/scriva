@@ -46,6 +46,10 @@ type SecondaryIndex struct {
 	// fall back to the full scan (a numeric/lexical order is undefined there).
 	kind   indexKind
 	sorted []orderedKey
+
+	// coverage/coverageKnown mirror Index: what the last Load read (v2 only).
+	coverage      []SegmentCoverage
+	coverageKnown bool
 }
 
 // indexKind classifies the value type stored in an index, which decides how its
@@ -196,8 +200,22 @@ type sidxFile struct {
 	Field    string              `json:"field"`
 	Unique   bool                `json:"unique,omitempty"`
 	Kind     string              `json:"kind,omitempty"` // "numeric"|"string"|"mixed"; absent = legacy
+	Version  int                 `json:"version,omitempty"`
 	Buckets  map[string][]uint64 `json:"buckets"`
+	Coverage []SegmentCoverage   `json:"coverage,omitempty"`
 	Checksum string              `json:"checksum"`
+}
+
+// sidxFormatV2 is the self-describing secondary-index format: the checksum
+// covers the buckets and the segment coverage they describe. Files without a
+// version (v1) carry no coverage and are always rebuilt on load.
+const sidxFormatV2 = 2
+
+// sidxPayload is the canonical (checksummed) body of a v2 sidx file.
+type sidxPayload struct {
+	Version  int                 `json:"version"`
+	Buckets  map[string][]uint64 `json:"buckets"`
+	Coverage []SegmentCoverage   `json:"coverage"`
 }
 
 // add records id under value. Goroutine-safe.
@@ -407,8 +425,25 @@ func buildSorted(buckets map[string]map[uint64]struct{}, kind indexKind) []order
 	return sorted
 }
 
-// Persist writes the index to path with an embedded SHA-256 checksum.
+// Persist writes the index to path in the legacy (v1, coverage-less) format
+// with an embedded SHA-256 checksum. Such a file is never trusted on load —
+// recovery rebuilds it — so callers that cannot prove which segment bytes the
+// buckets describe use this safe form.
 func (s *SecondaryIndex) Persist(path string) error {
+	return s.persist(path, nil, false)
+}
+
+// PersistWithCoverage writes the index in the v2 format, recording cov — the
+// segment bytes the buckets reflect — so a later load can replay only the tail.
+// cov must be captured under the lock that excludes writes.
+func (s *SecondaryIndex) PersistWithCoverage(path string, cov []SegmentCoverage) error {
+	if cov == nil {
+		cov = []SegmentCoverage{}
+	}
+	return s.persist(path, cov, true)
+}
+
+func (s *SecondaryIndex) persist(path string, cov []SegmentCoverage, v2 bool) error {
 	s.mu.RLock()
 	bucketsJSON := make(map[string][]uint64, len(s.buckets))
 	for val, ids := range s.buckets {
@@ -422,19 +457,25 @@ func (s *SecondaryIndex) Persist(path string) error {
 	unique := s.unique
 	s.mu.RUnlock()
 
-	payload, err := json.Marshal(bucketsJSON)
+	f := sidxFile{
+		Field:   s.field,
+		Unique:  unique,
+		Kind:    kind,
+		Buckets: bucketsJSON,
+	}
+	var payload []byte
+	var err error
+	if v2 {
+		f.Version, f.Coverage = sidxFormatV2, cov
+		payload, err = json.Marshal(sidxPayload{Version: sidxFormatV2, Buckets: bucketsJSON, Coverage: cov})
+	} else {
+		payload, err = json.Marshal(bucketsJSON)
+	}
 	if err != nil {
 		return fmt.Errorf("sidx: marshal: %w", err)
 	}
 	sum := sha256.Sum256(payload)
-
-	f := sidxFile{
-		Field:    s.field,
-		Unique:   unique,
-		Kind:     kind,
-		Buckets:  bucketsJSON,
-		Checksum: hex.EncodeToString(sum[:]),
-	}
+	f.Checksum = hex.EncodeToString(sum[:])
 	b, err := json.Marshal(f)
 	if err != nil {
 		return fmt.Errorf("sidx: marshal file: %w", err)
@@ -464,7 +505,16 @@ func (s *SecondaryIndex) Load(path string) error {
 	s.unique = f.Unique
 	s.mu.Unlock()
 
-	payload, err := json.Marshal(f.Buckets)
+	var payload []byte
+	if f.Version == sidxFormatV2 {
+		cov := f.Coverage
+		if cov == nil {
+			cov = []SegmentCoverage{}
+		}
+		payload, err = json.Marshal(sidxPayload{Version: f.Version, Buckets: f.Buckets, Coverage: cov})
+	} else {
+		payload, err = json.Marshal(f.Buckets)
+	}
 	if err != nil {
 		return fmt.Errorf("sidx: checksum marshal: %w", err)
 	}
@@ -497,8 +547,29 @@ func (s *SecondaryIndex) Load(path string) error {
 	s.reverse = freshRev
 	s.kind = kind
 	s.sorted = buildSorted(fresh, kind)
+	s.coverage = f.Coverage
+	s.coverageKnown = f.Version == sidxFormatV2
 	s.mu.Unlock()
 	return nil
+}
+
+// replay applies seg's records from byte offset from onto the index in log
+// order: inserts/updates move the id to its new value (or drop it when the
+// field is absent), deletes remove it. Last writer wins, matching rebuild.
+func (s *SecondaryIndex) replay(seg *Segment, from int64) error {
+	return seg.ScanFromOffset(from, func(_ int64, e store.Entry) error {
+		switch e.Op {
+		case store.OpInsert, store.OpUpdate:
+			if val, ok := e.Data[s.field]; ok {
+				s.update(e.ID, val)
+			} else {
+				s.remove(e.ID)
+			}
+		case store.OpDelete:
+			s.remove(e.ID)
+		}
+		return nil
+	})
 }
 
 // inferKind guesses a homogeneous kind from bucket keys: numeric if every key

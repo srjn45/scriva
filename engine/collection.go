@@ -267,6 +267,8 @@ type Collection struct {
 	indexReplays      atomic.Int64
 	indexReplayBytes  atomic.Int64
 	spotCheckFailures atomic.Int64
+	sidxReplays       atomic.Int64
+	sidxRebuilds      atomic.Int64
 	closeOnce         sync.Once
 	closed            chan struct{}
 
@@ -541,20 +543,12 @@ func (c *Collection) load() error {
 			field := base[len("sidx_") : len(base)-len(".json")]
 			// Load() restores the persisted unique flag; false is a placeholder.
 			sidx := newSecondaryIndex(field, false)
-			if err := sidx.Load(p); err != nil {
-				// stale/corrupt — rebuild from segments
-				if rbErr := sidx.rebuild(all); rbErr != nil {
-					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
-				}
-				_ = sidx.Persist(p)
-			} else if rebuilt {
-				// The primary index had to be rebuilt, so this checksum-valid
-				// sidx may equally describe the pre-crash layout. Rebuild it
-				// from the same segments (Load already restored its unique flag).
-				if rbErr := sidx.rebuild(all); rbErr != nil {
-					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
-				}
-				_ = sidx.Persist(p)
+			changed, rbErr := c.recoverSecondary(sidx, p, all, swapRecovered)
+			if rbErr != nil {
+				return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+			}
+			if changed {
+				_ = persistSecondary(sidx, p, all)
 			}
 			c.sidxMap[field] = sidx
 		}
@@ -1468,7 +1462,7 @@ func (c *Collection) Close() error {
 	}
 	c.sidxMu.RLock()
 	for field, sidx := range c.sidxMap {
-		_ = sidx.Persist(sidxFilePath(c.dir, field))
+		_ = sidx.PersistWithCoverage(sidxFilePath(c.dir, field), snap.coverage)
 	}
 	c.sidxMu.RUnlock()
 	return persistMeta(filepath.Join(c.dir, metaFilename),
@@ -1607,12 +1601,14 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	c.sidxMap[field] = sidx
 	c.sidxMu.Unlock()
 
-	// Rebuild under collection read lock so we get a consistent snapshot.
-	c.mu.RLock()
+	// Rebuild and persist under the collection write lock: the coverage
+	// recorded with the file must describe exactly the segment bytes the
+	// buckets were built from, so no write may land in between.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
-	c.mu.RUnlock()
 
 	if err := sidx.rebuild(all); err != nil {
 		c.sidxMu.Lock()
@@ -1620,7 +1616,7 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 		c.sidxMu.Unlock()
 		return fmt.Errorf("collection: ensure index %q: %w", field, err)
 	}
-	return sidx.Persist(sidxFilePath(c.dir, field))
+	return persistSecondary(sidx, sidxFilePath(c.dir, field), all)
 }
 
 // DropIndex removes the secondary index for field and deletes its file.
