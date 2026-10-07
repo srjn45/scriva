@@ -356,6 +356,7 @@ map[uint64]IndexEntry{
 - Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and the SHA-256 of those bytes. The checksum covers version, entries and coverage. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
 - Loaded on startup and **validated against the segments, never trusted** (see below); rebuilt from segment scans if the checksum fails
 - Rebuilt after compaction (offsets change)
+- Compaction is deterministic (resolved records are written in id order), reuses the replaced segments' names in order (aborting before the swap if the output would need more segments than the input), discards stale `.compact_*` temps before each pass, fsyncs the renames before unlinking old segments, and rebuilds + snapshots the secondary indexes under the same write lock as the swap so no concurrent write can be lost. Primary and secondary indexes are then persisted with v2 coverage of the new layout before the swap manifest is retired. A swap that fails after the first rename blocks further passes until reopen, where `recoverCompaction` rolls it forward.
 
 ### Load-time validation and tail replay
 

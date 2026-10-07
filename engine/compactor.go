@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/srjn45/scriva/store"
@@ -81,6 +83,12 @@ func (c *Collection) compact(force bool) error {
 	if c.closeDone {
 		return nil
 	}
+	// A swap that failed midway left segment files and the in-memory layout
+	// out of step; only a reopen (recoverCompaction + index rebuild) can
+	// reconcile them, so refuse to start another pass on top of it.
+	if c.swapFailed {
+		return fmt.Errorf("compactor: collection %q has an incomplete swap; reopen to recover", c.name)
+	}
 
 	start := time.Now()
 
@@ -119,9 +127,25 @@ func (c *Collection) compact(force bool) error {
 	}
 
 	// --- Step 4: Write resolved entries into temp segment files (not yet renamed) ---
+	// Temps left by an earlier failed pass are never needed (a swap that got as
+	// far as the manifest sets swapFailed instead) and must go: segment files
+	// are opened in append mode, so reusing a stale temp name would splice old
+	// bytes into the new segment.
+	if err := discardCompactTemps(c.dir); err != nil {
+		return fmt.Errorf("compactor: %w", err)
+	}
 	tempSegs, err := c.writeCompacted(resolved)
 	if err != nil {
+		_ = discardCompactTemps(c.dir)
 		return fmt.Errorf("compactor: write compacted: %w", err)
+	}
+	// Output segments take the names of the segments they replace, in order, so
+	// they stay older than every segment rotated in meanwhile and than the
+	// active one. More output segments than inputs would need names that do not
+	// exist below the newer segments; fail before touching anything.
+	if len(tempSegs) > len(toCompact) {
+		_ = discardCompactTemps(c.dir)
+		return fmt.Errorf("compactor: compacted output (%d segments) exceeds input (%d); aborting before swap", len(tempSegs), len(toCompact))
 	}
 	// Nothing survived (all deletes) — still need to swap under lock.
 
@@ -132,13 +156,10 @@ func (c *Collection) compact(force bool) error {
 	// is rolled forward idempotently by recoverCompaction at the next open.
 	renames := make(map[string]string, len(tempSegs))
 	finals := make(map[string]struct{}, len(tempSegs))
+	finalPaths := make([]string, len(tempSegs))
 	for i, seg := range tempSegs {
-		var final string
-		if i < len(toCompact) {
-			final = toCompact[i].Path()
-		} else {
-			final = c.segmentPath(c.segSeq.Add(1))
-		}
+		final := toCompact[i].Path()
+		finalPaths[i] = final
 		renames[seg.Path()] = final
 		finals[final] = struct{}{}
 	}
@@ -149,6 +170,8 @@ func (c *Collection) compact(force bool) error {
 		}
 	}
 	if err := writeCompactManifest(c.dir, compactManifest{Renames: renames, Removals: removals}); err != nil {
+		_ = discardCompactTemps(c.dir)
+		_ = clearCompactManifest(c.dir)
 		return fmt.Errorf("compactor: write manifest: %w", err)
 	}
 
@@ -165,8 +188,19 @@ func (c *Collection) compact(force bool) error {
 	// of the sealed data sat in temp files an open would never discover.
 	var newSegs []*Segment
 	for i, seg := range tempSegs {
-		finalPath := c.segmentPath(uint64(i + 1))
+		finalPath := finalPaths[i]
 		if err := doRename(c.cfg.renameFn, seg.Path(), finalPath); err != nil {
+			// Earlier renames already replaced old segments, so the layout can
+			// only move forward: the manifest stays and the next open rolls it.
+			if i == 0 {
+				// Nothing was replaced yet: abandon the pass and keep serving
+				// the untouched old layout.
+				c.mu.Unlock()
+				_ = discardCompactTemps(c.dir)
+				_ = clearCompactManifest(c.dir)
+				return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
+			}
+			c.swapFailed = true
 			c.mu.Unlock()
 			return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
 		}
@@ -176,6 +210,13 @@ func (c *Collection) compact(force bool) error {
 			size = info.Size()
 		}
 		newSegs = append(newSegs, openSealedSegment(finalPath, size))
+	}
+	// Make the renames durable before any old segment is unlinked, so a crash
+	// cannot persist the removals without the replacements.
+	if err := fsyncDir(c.dir); err != nil {
+		c.swapFailed = true
+		c.mu.Unlock()
+		return fmt.Errorf("compactor: fsync dir after rename: %w", err)
 	}
 	for _, p := range removals {
 		_ = os.Remove(p)
@@ -195,14 +236,34 @@ func (c *Collection) compact(force bool) error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 	if err := c.index.Rebuild(all); err != nil {
+		c.swapFailed = true
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: rebuild index: %w", err)
 	}
 	snap, err := c.index.Snapshot(all)
 	if err != nil {
+		c.swapFailed = true
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: snapshot index: %w", err)
 	}
+
+	// Rebuild every secondary index and snapshot its buckets under the same
+	// write lock. Rebuilding after the unlock left a window in which a write
+	// landing between the segment scan and the bucket replacement was dropped
+	// from the index; here no write can interleave, and the snapshot's buckets
+	// match snap.coverage exactly.
+	c.sidxMu.RLock()
+	sidxSnaps := make(map[string]*sidxSnapshot, len(c.sidxMap))
+	for field, sidx := range c.sidxMap {
+		if err := sidx.rebuild(all); err != nil {
+			c.sidxMu.RUnlock()
+			c.swapFailed = true
+			c.mu.Unlock()
+			return fmt.Errorf("compactor: rebuild secondary index %q: %w", field, err)
+		}
+		sidxSnaps[field] = sidx.snapshot()
+	}
+	c.sidxMu.RUnlock()
 
 	c.mu.Unlock()
 
@@ -220,26 +281,23 @@ func (c *Collection) compact(force bool) error {
 		c.cfg.preSidxRebuildHook()
 	}
 
-	// Rebuild and persist every secondary index from the new segment layout.
-	c.sidxMu.RLock()
-	sidxCopy := make(map[string]*SecondaryIndex, len(c.sidxMap))
-	for f, s := range c.sidxMap {
-		sidxCopy[f] = s
+	// Persist each secondary index with the coverage of the swapped layout (v2),
+	// so open can trust it and tail-replay anything written afterwards. As with
+	// the primary, a failure leaves the manifest so the next open rebuilds.
+	c.persistMu.Lock()
+	c.sidxMu.RLock() // excludes DropIndex so a dropped index's file isn't resurrected
+	for field, sn := range sidxSnaps {
+		if _, live := c.sidxMap[field]; !live {
+			continue
+		}
+		if err := sn.write(sidxFilePath(c.dir, field), snap.coverage, true); err != nil {
+			c.sidxMu.RUnlock()
+			c.persistMu.Unlock()
+			return fmt.Errorf("compactor: persist secondary index %q: %w", field, err)
+		}
 	}
 	c.sidxMu.RUnlock()
-
-	c.mu.RLock()
-	allSegs := make([]*Segment, 0, len(c.sealed)+1)
-	allSegs = append(allSegs, c.sealed...)
-	allSegs = append(allSegs, c.active)
-	c.mu.RUnlock()
-
-	for field, sidx := range sidxCopy {
-		if err := sidx.rebuild(allSegs); err != nil {
-			return fmt.Errorf("compactor: rebuild secondary index %q: %w", field, err)
-		}
-		_ = sidx.Persist(sidxFilePath(c.dir, field))
-	}
+	c.persistMu.Unlock()
 
 	// The on-disk layout and indexes are consistent again — retire the intent.
 	if err := clearCompactManifest(c.dir); err != nil {
@@ -396,13 +454,16 @@ func resolveEntries(segs []*Segment) ([]store.Entry, error) {
 	}
 
 	now := time.Now().UnixNano()
-	var out []store.Entry
+	out := make([]store.Entry, 0, len(latest))
 	for _, e := range latest {
 		if e.Op == store.OpDelete || expired(e.ExpiresAt, now) {
 			continue
 		}
 		out = append(out, e)
 	}
+	// Map iteration order is random; emit by id so the same input always yields
+	// byte-identical output segments (and a reproducible rebalance).
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
@@ -455,7 +516,7 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 
 	// Rebalance: merge segments that are below 10% of target size into the
 	// previous segment where possible.
-	segs, err = rebalance(segs, c.cfg.SegmentMaxSize)
+	segs, err = rebalance(segs, c.cfg.SegmentMaxSize, c.cfg.wrapFile)
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +527,7 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 
 // rebalance merges adjacent segments whose combined size fits within maxSize
 // and whose individual sizes are below 10% of maxSize.
-func rebalance(segs []*Segment, maxSize int64) ([]*Segment, error) {
+func rebalance(segs []*Segment, maxSize int64, wrap fileWrapper) ([]*Segment, error) {
 	minSize := maxSize / 10
 	if len(segs) <= 1 {
 		return segs, nil
@@ -485,7 +546,7 @@ func rebalance(segs []*Segment, maxSize int64) ([]*Segment, error) {
 		// Try to merge s with the next segment.
 		next := segs[i+1]
 		if s.Size()+next.Size() <= maxSize {
-			merged, err := mergeSegments(s, next)
+			merged, err := mergeSegments(s, next, wrap)
 			if err != nil {
 				return nil, err
 			}
@@ -502,9 +563,13 @@ func rebalance(segs []*Segment, maxSize int64) ([]*Segment, error) {
 }
 
 // mergeSegments writes all entries from a and b into a new temp file.
-func mergeSegments(a, b *Segment) (*Segment, error) {
+func mergeSegments(a, b *Segment, wrap fileWrapper) (*Segment, error) {
 	tmpPath := a.Path() + ".merge"
-	merged, err := openActiveSegment(tmpPath)
+	// Start from nothing: a stale file here would be appended to.
+	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	merged, err := openActiveSegmentWith(tmpPath, wrap)
 	if err != nil {
 		return nil, err
 	}

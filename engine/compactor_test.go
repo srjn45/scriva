@@ -169,7 +169,7 @@ func TestRebalance_MergesTinySegments(t *testing.T) {
 	b := mkSeg("b.ndjson", []store.Entry{store.NewInsert(2, map[string]any{"x": 2})})
 
 	// Both segments are tiny vs a 4 MB max — rebalancer should merge them.
-	result, err := rebalance([]*Segment{a, b}, 4*1024*1024)
+	result, err := rebalance([]*Segment{a, b}, 4*1024*1024, nil)
 	if err != nil {
 		t.Fatalf("rebalance: %v", err)
 	}
