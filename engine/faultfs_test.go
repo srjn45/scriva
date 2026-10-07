@@ -62,6 +62,7 @@ type faultFS struct {
 	injected int // faults fired (failed write/sync/rename; not crashes)
 
 	files []segFile // real files, so tests can release fds after a crash
+	trace []string  // op name of every counted step, in order
 }
 
 func newFaultFS() *faultFS { return &faultFS{crashAt: -1, ops: map[string]int{}} }
@@ -142,6 +143,16 @@ func (f *faultFS) kill() {
 	f.mu.Unlock()
 }
 
+// opAt returns the op name of the i-th (0-based) counted step, or "end".
+func (f *faultFS) opAt(i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.trace) {
+		return "end"
+	}
+	return f.trace[i]
+}
+
 // begin registers one op. It returns the fault to inject (nil = proceed) and,
 // for writes, whether this is the faulty write.
 func (f *faultFS) begin(op string) (err error, hit bool) {
@@ -155,6 +166,7 @@ func (f *faultFS) begin(op string) (err error, hit bool) {
 		return errCrash, false
 	}
 	f.steps++
+	f.trace = append(f.trace, op)
 	f.ops[op]++
 	n := f.ops[op]
 	switch {
