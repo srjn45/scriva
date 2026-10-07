@@ -260,6 +260,9 @@ type Collection struct {
 	// channel, which tests close directly just to stop the background goroutine
 	// while still driving compact() by hand.
 	closeDone bool
+	// swapFailed records a compaction swap that failed after mutating segment
+	// files. Guarded by compactMu; cleared only by reopening.
+	swapFailed bool
 	// indexRebuilds counts full primary-index rebuilds performed by load()
 	// (test-visible: asserts a clean reopen reuses the persisted index).
 	indexRebuilds atomic.Int64
