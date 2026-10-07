@@ -161,7 +161,7 @@ func cmVerify(t *testing.T, db *DB, dir string, r *cmRun, allowBad bool) {
 		p := r.pend
 		switch {
 		case p != nil && p.id == id && p.kind == "update":
-			if !ok || !(sameData(got, p.old) || sameData(got, p.new)) {
+			if !ok || (!sameData(got, p.old) && !sameData(got, p.new)) {
 				t.Errorf("id %d: want old %v or in-flight new %v, got %v (present=%v)", id, p.old, p.new, got, ok)
 			}
 		case p != nil && p.id == id && p.kind == "delete":
