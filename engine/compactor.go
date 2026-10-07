@@ -187,6 +187,8 @@ func (c *Collection) compact(force bool) error {
 	}
 
 	c.sealed = newSegs
+	// Segment files were replaced: memoized sealed coverage is invalid.
+	clear(c.sealedCov)
 
 	// Rebuild the index from new segments + active.
 	all := make([]*Segment, 0, len(c.sealed)+1)
@@ -207,7 +209,10 @@ func (c *Collection) compact(force bool) error {
 	// Persist updated primary index. On failure the manifest is deliberately
 	// left in place so the next open rebuilds from the segments instead of
 	// trusting a stale index.
-	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+	c.persistMu.Lock()
+	err = snap.Persist(filepath.Join(c.dir, "index.json"))
+	c.persistMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("compactor: persist index: %w", err)
 	}
 

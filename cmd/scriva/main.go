@@ -104,6 +104,8 @@ func serveCmd() *cobra.Command {
 						merged.SyncMode = cfg.SyncMode
 					case "sync-interval":
 						merged.SyncInterval = cfg.SyncInterval
+					case "index-persist-interval":
+						merged.IndexPersistInterval = cfg.IndexPersistInterval
 					case "tx-timeout":
 						merged.TxTimeout = cfg.TxTimeout
 					case "default-ttl":
@@ -166,6 +168,7 @@ func serveCmd() *cobra.Command {
 	f.Float64Var(&cfg.CompactDirtyPct, "compact-dirty", cfg.CompactDirtyPct, "Dirty ratio threshold to trigger compaction (0–1)")
 	f.StringVar(&cfg.SyncMode, "sync", cfg.SyncMode, "Durability mode: none (OS flush), always (fsync per write), interval (fsync on a timer)")
 	f.DurationVar(&cfg.SyncInterval, "sync-interval", cfg.SyncInterval, "Flush cadence when --sync=interval")
+	f.DurationVar(&cfg.IndexPersistInterval, "index-persist-interval", cfg.IndexPersistInterval, "Background index persist cadence bounding crash-recovery replay (negative = disabled)")
 	f.DurationVar(&cfg.TxTimeout, "tx-timeout", cfg.TxTimeout, "Idle timeout before an open transaction is reaped (0 = disabled)")
 	f.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default expiry applied to inserted records (0 = never expire)")
 	f.IntVar(&cfg.WatchBufferSize, "watch-buffer", cfg.WatchBufferSize, "Per-subscriber Watch event buffer; a slow subscriber gets an overflow signal once full")

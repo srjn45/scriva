@@ -181,11 +181,30 @@ func (idx *Index) Coverage() []SegmentCoverage {
 // Snapshot copies the entries and captures coverage for segs. Callers must hold
 // the lock that stops writes to segs so the coverage matches the entries.
 func (idx *Index) Snapshot(segs []*Segment) (*IndexSnapshot, error) {
+	return idx.snapshotCached(segs, nil, nil)
+}
+
+// snapshotCached is Snapshot for a periodic persister: coverage of sealed
+// (immutable) segments is memoized in cache keyed by path and size, so a
+// steady-state persist hashes only the bounded active segment instead of the
+// whole data set. segs must list sealed segments followed by the active one;
+// only the entries of segs that are in sealed are cached. A nil cache disables
+// caching. The cache must be cleared whenever sealed segment files are replaced.
+func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cache map[string]SegmentCoverage) (*IndexSnapshot, error) {
 	cov := make([]SegmentCoverage, 0, len(segs))
 	for _, seg := range segs {
+		if cache != nil && sealed[seg] {
+			if c, ok := cache[seg.Path()]; ok && c.Size == seg.Size() {
+				cov = append(cov, c)
+				continue
+			}
+		}
 		c, err := captureCoverage(seg)
 		if err != nil {
 			return nil, err
+		}
+		if cache != nil && sealed[seg] {
+			cache[seg.Path()] = c
 		}
 		cov = append(cov, c)
 	}
