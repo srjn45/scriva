@@ -352,8 +352,8 @@ map[uint64]IndexEntry{
 ```
 
 - Updated on every write (same write lock scope)
-- Persisted to `index.json` with a SHA-256 checksum on every close, on every segment rotation, after every compaction, and by a background goroutine every `--index-persist-interval` (default 30s; negative disables the timer). Each persist fsyncs the active segment first so coverage never claims bytes a crash could lose, and secondary indexes (`sidx_*.json`) are written in the same pass. Sealed-segment coverage hashes are memoized, so the work done under the read lock is bounded by the active segment size. All writers of these files serialize on one mutex, and `Close()` stops and waits for the background persister before writing the final index.
-- Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and the SHA-256 of those bytes. The checksum covers version, entries and coverage. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
+- Persisted to `index.json` with a SHA-256 checksum on every close, after every compaction, when a segment rotation *requests* one, and by a background goroutine every `--index-persist-interval` (default 30s; negative disables the timer). Each persist fsyncs the active segment first so coverage never claims bytes a crash could lose, and secondary indexes (`sidx_*.json`) are written in the same pass. Rotation-requested persists are debounced: they coalesce and run no more often than `CollectionConfig.IndexPersistMinInterval` (default 10s) nor more than once per 4x the previous pass's duration, so a write burst never re-encodes the whole index per 4 MiB segment; Close and compaction always persist. Sealed-segment coverage is memoized and cheap (below), so the work done under the read lock is bounded by the active segment size. All writers of these files serialize on one mutex, and `Close()` stops and waits for the background persister before writing the final index.
+- Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and a fingerprint of those bytes: the segment that was active at capture time records the full SHA-256, while sealed (immutable) segments record only `tail`, the SHA-256 of their last 64 KiB, so persisting and re-validating cost O(segments) rather than O(bytes). Files written without `tail` (older v2) are still verified by the full hash. A length or fingerprint mismatch forces a rebuild, and the bounded identity spot-check always runs; sealed-segment bytes *before* the tail are covered only by that spot-check. The checksum covers version, entries and coverage and is computed over the exact bytes written, so `Load` verifies it without re-marshalling the index. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
 - Loaded on startup and **validated against the segments, never trusted** (see below); rebuilt from segment scans if the checksum fails
 - Rebuilt after compaction (offsets change)
 - Compaction is deterministic (resolved records are written in id order), reuses the replaced segments' names in order (aborting before the swap if the output would need more segments than the input), discards stale `.compact_*` temps before each pass, fsyncs the renames before unlinking old segments, and rebuilds + snapshots the secondary indexes under the same write lock as the swap so no concurrent write can be lost. Primary and secondary indexes are then persisted with v2 coverage of the new layout before the swap manifest is retired. A swap that fails after the first rename blocks further passes until reopen, where `recoverCompaction` rolls it forward.
@@ -823,24 +823,25 @@ cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that windo
 
 ### Recovery cost and performance guardrails
 
-Measured with `engine/bench_*_test.go` (1,000,000 records of ~170 B, 4 MiB
-segments, `SyncModeNone`, Intel i7-7700HQ, tmpfs-class `/tmp`; wall time per
-`OpenCollection`). Baseline is `main` before the integrity work (`f643158`).
-Reproduce: `SCRIVA_BENCH_N=1000000 go test ./engine -run xxx -bench 'Open|Persist' -benchtime=3x`.
+Measured with `engine/bench_*_test.go` (300,000 records of ~170 B, 4 MiB
+segments, `SyncModeNone`, Intel i7-7700HQ; wall time per `OpenCollection`;
+medians of 3 alternating runs of compiled test binaries on a noisy shared host).
+"Baseline" is `main` before the integrity work (`f643158`); "Before" is the
+integration branch before the perf fix; "Now" includes it.
+Reproduce: `SCRIVA_BENCH_N=300000 go test ./engine -run xxx -bench 'Open|Persist' -benchtime=2x`.
 
-| Scenario | Baseline | Now | Notes |
-|---|---|---|---|
-| Clean reopen (valid v2 coverage) | 3.9 s | 4.8 s | +~21%: coverage validation + spot checks |
-| Crash reopen, tail of 1k / 10k records | n/a (stale index trusted silently) | 11.2 s / 9.6 s | tail replay plus full coverage verification of sealed segments |
-| v1 index upgrade (one-time rebuild) | n/a | 24.7 s | rewritten as v2; next open is a clean reopen |
-| One index persist pass (1M entries) | n/a | 7.7 s | background goroutine; writers are not blocked (max concurrent insert latency 31 µs) |
+| Scenario | Baseline | Before | Now | Notes |
+|---|---|---|---|---|
+| Clean reopen (valid v2 coverage) | 1.21 s | 1.37 s | 0.94 s | sealed segments validated by length + tail fingerprint; index checksum verified without re-marshalling |
+| Crash reopen, tail of 1k / 10k records | n/a (stale index trusted silently) | 3.7 s / 3.8 s | 0.93 s / 0.96 s | clean open + O(tail); a replayed index is persisted by the background persister, not synchronously on open |
+| v1 index upgrade (one-time rebuild) | n/a | see `BenchmarkOpenV1Upgrade` | unchanged | rewritten as v2; next open is a clean reopen |
+| One index persist pass | n/a | O(data) hashing + 2 marshals | O(segments) hashing + 1 marshal | background goroutine; writers are not blocked |
 
-Write path (`Insert`/`Update`/`Delete`, per `SyncMode`): the success path issues
-exactly the same syscalls as before (one `write` and, for `always`, one `fsync`
-per operation; verified with `strace -c`). Measured CPU cost is within noise
-for `Update` and about +11-13% for `Insert`/`Delete` in sustained benchmarks;
-the extra work is the background index persist triggered on every 4 MiB segment
-rotation (see below), not the append itself.
+Write path (`Insert`/`Delete`, `none`/`interval`, ns/op medians): `Insert`
+36.0 µs baseline, 64.9 µs before, 38.7 µs now; `Delete` 16.4 µs / 15.3 µs /
+17.2 µs. The success path issues exactly the same syscalls as before. Rotation
+only *requests* a persist, which is debounced (see above), so the full-index
+encode no longer runs every ~25k inserts.
 
 ---
 

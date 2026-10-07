@@ -597,11 +597,15 @@ func (c *Collection) load() error {
 	// Validate the persisted index against the segments (tail replay or full
 	// rebuild); see recoverIndex.
 	indexPath := filepath.Join(c.dir, "index.json")
-	rebuilt, err := c.recoverIndex(all, indexPath, swapRecovered)
+	rebuildsBefore := c.indexRebuilds.Load()
+	changed, err := c.recoverIndex(all, indexPath, swapRecovered)
 	if err != nil {
 		return err
 	}
-	if rebuilt {
+	// Only a full rebuild is worth persisting synchronously. A tail replay is
+	// O(tail) to redo, and the background persister (timer, rotation, Close)
+	// writes the result off the open path.
+	if changed && c.indexRebuilds.Load() != rebuildsBefore {
 		if snap, snErr := c.index.Snapshot(all); snErr == nil {
 			_ = snap.Persist(indexPath)
 		}
@@ -615,11 +619,12 @@ func (c *Collection) load() error {
 			field := base[len("sidx_") : len(base)-len(".json")]
 			// Load() restores the persisted unique flag; false is a placeholder.
 			sidx := newSecondaryIndex(field, false)
+			sidxRebuildsBefore := c.sidxRebuilds.Load()
 			changed, rbErr := c.recoverSecondary(sidx, p, all, swapRecovered)
 			if rbErr != nil {
 				return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
 			}
-			if changed {
+			if changed && c.sidxRebuilds.Load() != sidxRebuildsBefore {
 				_ = persistSecondary(sidx, p, all)
 			}
 			c.sidxMap[field] = sidx
