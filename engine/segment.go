@@ -214,7 +214,7 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 		// write certainly has). Always restore the known-good boundary. If that
 		// fails the tail is unknown, so poison instead of appending after it.
 		if terr := s.rollbackLocked(s.size); terr != nil {
-			return 0, fmt.Errorf("segment: write %q: %w (rollback: %v)", s.path, err, terr)
+			return 0, fmt.Errorf("segment: write %q: %w (rollback: %w)", s.path, err, terr)
 		}
 		return 0, fmt.Errorf("segment: write %q: %w", s.path, err)
 	}

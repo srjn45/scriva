@@ -861,7 +861,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			rollbackErr := c.rollbackBatchLocked(startSize, ids[:i], nil)
 			c.mu.Unlock()
 			if rollbackErr != nil {
-				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
 			}
 			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 		}
@@ -872,7 +872,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 		rollbackErr := c.rollbackBatchLocked(startSize, ids, nil)
 		c.mu.Unlock()
 		if rollbackErr != nil {
-			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
 		}
 		return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 	}
@@ -1417,7 +1417,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
@@ -1449,7 +1449,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: update id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: update id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
@@ -1465,7 +1465,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
 			}
@@ -1480,7 +1480,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 		c.mu.Unlock()
 		if rollbackErr != nil {
-			return fmt.Errorf("tx commit: sync: %w (rollback: %v)", err, rollbackErr)
+			return fmt.Errorf("tx commit: sync: %w (rollback: %w)", err, rollbackErr)
 		}
 		return fmt.Errorf("tx commit: sync: %w", err)
 	}
@@ -1678,6 +1678,13 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	if enc := c.enc.Load(); enc != nil && enc.isEncryptedField(field) {
 		return fmt.Errorf("%w: cannot index encrypted field %q", crypto.ErrFieldEncrypted, field)
 	}
+	// Register, rebuild and persist under the collection write lock: the
+	// coverage recorded with the file must describe exactly the segment bytes
+	// the buckets were built from, so no write may land in between — and no
+	// snapshot taken under c.mu (Verify) may observe the index registered but
+	// not yet built. Lock order is mu → sidxMu, as on the write path.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.sidxMu.Lock()
 	if _, exists := c.sidxMap[field]; exists {
 		c.sidxMu.Unlock()
@@ -1687,11 +1694,6 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	c.sidxMap[field] = sidx
 	c.sidxMu.Unlock()
 
-	// Rebuild and persist under the collection write lock: the coverage
-	// recorded with the file must describe exactly the segment bytes the
-	// buckets were built from, so no write may land in between.
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)

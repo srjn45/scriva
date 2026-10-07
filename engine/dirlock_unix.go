@@ -42,3 +42,25 @@ func (l *dirLock) unlockOS() error {
 	}()
 	return unix.Flock(int(f.Fd()), unix.LOCK_UN)
 }
+
+// probeDirLockOS reports whether another holder has the directory LOCK,
+// without creating the file or taking ownership: a missing LOCK is "not held",
+// and a shared non-blocking flock conflicts only with an exclusive holder.
+func probeDirLockOS(dir string) (bool, error) {
+	f, err := os.Open(filepath.Join(dir, "LOCK"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return true, nil
+		}
+		return false, err
+	}
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	return false, nil
+}
