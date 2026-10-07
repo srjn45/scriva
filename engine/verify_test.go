@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -453,7 +452,7 @@ func TestVerifyFileSetFindings(t *testing.T) {
 	for name, content := range map[string]string{
 		".compact_000001.ndjson": "x",
 		"seg_000009.ndjson.bak":  "x",
-		"seg_abc.ndjson":         "x",
+		"seg_000009.old":         "x",
 		"index.json.tmp":         "x",
 	} {
 		if err := os.WriteFile(filepath.Join(colDir, name), []byte(content), 0o644); err != nil {
@@ -679,17 +678,13 @@ func TestVerifyOnlineConcurrentWrites(t *testing.T) {
 	if err := col.EnsureIndex("g"); err != nil {
 		t.Fatal(err)
 	}
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// The writer is bounded so the data set (and each full pass over it) cannot
+	// grow without limit while the verifier runs.
+	const writes = 1500
+	done := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		defer close(done)
+		for i := 0; i < writes; i++ {
 			id, _, err := col.Insert(map[string]any{"g": i % 7, "pad": strings.Repeat("p", 64)})
 			if err != nil {
 				return
@@ -702,22 +697,137 @@ func TestVerifyOnlineConcurrentWrites(t *testing.T) {
 			}
 		}
 	}()
-	for i := 0; i < 15; i++ {
+	check := func(i int) {
 		rep, err := db.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
 		if err != nil {
+			<-done
 			t.Fatal(err)
 		}
 		if !rep.Clean() {
-			close(stop)
-			wg.Wait()
+			<-done
 			t.Fatalf("online verify under writes found %+v", rep.AllFindings())
 		}
 		if i%4 == 0 {
 			_ = col.CompactNow()
 		}
 	}
-	close(stop)
-	wg.Wait()
+	for i, running := 0, true; running; i++ {
+		select {
+		case <-done:
+			running = false
+		default:
+		}
+		check(i)
+	}
+}
+
+// A crash mid-swap leaves compacted and superseded segments side by side. The
+// verifier must read the layout open will roll forward to, not misreport the
+// superseded history as conflicting writers.
+func TestVerifyPendingManifestIsNotAConflict(t *testing.T) {
+	dir := t.TempDir()
+	colDir := filepath.Join(dir, "c")
+	if err := os.MkdirAll(colDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := func(op store.Op, id, rev uint64, v int) []byte {
+		e := store.Entry{Op: op, ID: id, Rev: rev, Ts: time.Unix(1, 0).UTC()}
+		if op != store.OpDelete {
+			e.Data = map[string]any{"v": v}
+		}
+		return encodeEntry(t, e)
+	}
+	write := func(name string, lines ...[]byte) {
+		var b []byte
+		for _, l := range lines {
+			b = append(b, l...)
+		}
+		if err := os.WriteFile(filepath.Join(colDir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Old sealed layout: id 1 written three times, id 2 inserted then deleted.
+	write("seg_000001.ndjson", line(store.OpInsert, 1, 1, 1), line(store.OpInsert, 2, 1, 1))
+	write("seg_000002.ndjson", line(store.OpUpdate, 1, 2, 2), line(store.OpDelete, 2, 0, 0))
+	write("seg_000003.ndjson", line(store.OpUpdate, 1, 3, 3))
+	write("seg_000004.ndjson") // active
+	// The swap renamed the compacted temp over seg_000001 and crashed before
+	// replacing seg_000002 and removing seg_000003.
+	write("seg_000001.ndjson", line(store.OpInsert, 1, 3, 3))
+	write(".compact_000002.ndjson")
+	m := compactManifest{
+		Renames: map[string]string{
+			filepath.Join(colDir, ".compact_000001.ndjson"): filepath.Join(colDir, "seg_000001.ndjson"),
+			filepath.Join(colDir, ".compact_000002.ndjson"): filepath.Join(colDir, "seg_000002.ndjson"),
+		},
+		Removals: []string{filepath.Join(colDir, "seg_000003.ndjson")},
+	}
+	b, _ := json.Marshal(m)
+	if err := os.WriteFile(compactManifestPath(colDir), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDir(t, dir)
+	cr := verifyCol(t, dir, VerifyFull)
+	wantCodes(t, cr, CodeManifestPending)
+	for _, f := range cr.Findings {
+		if f.Severity.rank() > SeverityRepairableIndex.rank() || f.Code == CodeLeftoverTempFile {
+			t.Fatalf("interrupted swap misreported: %+v", f)
+		}
+	}
+	if cr.Stats.LiveRecords != 1 || cr.Stats.Entries != 1 {
+		t.Fatalf("want the rolled-forward view (1 entry, 1 live), got %+v", cr.Stats)
+	}
+	if snapshotDir(t, dir) != before {
+		t.Fatal("verify modified the directory")
+	}
+}
+
+// Open globs seg_*.ndjson, so a segment-shaped file without a number is real
+// input to the engine: it must be scanned and flagged, not skipped.
+func TestVerifyUnnumberedSegmentIsRead(t *testing.T) {
+	dir := t.TempDir()
+	seedClosed(t, dir, vcfg, 3)
+	colDir := filepath.Join(dir, "c")
+	stray := encodeEntry(t, store.Entry{Op: store.OpInsert, ID: 99, Rev: 1, Ts: time.Unix(1, 0).UTC(), Data: map[string]any{"v": 1}})
+	if err := os.WriteFile(filepath.Join(colDir, "seg_abc.ndjson"), stray, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cr := verifyCol(t, dir, VerifyFull)
+	wantCodes(t, cr, CodeOrphanSegmentFile, CodeIndexSegmentUnlisted, CodeIndexMissingRecord)
+}
+
+// A segment file the open handle does not know about would be replayed by the
+// next open; an online check reports it.
+func TestVerifyOnlineForeignSegment(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, CollectionConfig{CompactInterval: time.Hour, SegmentMaxSize: 150})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	col, _ := db.CreateCollection("c")
+	for i := 0; i < 12; i++ {
+		if _, _, err := col.Insert(map[string]any{"v": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := col.Verify(context.Background(), VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Has(CodeOrphanSegmentFile) {
+		t.Fatalf("unexpected orphan: %+v", rep.AllFindings())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c", "seg_000000.ndjson"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = col.Verify(context.Background(), VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Has(CodeOrphanSegmentFile) {
+		t.Fatalf("foreign segment not reported: %+v", rep.AllFindings())
+	}
 }
 
 func TestVerifyContextCancelled(t *testing.T) {
@@ -743,4 +853,169 @@ func TestVerifyClosedCollection(t *testing.T) {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func TestVerifyBadRegionAndDanglingEntry(t *testing.T) {
+	dir := t.TempDir()
+	seedClosed(t, dir, vcfg, 4)
+	colDir := filepath.Join(dir, "c")
+	segs := colSegs(t, colDir)
+	// A complete line that is not a record, in the middle of the data.
+	appendRaw(t, segs[0].Path(), []byte("this is not a record\n"))
+	appendRaw(t, segs[0].Path(), encodeEntry(t, store.Entry{Op: store.OpInsert, ID: 5, Rev: 1, Data: map[string]any{"v": "x"}}))
+	// An index entry for an id no segment has ever held, at a non-record offset.
+	segs = colSegs(t, colDir)
+	ip := filepath.Join(colDir, "index.json")
+	idx := newIndex()
+	if err := idx.Rebuild(segs[:0]); err != nil {
+		t.Fatal(err)
+	}
+	idx.entries[777] = IndexEntry{SegmentPath: segs[0].Path(), Offset: 3, Rev: 1}
+	snap, err := idx.Snapshot(segs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.Persist(ip); err != nil {
+		t.Fatal(err)
+	}
+	cr := verifyCol(t, dir, VerifyFull)
+	wantCodes(t, cr, CodeSegmentBadRegion, CodeIndexDanglingEntry, CodeIndexMissingRecord)
+	if cr.Stats.BadRegions != 1 {
+		t.Fatalf("want 1 bad region, got %d", cr.Stats.BadRegions)
+	}
+	for _, f := range cr.Findings {
+		if f.Code == CodeSegmentBadRegion && f.Severity != SeverityDataCorruption {
+			t.Fatalf("bad region severity = %s", f.Severity)
+		}
+	}
+}
+
+func TestVerifyUnreadableSegmentAndLockProbe(t *testing.T) {
+	dir := t.TempDir()
+	seedClosed(t, dir, vcfg, 3)
+	colDir := filepath.Join(dir, "c")
+	// A dangling symlink is listed as a segment but cannot be opened.
+	if err := os.Symlink(filepath.Join(colDir, "nowhere"), filepath.Join(colDir, "seg_000009.ndjson")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, mode := range []VerifyMode{VerifyQuick, VerifyFull} {
+		cr := verifyCol(t, dir, mode)
+		wantCodes(t, cr, CodeSegmentUnreadable)
+		for _, f := range cr.Findings {
+			if f.Code == CodeSegmentUnreadable && f.Severity != SeverityDataCorruption {
+				t.Fatalf("unreadable segment severity = %s", f.Severity)
+			}
+		}
+	}
+
+	// A LOCK that cannot be opened leaves the ownership state undetermined.
+	lock := filepath.Join(dir, "LOCK")
+	_ = os.Remove(lock)
+	if err := os.Symlink(lock, lock); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	rep, err := VerifyDir(context.Background(), dir, VerifyOptions{Mode: VerifyQuick})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Has(CodeLockProbeFailed) || rep.Has(CodeLockHeld) {
+		t.Fatalf("want lock-probe-failed only, got %v", rep.Codes())
+	}
+}
+
+func TestVerifySecondaryIndexCoverage(t *testing.T) {
+	cfg := CollectionConfig{CompactInterval: time.Hour, SegmentMaxSize: 150}
+	seed := func(t *testing.T) (dir, colDir, p string, s *SecondaryIndex) {
+		t.Helper()
+		dir = t.TempDir()
+		db, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		col, _ := db.CreateCollection("c")
+		for i := 0; i < 12; i++ {
+			if _, _, err := col.Insert(map[string]any{"color": fmt.Sprintf("c%d", i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := col.EnsureIndex("color"); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		colDir = filepath.Join(dir, "c")
+		p = sidxFilePath(colDir, "color")
+		s = newSecondaryIndex("color", false)
+		if err := s.Load(p); err != nil {
+			t.Fatal(err)
+		}
+		wantClean(t, verifyCol(t, dir, VerifyFull))
+		return dir, colDir, p, s
+	}
+	covOf := func(t *testing.T, segs []*Segment) []SegmentCoverage {
+		t.Helper()
+		var cov []SegmentCoverage
+		for _, seg := range segs {
+			cv, err := captureCoverage(seg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cov = append(cov, cv)
+		}
+		return cov
+	}
+	sidxOnly := func(t *testing.T, dir string, code FindingCode) {
+		t.Helper()
+		cr := verifyCol(t, dir, VerifyQuick)
+		wantCodes(t, cr, code)
+		for _, f := range cr.Findings {
+			if f.Code == code && (f.Location.Field != "color" || f.Severity != SeverityRepairableIndex) {
+				t.Fatalf("bad finding %+v", f)
+			}
+		}
+	}
+
+	t.Run("unknown", func(t *testing.T) {
+		dir, _, p, s := seed(t)
+		if err := s.Persist(p); err != nil { // v1: no coverage
+			t.Fatal(err)
+		}
+		sidxOnly(t, dir, CodeSidxCoverageUnknown)
+	})
+	t.Run("mismatch", func(t *testing.T) {
+		dir, colDir, p, s := seed(t)
+		cov := covOf(t, colSegs(t, colDir))
+		cov[0].Checksum = sha256Hex([]byte("other bytes"))
+		if err := s.PersistWithCoverage(p, cov); err != nil {
+			t.Fatal(err)
+		}
+		sidxOnly(t, dir, CodeSidxCoverageMismatch)
+	})
+	t.Run("segment-missing", func(t *testing.T) {
+		dir, colDir, p, s := seed(t)
+		cov := append(covOf(t, colSegs(t, colDir)), SegmentCoverage{Segment: "seg_000999.ndjson", Size: 1, Checksum: "x"})
+		if err := s.PersistWithCoverage(p, cov); err != nil {
+			t.Fatal(err)
+		}
+		sidxOnly(t, dir, CodeSidxCoverageSegmentMissing)
+	})
+	t.Run("stale-tail", func(t *testing.T) {
+		dir, colDir, _, _ := seed(t)
+		segs := colSegs(t, colDir)
+		appendRaw(t, segs[len(segs)-1].Path(), encodeEntry(t, store.Entry{Op: store.OpInsert, ID: 500, Rev: 1, Data: map[string]any{"color": "late"}}))
+		sidxOnly(t, dir, CodeSidxStaleTail)
+		wantCodes(t, verifyCol(t, dir, VerifyFull), CodeSidxStaleTail, CodeSidxMissingEntry)
+	})
+	t.Run("segment-unlisted", func(t *testing.T) {
+		dir, colDir, p, s := seed(t)
+		segs := colSegs(t, colDir)
+		if len(segs) < 3 {
+			t.Fatalf("need >= 3 segments, got %d", len(segs))
+		}
+		if err := s.PersistWithCoverage(p, covOf(t, segs[1:])); err != nil {
+			t.Fatal(err)
+		}
+		sidxOnly(t, dir, CodeSidxSegmentUnlisted)
+	})
 }

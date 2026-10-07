@@ -85,13 +85,29 @@ func listDirFindings(dir string, in *verifyInput, sink *findingSink, online bool
 				len(m.Renames), len(m.Removals))
 		}
 	}
-	pending := map[string]bool{}
+	// pending maps a temp file's base name to the segment name it is about to
+	// become; removed holds the old segments the swap is about to delete.
+	pending := map[string]string{}
+	removed := map[string]bool{}
 	if manifest != nil {
-		for src := range manifest.Renames {
-			pending[filepath.Base(src)] = true
+		for src, dst := range manifest.Renames {
+			pending[filepath.Base(src)] = filepath.Base(dst)
+		}
+		for _, p := range manifest.Removals {
+			removed[filepath.Base(p)] = true
 		}
 	}
 
+	held := make(map[string]bool, len(in.segs))
+	var heldMax uint64
+	for _, s := range in.segs {
+		held[s.name] = true
+		if s.num > heldMax {
+			heldMax = s.num
+		}
+	}
+
+	onDisk := map[string]int64{}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -99,14 +115,21 @@ func listDirFindings(dir string, in *verifyInput, sink *findingSink, online bool
 		name := e.Name()
 		switch {
 		case strings.HasPrefix(name, "seg_") && strings.HasSuffix(name, ".ndjson"):
+			// Open globs seg_*.ndjson, so every such file is read — including one
+			// whose name carries no segment number, which sorts first (as 0).
 			n, ok := segmentNum(name)
 			if !ok {
 				sink.add(SeverityInfo, CodeOrphanSegmentFile, Location{Segment: name},
-					"file looks like a segment but its name carries no segment number; it is never read")
-				continue
+					"segment file name carries no segment number; open still replays it before every numbered segment and can never trust a persisted index while it exists")
 			}
 			if online {
-				continue // segments come from the open handle
+				// Rotation may add segments newer than the snapshot; anything
+				// else the handle does not know was put there behind its back.
+				if !held[name] && ok && n <= heldMax {
+					sink.add(SeverityInfo, CodeOrphanSegmentFile, Location{Segment: name},
+						"segment file is on disk but not part of the open handle; the next open would replay it")
+				}
+				continue
 			}
 			info, err := e.Info()
 			if err != nil {
@@ -119,15 +142,23 @@ func listDirFindings(dir string, in *verifyInput, sink *findingSink, online bool
 			sink.add(SeverityInfo, CodeOrphanSegmentFile, Location{Segment: name},
 				"file is not reachable by the segment naming scheme and is never read")
 		case strings.HasPrefix(name, ".compact_"):
-			if !pending[name] {
-				sink.add(SeverityInfo, CodeLeftoverTempFile, Location{Segment: name},
-					"leftover compaction temp file; open discards it")
+			if _, ok := pending[name]; ok {
+				if info, err := e.Info(); err == nil {
+					onDisk[name] = info.Size()
+				}
+				continue
 			}
+			sink.add(SeverityInfo, CodeLeftoverTempFile, Location{Segment: name},
+				"leftover compaction temp file; open discards it")
 		case strings.HasSuffix(name, ".tmp") && !online:
 			// Online, a concurrent persist may legitimately hold a .tmp.
 			sink.add(SeverityInfo, CodeLeftoverTempFile, Location{Segment: name},
 				"leftover atomic-write temp file")
 		}
+	}
+
+	if manifest != nil && !online {
+		applyManifestView(dir, in, pending, removed, onDisk)
 	}
 	sort.SliceStable(in.segs, func(i, j int) bool {
 		if in.segs[i].num != in.segs[j].num {
@@ -135,6 +166,40 @@ func listDirFindings(dir string, in *verifyInput, sink *findingSink, online bool
 		}
 		return in.segs[i].name < in.segs[j].name
 	})
+}
+
+// applyManifestView rewrites in.segs to the layout open will produce by rolling
+// an interrupted compaction swap forward: each outstanding rename's temp file
+// stands in for its final segment and the listed removals are dropped. Without
+// this the half-old, half-new file set would replay superseded history after
+// its compacted form and be misread as conflicting writers. Nothing on disk is
+// touched; the temp is only read under its future name.
+func applyManifestView(dir string, in *verifyInput, pending map[string]string, removed map[string]bool, onDisk map[string]int64) {
+	replaced := map[string]vseg{}
+	for tmp, final := range pending {
+		size, ok := onDisk[tmp]
+		if !ok {
+			continue // rename already applied before the crash
+		}
+		n, _ := segmentNum(final)
+		p := filepath.Join(dir, tmp)
+		replaced[final] = vseg{seg: openSealedSegment(p, size), path: p, name: final, num: n, size: size}
+	}
+	out := in.segs[:0]
+	for _, s := range in.segs {
+		if removed[s.name] {
+			continue
+		}
+		if r, ok := replaced[s.name]; ok {
+			s = r
+			delete(replaced, s.name)
+		}
+		out = append(out, s)
+	}
+	for _, r := range replaced {
+		out = append(out, r)
+	}
+	in.segs = out
 }
 
 // loadPersisted reads index.json, sidx_*.json and meta.json as they sit on disk.
@@ -190,17 +255,16 @@ type recLoc struct {
 // truthRec is the replayed state of one id: the ground truth the indexes are
 // compared against.
 type truthRec struct {
-	seg      string
-	off      int64
-	rev      uint64 // replay revision (what Rebuild would assign)
-	lastRev  uint64 // revision the last line carried
-	exp      int64
-	epoch    uint64
-	hash     uint64
-	live     bool
-	deleted  bool
-	keys     map[string]string // sidx field -> bucket key
-	hasField map[string]bool
+	seg     string
+	off     int64
+	rev     uint64 // replay revision (what Rebuild would assign)
+	lastRev uint64 // revision the last line carried
+	exp     int64
+	epoch   uint64
+	hash    uint64
+	live    bool
+	deleted bool
+	keys    map[string]string // sidx field -> bucket key
 }
 
 func dataHash(d map[string]any) uint64 {
@@ -229,9 +293,15 @@ func runChecks(ctx context.Context, in *verifyInput, sink *findingSink) error {
 	}
 
 	// Scan: every segment in full mode; only the newest offline in quick mode
-	// (enough to see a torn tail and the active id high-water mark).
-	reports := make(map[string]*SegmentReport, len(in.segs))
-	scan := func(s vseg) error {
+	// (enough to see a torn tail and the active id high-water mark). Each
+	// segment's salvaged entries are folded into the ground truth and released
+	// before the next is read, so memory tracks the id count, not the data size.
+	var tb *truthBuilder
+	if full {
+		tb = newTruthBuilder(in)
+	}
+	var activeMax uint64
+	scan := func(s vseg, newest bool) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -240,47 +310,46 @@ func runChecks(ctx context.Context, in *verifyInput, sink *findingSink) error {
 			sink.add(SeverityDataCorruption, CodeSegmentUnreadable, Location{Segment: s.name}, "%v", err)
 			return nil
 		}
-		reports[s.name] = &rep
 		in.stats.BadRegions += len(rep.BadRegions)
 		for _, br := range rep.BadRegions {
-			reportBadRegion(sink, s, in.newest(), br)
+			reportBadRegion(sink, s, newest, br)
 		}
-		return nil
-	}
-	if full {
-		for _, s := range in.segs {
-			if err := scan(s); err != nil {
-				return err
-			}
-		}
-	} else if in.persisted {
-		if n := in.newest(); n != nil {
-			if err := scan(*n); err != nil {
-				return err
-			}
-		}
-	}
-
-	var activeMax uint64
-	if n := in.newest(); n != nil {
-		if rep := reports[n.name]; rep != nil {
+		if newest {
 			for _, e := range rep.Entries {
 				if e.Entry.ID > activeMax {
 					activeMax = e.Entry.ID
 				}
 			}
 		}
+		if tb != nil {
+			return tb.fold(ctx, in, sink, s, rep.Entries)
+		}
+		return nil
+	}
+	if full {
+		for i, s := range in.segs {
+			if err := scan(s, i == len(in.segs)-1); err != nil {
+				return err
+			}
+		}
+	} else if in.persisted {
+		if n := in.newest(); n != nil {
+			if err := scan(*n, true); err != nil {
+				return err
+			}
+		}
 	}
 
 	var maxObserved uint64
 	if full {
-		truth, at, maxID, err := buildTruth(ctx, in, reports, sink)
-		if err != nil {
-			return err
+		for _, r := range tb.truth {
+			if r.live {
+				in.stats.LiveRecords++
+			}
 		}
-		maxObserved = maxID
-		compareIndex(in, sink, truth, at)
-		compareSidx(in, sink, truth)
+		maxObserved = tb.maxID
+		compareIndex(in, sink, tb.truth, tb.at)
+		compareSidx(in, sink, tb.truth)
 	} else {
 		for id := range in.index {
 			if id > maxObserved {
@@ -306,11 +375,11 @@ func runChecks(ctx context.Context, in *verifyInput, sink *findingSink) error {
 	return nil
 }
 
-func reportBadRegion(sink *findingSink, s vseg, newest *vseg, br BadRegion) {
+func reportBadRegion(sink *findingSink, s vseg, newest bool, br BadRegion) {
 	loc := Location{Segment: s.name, Offset: br.Offset}
 	switch br.Reason {
 	case BadRegionTornTailLine:
-		if newest != nil && s.name == newest.name && br.Offset+br.Length == s.size {
+		if newest && br.Offset+br.Length == s.size {
 			sink.add(SeverityInfo, CodeSegmentTornTail, loc,
 				"%d-byte partial line at the end of the newest segment; open trims it (it was never acknowledged)", br.Length)
 			return
@@ -324,79 +393,73 @@ func reportBadRegion(sink *findingSink, s vseg, newest *vseg, br BadRegion) {
 	}
 }
 
-// buildTruth replays the salvaged entries of every segment in (segment number,
-// offset) order, applying exactly the semantics of Rebuild, and records
-// history anomalies as conflicts. Nothing is resolved: conflicting history is
-// only reported; the replayed state is "last line wins", as at open.
-func buildTruth(ctx context.Context, in *verifyInput, reports map[string]*SegmentReport, sink *findingSink) (map[uint64]*truthRec, map[recLoc]uint64, uint64, error) {
-	truth := make(map[uint64]*truthRec)
-	at := make(map[recLoc]uint64)
-	var maxID uint64
-	fields := make([]string, 0, len(in.sidx))
+// truthBuilder replays salvaged entries in (segment number, offset) order,
+// applying exactly the semantics of Rebuild, and records history anomalies as
+// conflicts. Nothing is resolved: conflicting history is only reported; the
+// replayed state is "last line wins", as at open.
+type truthBuilder struct {
+	truth  map[uint64]*truthRec
+	at     map[recLoc]uint64
+	maxID  uint64
+	fields []string
+	n      int
+}
+
+func newTruthBuilder(in *verifyInput) *truthBuilder {
+	tb := &truthBuilder{truth: make(map[uint64]*truthRec), at: make(map[recLoc]uint64)}
 	for _, v := range in.sidx {
-		fields = append(fields, v.field)
+		tb.fields = append(tb.fields, v.field)
 	}
-	n := 0
-	for _, s := range in.segs {
-		rep := reports[s.name]
-		if rep == nil {
-			continue
+	return tb
+}
+
+// fold applies one segment's entries; segments must be folded in order.
+func (tb *truthBuilder) fold(ctx context.Context, in *verifyInput, sink *findingSink, s vseg, entries []SalvagedEntry) error {
+	for _, se := range entries {
+		if tb.n++; tb.n%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 		}
-		for _, se := range rep.Entries {
-			if n++; n%4096 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, nil, 0, err
-				}
+		e := se.Entry
+		in.stats.Entries++
+		tb.at[recLoc{s.name, se.Offset}] = e.ID
+		if e.ID > tb.maxID {
+			tb.maxID = e.ID
+		}
+		loc := Location{Segment: s.name, Offset: se.Offset, ID: e.ID}
+		rec := tb.truth[e.ID]
+		switch e.Op {
+		case store.OpInsert, store.OpUpdate:
+			h := dataHash(e.Data)
+			if rec != nil {
+				checkHistory(sink, loc, rec, e, h)
+			} else {
+				rec = &truthRec{}
+				tb.truth[e.ID] = rec
 			}
-			e := se.Entry
-			in.stats.Entries++
-			at[recLoc{s.name, se.Offset}] = e.ID
-			if e.ID > maxID {
-				maxID = e.ID
+			rev := rec.rev + 1 // a deleted or new id has rev 0, so it restarts at 1
+			if e.Rev > rev {
+				rev = e.Rev
 			}
-			loc := Location{Segment: s.name, Offset: se.Offset, ID: e.ID}
-			rec := truth[e.ID]
-			switch e.Op {
-			case store.OpInsert, store.OpUpdate:
-				h := dataHash(e.Data)
-				if rec != nil {
-					checkHistory(sink, loc, rec, e, h)
-				}
-				if rec == nil {
-					rec = &truthRec{}
-					truth[e.ID] = rec
-				}
-				rev := rec.rev + 1
-				if rec.deleted || !rec.live {
-					rev = 1
-				}
-				if e.Rev > rev {
-					rev = e.Rev
-				}
-				*rec = truthRec{seg: s.name, off: se.Offset, rev: rev, lastRev: e.Rev, exp: e.ExpiresAt, epoch: e.Epoch, hash: h, live: true}
-				for _, f := range fields {
-					if val, ok := e.Data[f]; ok {
-						if rec.keys == nil {
-							rec.keys = map[string]string{}
-						}
-						rec.keys[f] = toIndexKey(val)
+			*rec = truthRec{seg: s.name, off: se.Offset, rev: rev, lastRev: e.Rev, exp: e.ExpiresAt, epoch: e.Epoch, hash: h, live: true}
+			for _, f := range tb.fields {
+				if val, ok := e.Data[f]; ok {
+					if rec.keys == nil {
+						rec.keys = map[string]string{}
 					}
+					rec.keys[f] = toIndexKey(val)
 				}
-			case store.OpDelete:
-				if rec == nil {
-					rec = &truthRec{}
-					truth[e.ID] = rec
-				}
-				*rec = truthRec{deleted: true}
 			}
+		case store.OpDelete:
+			if rec == nil {
+				rec = &truthRec{}
+				tb.truth[e.ID] = rec
+			}
+			*rec = truthRec{deleted: true}
 		}
 	}
-	for _, r := range truth {
-		if r.live {
-			in.stats.LiveRecords++
-		}
-	}
-	return truth, at, maxID, nil
+	return nil
 }
 
 // checkHistory flags a write whose history cannot be explained by a single

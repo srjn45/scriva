@@ -106,7 +106,8 @@ type VerifyMode string
 const (
 	// VerifyQuick checks persisted-index coverage and fingerprints, a bounded
 	// identity spot-check of index entries, structural files, the id counter
-	// and the newest segment only. It never reads every segment.
+	// and the newest segment only. Like open, it hashes the covered segment
+	// bytes but parses only the newest segment.
 	VerifyQuick VerifyMode = "quick"
 	// VerifyFull additionally scans every segment tolerantly and compares the
 	// primary and secondary indexes against the ground truth rebuilt from it.
