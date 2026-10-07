@@ -582,7 +582,7 @@ func (c *Collection) load() error {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
-		if amax := c.activeMaxID(); amax > c.idSeq.Load() {
+		if amax := c.tailMaxID(all); amax > c.idSeq.Load() {
 			c.idSeq.Store(amax)
 		}
 		return nil
@@ -619,20 +619,29 @@ func (c *Collection) load() error {
 	return nil
 }
 
-// activeMaxID returns the highest entry id present in the active segment, or 0
-// if it is empty or unreadable. Used to reconcile the id counter on load.
-func (c *Collection) activeMaxID() uint64 {
-	entries, err := c.active.ScanAll()
-	if err != nil {
-		return 0
-	}
-	var maxID uint64
-	for _, e := range entries {
-		if e.ID > maxID {
-			maxID = e.ID
+// tailMaxID returns the highest entry id in the newest non-empty segment of
+// all (oldest first), or 0 if none is readable. Ids are assigned monotonically
+// and appended in order, so that segment holds the most recently assigned id.
+// Walking back past empty segments matters after a crash between rotation
+// creating a fresh active segment and meta.json being persisted: the active
+// segment is empty, and the stale counter would otherwise reissue ids.
+func (c *Collection) tailMaxID(all []*Segment) uint64 {
+	for i := len(all) - 1; i >= 0; i-- {
+		entries, err := all[i].ScanAll()
+		if err != nil {
+			continue
+		}
+		var maxID uint64
+		for _, e := range entries {
+			if e.ID > maxID {
+				maxID = e.ID
+			}
+		}
+		if maxID > 0 {
+			return maxID
 		}
 	}
-	return maxID
+	return 0
 }
 
 // syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
