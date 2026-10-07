@@ -36,6 +36,10 @@ const (
 // interval is configured.
 const DefaultSyncInterval = time.Second
 
+// DefaultIndexPersistInterval is the background index persist cadence used when
+// CollectionConfig.IndexPersistInterval is zero.
+const DefaultIndexPersistInterval = 30 * time.Second
+
 // DefaultWatchBufferSize is the per-subscriber channel buffer used when no size
 // is configured.
 const DefaultWatchBufferSize = 64
@@ -56,6 +60,13 @@ type CollectionConfig struct {
 	SyncMode SyncMode
 	// SyncInterval is the flush cadence for SyncModeInterval. Default: 1s.
 	SyncInterval time.Duration
+
+	// IndexPersistInterval is how often a background goroutine persists the
+	// primary index (and secondary indexes) so a crash replays a bounded tail
+	// instead of rebuilding from every segment. Zero selects
+	// DefaultIndexPersistInterval; a negative value disables periodic persists
+	// (rotation, compaction and Close still persist). Default: 30s.
+	IndexPersistInterval time.Duration
 
 	// WatchBufferSize is the per-subscriber channel buffer for Watch. A slow
 	// subscriber that fills its buffer receives an OpOverflow sentinel rather
@@ -175,6 +186,8 @@ func defaultConfig() CollectionConfig {
 		SyncMode:        SyncModeNone,
 		SyncInterval:    DefaultSyncInterval,
 		WatchBufferSize: DefaultWatchBufferSize,
+
+		IndexPersistInterval: DefaultIndexPersistInterval,
 	}
 }
 
@@ -254,8 +267,21 @@ type Collection struct {
 	indexReplays      atomic.Int64
 	indexReplayBytes  atomic.Int64
 	spotCheckFailures atomic.Int64
-	closeOnce sync.Once
-	closed    chan struct{}
+	closeOnce         sync.Once
+	closed            chan struct{}
+
+	// Background index persistence. persistMu serializes every writer of
+	// index.json/sidx files (loop, Close) so an older snapshot can never land
+	// after a newer one; lock order is compactMu → persistMu → mu. persistC
+	// requests an out-of-cycle persist (after rotation). persistWG tracks the
+	// loop so Close can wait for it. sealedCov memoizes sealed-segment coverage
+	// (guarded by persistMu; cleared by the compactor under mu when it replaces
+	// segment files).
+	persistMu  sync.Mutex
+	persistC   chan struct{}
+	persistWG  sync.WaitGroup
+	sealedCov  map[string]SegmentCoverage
+	persistErr atomic.Int64 // failed background persists (test/observability)
 }
 
 // OpenCollection opens or creates the collection rooted at dir.
@@ -287,6 +313,9 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	if cfg.WatchBufferSize <= 0 {
 		cfg.WatchBufferSize = DefaultWatchBufferSize
 	}
+	if cfg.IndexPersistInterval == 0 {
+		cfg.IndexPersistInterval = DefaultIndexPersistInterval
+	}
 	// Overlay a per-collection quota (S4) if one is configured for this name.
 	// Quotas is DB-wide (the server builds it from config); the embedded façade
 	// instead sets MaxRecords/MaxBytes directly and leaves Quotas nil.
@@ -313,6 +342,9 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		watchers: make(map[uint64]*watcher),
 		compactC: make(chan struct{}, 1),
 		closed:   make(chan struct{}),
+		persistC: make(chan struct{}, 1),
+
+		sealedCov: make(map[string]SegmentCoverage),
 	}
 
 	if err := c.load(); err != nil {
@@ -327,6 +359,8 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	go c.compactLoop()
+	c.persistWG.Add(1)
+	go c.persistLoop()
 	if c.cfg.SyncMode == SyncModeInterval {
 		go c.syncLoop()
 	}
@@ -349,6 +383,77 @@ func (c *Collection) syncLoop() {
 			_ = active.Sync()
 		}
 	}
+}
+
+// persistLoop runs for the lifetime of the collection and persists the primary
+// and secondary indexes on a timer (when enabled) and whenever a segment
+// rotation requests it, so crash recovery replays a bounded tail. It exits when
+// the collection is closed; Close waits for it.
+func (c *Collection) persistLoop() {
+	defer c.persistWG.Done()
+	var tick <-chan time.Time
+	if c.cfg.IndexPersistInterval > 0 {
+		t := time.NewTicker(c.cfg.IndexPersistInterval)
+		defer t.Stop()
+		tick = t.C
+	}
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-tick:
+		case <-c.persistC:
+		}
+		if err := c.persistIndexes(); err != nil {
+			c.persistErr.Add(1)
+		}
+	}
+}
+
+// persistIndexes writes a consistent point-in-time primary index (with segment
+// coverage) and the secondary indexes. The active segment is fsynced first so
+// the coverage never claims bytes a crash could lose. It is a no-op once Close
+// has run. Sealed-segment coverage is memoized, so the work under the read lock
+// is bounded by the active segment size, not the data set.
+func (c *Collection) persistIndexes() error {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+
+	c.mu.RLock()
+	select {
+	case <-c.closed:
+		// Close (or a test) stopped us; Close writes the final index itself.
+		c.mu.RUnlock()
+		return nil
+	default:
+	}
+	if err := c.active.Sync(); err != nil {
+		c.mu.RUnlock()
+		return err
+	}
+	segs := make([]*Segment, 0, len(c.sealed)+1)
+	sealed := make(map[*Segment]bool, len(c.sealed))
+	for _, s := range c.sealed {
+		segs = append(segs, s)
+		sealed[s] = true
+	}
+	segs = append(segs, c.active)
+	snap, err := c.index.snapshotCached(segs, sealed, c.sealedCov)
+	c.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+		return err
+	}
+	c.sidxMu.RLock()
+	defer c.sidxMu.RUnlock()
+	for field, sidx := range c.sidxMap {
+		if err := sidx.Persist(sidxFilePath(c.dir, field)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // load reads existing segments from disk, restores the index, and opens
@@ -1069,9 +1174,14 @@ func (c *Collection) rotateSegment() error {
 	_ = persistMeta(filepath.Join(c.dir, metaFilename),
 		c.metaSnapshot())
 
-	// Signal the compactor.
+	// Signal the compactor, and ask the persist loop to record the sealed
+	// segment in the on-disk index off the write path.
 	select {
 	case c.compactC <- struct{}{}:
+	default:
+	}
+	select {
+	case c.persistC <- struct{}{}:
 	default:
 	}
 	return nil
@@ -1337,6 +1447,11 @@ func (c *Collection) Close() error {
 	c.compactMu.Lock()
 	defer c.compactMu.Unlock()
 	c.closeDone = true
+	// Stop the background persister and wait out any persist in flight so the
+	// final index below is the last writer.
+	c.persistWG.Wait()
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -352,7 +352,7 @@ map[uint64]IndexEntry{
 ```
 
 - Updated on every write (same write lock scope)
-- Persisted to `index.json` with a SHA-256 checksum on every close
+- Persisted to `index.json` with a SHA-256 checksum on every close, on every segment rotation, after every compaction, and by a background goroutine every `--index-persist-interval` (default 30s; negative disables the timer). Each persist fsyncs the active segment first so coverage never claims bytes a crash could lose, and secondary indexes (`sidx_*.json`) are written in the same pass. Sealed-segment coverage hashes are memoized, so the work done under the read lock is bounded by the active segment size. All writers of these files serialize on one mutex, and `Close()` stops and waits for the background persister before writing the final index.
 - Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and the SHA-256 of those bytes. The checksum covers version, entries and coverage. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
 - Loaded on startup and **validated against the segments, never trusted** (see below); rebuilt from segment scans if the checksum fails
 - Rebuilt after compaction (offsets change)

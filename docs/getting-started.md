@@ -67,6 +67,7 @@ All flags and their defaults:
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
+| `--index-persist-interval` | `30s` | Background index persist cadence; bounds the tail replayed after a crash (negative disables) |
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
 | `--default-ttl` | `0` | Default expiry applied to inserted records (`0` = never expire), e.g. `24h` |
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
@@ -100,6 +101,7 @@ compact_interval: 5m
 compact_dirty_pct: 0.30
 sync_mode: none             # none | always | interval
 sync_interval: 1s           # used when sync_mode: interval
+index_persist_interval: 30s # background index persist cadence (negative = off)
 tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
 default_ttl: 0              # expire inserted records after this long (0 = never), e.g. 24h
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal

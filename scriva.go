@@ -53,6 +53,14 @@ func WithSyncInterval(d time.Duration) Option {
 	return func(c *engine.CollectionConfig) { c.SyncInterval = d }
 }
 
+// WithIndexPersistInterval sets how often the primary and secondary indexes are
+// persisted in the background to bound crash-recovery replay. The default is
+// 30s; a negative value disables periodic persists (rotation, compaction and
+// Close still persist).
+func WithIndexPersistInterval(d time.Duration) Option {
+	return func(c *engine.CollectionConfig) { c.IndexPersistInterval = d }
+}
+
 // WithSegmentMaxSize sets the maximum active-segment size before rotation.
 func WithSegmentMaxSize(n int64) Option {
 	return func(c *engine.CollectionConfig) { c.SegmentMaxSize = n }
