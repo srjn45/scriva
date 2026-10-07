@@ -800,7 +800,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			rollbackErr := c.rollbackBatchLocked(startSize, ids[:i], nil)
 			c.mu.Unlock()
 			if rollbackErr != nil {
-				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
 			}
 			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 		}
@@ -811,7 +811,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 		rollbackErr := c.rollbackBatchLocked(startSize, ids, nil)
 		c.mu.Unlock()
 		if rollbackErr != nil {
-			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
 		}
 		return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 	}
@@ -1356,7 +1356,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
@@ -1388,7 +1388,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: update id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: update id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
@@ -1404,7 +1404,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
 				if rollbackErr != nil {
-					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %w)", op.id, err, rollbackErr)
 				}
 				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
 			}
@@ -1419,7 +1419,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 		c.mu.Unlock()
 		if rollbackErr != nil {
-			return fmt.Errorf("tx commit: sync: %w (rollback: %v)", err, rollbackErr)
+			return fmt.Errorf("tx commit: sync: %w (rollback: %w)", err, rollbackErr)
 		}
 		return fmt.Errorf("tx commit: sync: %w", err)
 	}
