@@ -210,19 +210,42 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		if n > 0 {
-			// A partial line may be on disk; roll the file back to the last
-			// committed size so later offsets stay correct. If that fails the
-			// tail is unknown, so poison the segment instead of appending
-			// after garbage.
-			if terr := s.file.Truncate(s.size); terr != nil {
-				s.poisoned = fmt.Errorf("rollback truncate: %w", terr)
-			}
+		// Even a reported zero-byte write may have changed the file (and a short
+		// write certainly has). Always restore the known-good boundary. If that
+		// fails the tail is unknown, so poison instead of appending after it.
+		if terr := s.rollbackLocked(s.size); terr != nil {
+			return 0, fmt.Errorf("segment: write %q: %w (rollback: %v)", s.path, err, terr)
 		}
 		return 0, fmt.Errorf("segment: write %q: %w", s.path, err)
 	}
 	s.size += int64(len(b))
 	return offset, nil
+}
+
+// rollback truncates an active segment to a previously committed boundary.
+// It is used by multi-entry collection writes to discard an already-appended
+// prefix when a later append or fsync fails. A failed truncate poisons the
+// segment: continuing at an unknown offset could silently corrupt records.
+func (s *Segment) rollback(size int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed {
+		return fmt.Errorf("segment: rollback sealed segment %q", s.path)
+	}
+	return s.rollbackLocked(size)
+}
+
+// rollbackLocked requires s.mu.
+func (s *Segment) rollbackLocked(size int64) error {
+	if s.poisoned != nil {
+		return fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+	if err := s.file.Truncate(size); err != nil {
+		s.poisoned = fmt.Errorf("rollback truncate to %d: %w", size, err)
+		return fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+	s.size = size
+	return nil
 }
 
 // Sync flushes any buffered writes for the active segment to stable storage

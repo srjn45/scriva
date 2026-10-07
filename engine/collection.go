@@ -660,6 +660,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	}
 
 	c.mu.Lock()
+	startSize := c.active.Size()
 	// Atomic budget gate for the whole batch — refuse before any append.
 	if err := c.checkQuotaLocked(uint64(len(records)), newBytes); err != nil {
 		c.mu.Unlock()
@@ -674,14 +675,22 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	for i, e := range entries {
 		offset, err := c.active.Append(e)
 		if err != nil {
+			rollbackErr := c.rollbackBatchLocked(startSize, ids[:i], nil)
 			c.mu.Unlock()
+			if rollbackErr != nil {
+				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+			}
 			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 		}
 		c.index.Set(ids[i], IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: e.Epoch})
 		c.sidxIndexEntry(ids[i], records[i])
 	}
 	if err := c.syncActiveLocked(); err != nil {
+		rollbackErr := c.rollbackBatchLocked(startSize, ids, nil)
 		c.mu.Unlock()
+		if rollbackErr != nil {
+			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %v)", err, rollbackErr)
+		}
 		return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 	}
 	for _, e := range entries {
@@ -700,6 +709,41 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 		c.emit(WatchEvent{Op: store.OpInsert, ID: ids[i], Data: records[i], Ts: ts})
 	}
 	return ids, ts, nil
+}
+
+// rollbackBatchLocked restores the active segment and all in-memory indexes to
+// their state before a multi-entry write began. The caller holds c.mu. It is a
+// failure-only path, so rebuilding secondary indexes from the restored segment
+// is preferable to trying to reverse subtle sequences such as update/delete/
+// update of the same ID.
+//
+// inserted contains IDs which did not exist before the batch. before records
+// the original primary-index state for transaction-touched IDs; an absent map
+// value means that ID did not exist before the transaction.
+func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, before map[uint64]IndexEntry) error {
+	if err := c.active.rollback(startSize); err != nil {
+		return err
+	}
+	for _, id := range inserted {
+		c.index.Delete(id)
+	}
+	for id, entry := range before {
+		if entry.SegmentPath == "" {
+			c.index.Delete(id)
+			continue
+		}
+		c.index.Set(id, entry)
+	}
+
+	segs := append(append([]*Segment(nil), c.sealed...), c.active)
+	c.sidxMu.RLock()
+	defer c.sidxMu.RUnlock()
+	for _, sidx := range c.sidxMap {
+		if err := sidx.rebuild(segs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Update overwrites the data for an existing record. Data that sets the
@@ -1078,6 +1122,19 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	}
 
 	c.mu.Lock()
+	startSize := c.active.Size()
+	// Save the first pre-commit primary-index state for every ID. Operations in
+	// a transaction may touch an ID more than once, so recording state per-op
+	// would restore an intermediate transaction state rather than the state
+	// visible before the commit began.
+	before := make(map[uint64]IndexEntry, len(ops))
+	present := make(map[uint64]bool, len(ops))
+	for _, op := range ops {
+		if _, seen := present[op.id]; seen {
+			continue
+		}
+		before[op.id], present[op.id] = c.index.Get(op.id)
+	}
 
 	// Pre-validate: ensure every update/delete target still exists.
 	for _, op := range ops {
@@ -1169,7 +1226,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: txEpoch})
@@ -1197,7 +1258,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.Epoch = txEpoch
 			offset, err := c.active.Append(e)
 			if err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: update id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp, Epoch: txEpoch})
@@ -1209,7 +1274,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e := store.NewDelete(op.id)
 			e.Ts = op.ts
 			if _, err := c.active.Append(e); err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %v)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
 			}
 			c.index.Delete(op.id)
@@ -1220,7 +1289,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	}
 
 	if err := c.syncActiveLocked(); err != nil {
+		rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 		c.mu.Unlock()
+		if rollbackErr != nil {
+			return fmt.Errorf("tx commit: sync: %w (rollback: %v)", err, rollbackErr)
+		}
 		return fmt.Errorf("tx commit: sync: %w", err)
 	}
 	for _, e := range committed {
