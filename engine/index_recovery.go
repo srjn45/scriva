@@ -1,10 +1,7 @@
 package engine
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -70,7 +67,9 @@ func (c *Collection) reportRecovery(kind string, bytes int64, start time.Time) {
 // indexes. A persisted index is trusted only as far as its v2 coverage proves:
 //
 //   - every covered segment exists, is at least its covered length, and its
-//     first Size bytes hash to the recorded checksum;
+//     first Size bytes hash to the recorded full SHA-256 (the whole prefix is
+//     re-read and hashed at open; the cost is O(covered bytes), paid once per
+//     open and shared by the primary and all secondary indexes);
 //   - only the newest covered segment may have grown (tail replay); any other
 //     growth, any unlisted segment older than the newest covered one, a v1
 //     file (no coverage) or a failed spot check forces a full rebuild;
@@ -161,13 +160,13 @@ func (c *Collection) planReplay(all []*Segment) (plan []replayStep, ok bool) {
 	cov := append([]SegmentCoverage(nil), c.index.coverage...)
 	nEntries := len(c.index.entries)
 	c.index.mu.RUnlock()
-	return planReplayFor(all, known, cov, nEntries)
+	return planReplayFor(all, known, cov, nEntries, c.covMemo)
 }
 
 // planReplayFor is planReplay over explicit coverage, shared by the primary and
 // secondary indexes: known=false (v1) means coverage is unknown, and nEntries>0
 // with empty coverage means entries nothing proves.
-func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int) (plan []replayStep, ok bool) {
+func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int, memo *coverageMemo) (plan []replayStep, ok bool) {
 	if !known {
 		return nil, false // v1: coverage unknown -> stale
 	}
@@ -205,7 +204,7 @@ func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries i
 		if seg.Size() > cv.Size && seg != lastCovered {
 			return nil, false // a non-newest segment grew
 		}
-		if !coverageMatches(seg, cv) {
+		if !memo.matches(seg, cv) {
 			return nil, false
 		}
 	}
@@ -228,32 +227,51 @@ func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries i
 	return plan, true
 }
 
-// coverageMatches reports whether the first cv.Size bytes of seg match the
-// recorded coverage: the tail fingerprint when present, and the full SHA-256
-// when one was recorded. Coverage with neither never matches.
-func coverageMatches(seg *Segment, cv SegmentCoverage) bool {
-	if cv.Checksum == "" && cv.Tail == "" {
-		return false
+// coverageMemo remembers prefix checksums computed during one open so that the
+// primary index and every secondary index, which cover the same segments,
+// share a single read of each segment.
+type coverageMemo struct {
+	sums map[string]string // path|size -> hex SHA-256 of the first size bytes
+}
+
+func (m *coverageMemo) sum(seg *Segment, size int64) (string, error) {
+	key := fmt.Sprintf("%s|%d", seg.Path(), size)
+	if m != nil {
+		if s, ok := m.sums[key]; ok {
+			return s, nil
+		}
 	}
 	f, err := os.Open(seg.Path())
 	if err != nil {
-		return false
+		return "", err
 	}
 	defer func() { _ = f.Close() }()
-	if cv.Tail != "" {
-		t, err := tailFingerprint(f, cv.Size)
-		if err != nil || t != cv.Tail {
-			return false
-		}
+	s, err := prefixChecksum(f, size)
+	if err != nil {
+		return "", err
 	}
-	if cv.Checksum != "" {
-		h := sha256.New()
-		if n, err := io.CopyN(h, f, cv.Size); err != nil || n != cv.Size {
-			return false
+	if m != nil {
+		if m.sums == nil {
+			m.sums = map[string]string{}
 		}
-		return hex.EncodeToString(h.Sum(nil)) == cv.Checksum
+		m.sums[key] = s
 	}
-	return true
+	return s, nil
+}
+
+// coverageMatches reports whether the first cv.Size bytes of seg hash to the
+// recorded SHA-256. Coverage without a full checksum (older Tail-only files,
+// or none) never matches: it cannot prove the covered prefix.
+func coverageMatches(seg *Segment, cv SegmentCoverage) bool {
+	return (*coverageMemo)(nil).matches(seg, cv)
+}
+
+func (m *coverageMemo) matches(seg *Segment, cv SegmentCoverage) bool {
+	if cv.Checksum == "" {
+		return false
+	}
+	got, err := m.sum(seg, cv.Size)
+	return err == nil && got == cv.Checksum
 }
 
 // spotCheck verifies a bounded sample of index entries — the newest by id plus
@@ -340,7 +358,7 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 	sidx.mu.RLock()
 	known, cov, n := sidx.coverageKnown, append([]SegmentCoverage(nil), sidx.coverage...), len(sidx.buckets)
 	sidx.mu.RUnlock()
-	plan, ok := planReplayFor(all, known, cov, n)
+	plan, ok := planReplayFor(all, known, cov, n, c.covMemo)
 	if !ok {
 		return rebuild()
 	}
@@ -359,8 +377,8 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 // lock that excludes writes to segs.
 func persistSecondary(sidx *SecondaryIndex, p string, segs []*Segment) error {
 	cov := make([]SegmentCoverage, 0, len(segs))
-	for i, seg := range segs {
-		cv, err := captureCoverage(seg, i == len(segs)-1)
+	for _, seg := range segs {
+		cv, err := captureCoverage(seg)
 		if err != nil {
 			return err
 		}

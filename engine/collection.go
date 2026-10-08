@@ -344,10 +344,13 @@ type Collection struct {
 	// loop so Close can wait for it. sealedCov memoizes sealed-segment coverage
 	// (guarded by persistMu; cleared by the compactor under mu when it replaces
 	// segment files).
-	persistMu  sync.Mutex
-	persistC   chan struct{}
-	persistWG  sync.WaitGroup
-	sealedCov  map[string]SegmentCoverage
+	persistMu sync.Mutex
+	persistC  chan struct{}
+	persistWG sync.WaitGroup
+	sealedCov map[string]SegmentCoverage
+	// covMemo shares segment-prefix hashes between the primary and secondary
+	// index recovery of one open; nil outside open.
+	covMemo    *coverageMemo
 	persistErr atomic.Int64 // failed background persists (test/observability)
 	// persistPasses counts background persist passes (test/observability).
 	persistPasses atomic.Int64
@@ -674,6 +677,8 @@ func (c *Collection) load() error {
 	// Validate the persisted index against the segments (tail replay or full
 	// rebuild); see recoverIndex.
 	indexPath := filepath.Join(c.dir, "index.json")
+	c.covMemo = &coverageMemo{}
+	defer func() { c.covMemo = nil }()
 	rebuildsBefore := c.indexRebuilds.Load()
 	changed, err := c.recoverIndex(all, indexPath, swapRecovered)
 	if err != nil {
@@ -719,6 +724,10 @@ func (c *Collection) load() error {
 			c.sidxMap[field] = sidx
 		}
 	}
+
+	// Prefix hashes computed while validating coverage are exact for these
+	// files, so the first periodic persist need not re-read sealed segments.
+	c.seedSealedCoverage(all)
 
 	// Restore the id counter.
 	// Fast path: load from meta.json written by a previous clean run or
@@ -2033,4 +2042,19 @@ func (c *Collection) indexRangeLookup(field string, op query.Op, val any) ([]uin
 		return nil, false
 	}
 	return sidx.LookupRange(op, val)
+}
+
+// seedSealedCoverage moves the prefix hashes verified during open into the
+// sealed-coverage cache (keyed by path and size, so a segment that has since
+// grown is never served a stale entry).
+func (c *Collection) seedSealedCoverage(all []*Segment) {
+	if c.covMemo == nil {
+		return
+	}
+	for _, seg := range all {
+		key := fmt.Sprintf("%s|%d", seg.Path(), seg.Size())
+		if sum, ok := c.covMemo.sums[key]; ok {
+			c.sealedCov[seg.Path()] = SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: seg.Size(), Checksum: sum}
+		}
+	}
 }

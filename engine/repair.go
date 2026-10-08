@@ -947,8 +947,8 @@ func rebuildDerived(ctx context.Context, w *repairWork, opts RepairOptions) erro
 		seg := openSealedSegment(s.path, rep.Size)
 		segObjs = append(segObjs, seg)
 	}
-	for i, seg := range segObjs {
-		cv, err := captureCoverage(seg, i == len(segObjs)-1)
+	for _, seg := range segObjs {
+		cv, err := captureCoverage(seg)
 		if err != nil {
 			return err
 		}
