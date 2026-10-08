@@ -69,6 +69,10 @@ type Config struct {
 	// IndexPersistInterval is the background index persist cadence (default: 30s, negative = disabled).
 	IndexPersistInterval time.Duration `yaml:"index_persist_interval"`
 
+	// IntegrityPolicy is what open does on corruption or conflicting history:
+	// fail (default, fail-closed) | report | rebuild-index-only.
+	IntegrityPolicy string `yaml:"integrity_policy"`
+
 	// Transactions
 	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
 
@@ -141,6 +145,7 @@ func DefaultConfig() Config {
 		TxTimeout:       5 * time.Minute,
 
 		IndexPersistInterval: engine.DefaultIndexPersistInterval,
+		IntegrityPolicy:      string(engine.PolicyFail),
 		WatchBufferSize:      engine.DefaultWatchBufferSize,
 		DefaultTTL:           0,
 
@@ -173,6 +178,7 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		SyncInterval:    c.SyncInterval,
 
 		IndexPersistInterval: c.IndexPersistInterval,
+		IntegrityPolicy:      engine.IntegrityPolicy(c.IntegrityPolicy),
 		WatchBufferSize:      c.WatchBufferSize,
 		DefaultTTL:           c.DefaultTTL,
 
@@ -222,6 +228,7 @@ type fileConfig struct {
 	SyncInterval    string         `yaml:"sync_interval"`
 
 	IndexPersistInterval string `yaml:"index_persist_interval"`
+	IntegrityPolicy      string `yaml:"integrity_policy"`
 	TxTimeout            string `yaml:"tx_timeout"`
 	WatchBufferSize      int    `yaml:"watch_buffer_size"`
 	DefaultTTL           string `yaml:"default_ttl"`
@@ -275,6 +282,7 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncInterval:    defaults.SyncInterval.String(),
 
 		IndexPersistInterval: defaults.IndexPersistInterval.String(),
+		IntegrityPolicy:      defaults.IntegrityPolicy,
 		TxTimeout:            defaults.TxTimeout.String(),
 		WatchBufferSize:      defaults.WatchBufferSize,
 		DefaultTTL:           defaults.DefaultTTL.String(),
@@ -349,6 +357,7 @@ func LoadConfigFile(path string) (Config, error) {
 		SyncInterval:    syncInterval,
 
 		IndexPersistInterval: indexPersistInterval,
+		IntegrityPolicy:      fc.IntegrityPolicy,
 		TxTimeout:            txTimeout,
 		WatchBufferSize:      fc.WatchBufferSize,
 		DefaultTTL:           defaultTTL,

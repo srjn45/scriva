@@ -88,6 +88,18 @@ func TestSegmentAppendRollsBackPartialWrite(t *testing.T) {
 
 func TestSegmentPoisonedWhenRollbackFails(t *testing.T) {
 	seg, tf, path := openTorn(t)
+	var poisons, appendErrs int
+	seg.onPoison = func(error) { poisons++ }
+	seg.onAppend = func(_ int, err error) {
+		if err != nil {
+			appendErrs++
+		}
+	}
+	defer func() {
+		if poisons != 1 || appendErrs != 2 {
+			t.Errorf("poison hook fired %d times (want 1), failed-append hook %d (want 2)", poisons, appendErrs)
+		}
+	}()
 	if _, err := seg.Append(store.Entry{ID: 1}); err != nil {
 		t.Fatal(err)
 	}

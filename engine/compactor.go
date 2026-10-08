@@ -255,7 +255,7 @@ func (c *Collection) compact(force bool) error {
 	c.sidxMu.RLock()
 	sidxSnaps := make(map[string]*sidxSnapshot, len(c.sidxMap))
 	for field, sidx := range c.sidxMap {
-		if err := sidx.rebuild(all); err != nil {
+		if err := sidx.rebuild(all, false); err != nil {
 			c.sidxMu.RUnlock()
 			c.swapFailed = true
 			c.mu.Unlock()

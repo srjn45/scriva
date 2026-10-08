@@ -1240,7 +1240,20 @@ ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/
 | `scriva_compaction_duration_seconds` | Histogram | `collection` |
 | `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` |
 | `scriva_scan_rows_scanned` | Histogram | `collection` |
+| `scriva_recovery_total`, `_duration_seconds`, `_bytes_total` | Counter/Histogram | `collection`, `kind` |
+| `scriva_integrity_open_total` | Counter | `collection`, `policy`, `outcome` |
+| `scriva_integrity_findings_total` | Counter | `collection`, `severity`, `code` |
+| `scriva_append_total`, `scriva_append_bytes_total` | Counter | `collection` |
+| `scriva_append_errors_total` | Counter | `collection`, `reason` |
+| `scriva_segment_poisoned_total` | Counter | `collection` |
+| `scriva_dir_lock_total` | Counter | `result` |
 
 Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `scriva_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
+
+The recovery, integrity, append, poison and lock series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
+
+### Fail-closed open policy
+
+`recoverIndex` is the single choke point where open might touch history. A tail replay applies only the bytes after the persisted coverage; a strict decode failure there falls through to a full rebuild. Every full rebuild first runs `integrityGate`: one tolerant scan of all segments through the same checks as `Verify` (bad regions, glued lines, duplicate/conflicting ids, revision regressions). Findings of severity `data-corruption` or `conflict` make open return `*engine.OpenIntegrityError` (matches `engine.ErrIntegrity`, carries the `CollectionReport`) under `fail`/`rebuild-index-only`; under `report` the index and secondary indexes are rebuilt from the salvaged records instead and the report is kept on `Collection.OpenIntegrityReport()`. A refused open closes the files it opened and releases the directory lock. Conflicts inside a trusted persisted-index tail are not re-derived at open (that would defeat O(tail) reopen); `Verify` reports them.
 
 For **distributed tracing** (opt-in OpenTelemetry, `--otlp-endpoint`), which complements these pull-based metrics with per-request spans across the gateway → gRPC → engine-scan hops, see [Tracing (OpenTelemetry)](#tracing-opentelemetry) above.

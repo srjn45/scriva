@@ -49,6 +49,11 @@ type Segment struct {
 	// file may hold torn bytes past s.size. Every later Append is refused;
 	// reopening runs recoverPartialLine, which trims the torn tail.
 	poisoned error
+	// onAppend and onPoison are optional observability hooks installed by the
+	// owning collection (nil for compactor temp segments and in tests). They
+	// run under s.mu and must not block or call back into the segment.
+	onAppend func(bytes int, err error)
+	onPoison func(cause error)
 }
 
 // ErrSegmentPoisoned is returned by Append on an active segment whose earlier
@@ -182,6 +187,10 @@ func recoverPartialLine(f segFile) (int64, error) {
 func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.onAppend != nil {
+		before := s.size
+		defer func() { s.onAppend(int(s.size-before), err) }()
+	}
 
 	if s.sealed {
 		return 0, fmt.Errorf("segment: append to sealed segment %q", s.path)
@@ -242,6 +251,9 @@ func (s *Segment) rollbackLocked(size int64) error {
 	}
 	if err := s.file.Truncate(size); err != nil {
 		s.poisoned = fmt.Errorf("rollback truncate to %d: %w", size, err)
+		if s.onPoison != nil {
+			s.onPoison(s.poisoned)
+		}
 		return fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
 	}
 	s.size = size

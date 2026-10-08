@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -174,6 +175,30 @@ type CollectionConfig struct {
 	// persisted index is fully current.
 	OnIndexRecovery func(collection, kind string, bytes int64, dur time.Duration)
 
+	// IntegrityPolicy selects what open does on corruption or conflicting
+	// history found in the segments. The zero value is PolicyFail
+	// (fail-closed); see IntegrityPolicy.
+	IntegrityPolicy IntegrityPolicy
+	// OnIntegrity, when non-nil, is called once per open that scanned the
+	// segments (a full index rebuild) with the policy, an IntegrityOutcome*
+	// value and the report. It fires before a refusal is returned.
+	OnIntegrity func(collection string, policy IntegrityPolicy, outcome string, report *CollectionReport)
+	// OnAppend, when non-nil, is called after every active-segment append
+	// attempt with the collection, the bytes written (0 on failure) and the
+	// error. It runs under the segment lock: keep it cheap and non-blocking.
+	OnAppend func(collection string, bytes int, err error)
+	// OnSegmentPoisoned, when non-nil, is called when a failed write could not
+	// be rolled back and the active segment refuses further appends until the
+	// collection is reopened.
+	OnSegmentPoisoned func(collection, segment string, cause error)
+	// OnLock, when non-nil, is called by Open with the result of acquiring the
+	// exclusive data-directory lock: LockAcquired, LockContended (another
+	// handle/process holds it) or LockFailed. DB-wide.
+	OnLock func(dataDir, result string)
+	// Logger, when non-nil, receives structured recovery, integrity and poison
+	// events. nil keeps the engine silent.
+	Logger *slog.Logger
+
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
 	// test hook invoked after the post-swap primary index persist, before the
@@ -305,6 +330,12 @@ type Collection struct {
 	persistErr atomic.Int64 // failed background persists (test/observability)
 	// persistPasses counts background persist passes (test/observability).
 	persistPasses atomic.Int64
+
+	// Open-time integrity gate state (see integrityGate); touched only by load.
+	gateRan      bool
+	gateFailed   error
+	tolerantOpen bool
+	openReport   *CollectionReport
 }
 
 // OpenCollection opens or creates the collection rooted at dir.
@@ -374,6 +405,9 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	if err := c.load(); err != nil {
+		if c.active != nil {
+			_ = c.active.Close()
+		}
 		return nil, err
 	}
 
@@ -391,6 +425,27 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		go c.syncLoop()
 	}
 	return c, nil
+}
+
+// observeActive installs the append/poison observability hooks on seg.
+func (c *Collection) observeActive(seg *Segment) {
+	if h := c.cfg.OnAppend; h != nil {
+		name := c.name
+		seg.onAppend = func(n int, err error) { h(name, n, err) }
+	}
+	h, l := c.cfg.OnSegmentPoisoned, c.cfg.Logger
+	if h == nil && l == nil {
+		return
+	}
+	name, path := c.name, filepath.Base(seg.Path())
+	seg.onPoison = func(cause error) {
+		if l != nil {
+			l.Error("segment poisoned; appends refused until reopen", "collection", name, "segment", path, "cause", cause)
+		}
+		if h != nil {
+			h(name, path, cause)
+		}
+	}
 }
 
 // syncLoop periodically fsyncs the active segment when SyncModeInterval is
@@ -579,6 +634,7 @@ func (c *Collection) load() error {
 		return fmt.Errorf("collection: open active segment: %w", err)
 	}
 	c.active = active
+	c.observeActive(active)
 
 	// Build the full segment list for index rebuild.
 	all := make([]*Segment, 0, len(c.sealed)+1)
@@ -621,6 +677,18 @@ func (c *Collection) load() error {
 			sidx := newSecondaryIndex(field, false)
 			sidxRebuildsBefore := c.sidxRebuilds.Load()
 			changed, rbErr := c.recoverSecondary(sidx, p, all, swapRecovered)
+			if rbErr != nil {
+				// A strict scan failed: decide whether that is corruption the
+				// policy refuses, or one it opted in to salvaging.
+				tolerant, gerr := c.integrityGate(all)
+				if gerr != nil {
+					return gerr
+				}
+				if tolerant {
+					sidx = newSecondaryIndex(field, false)
+					changed, rbErr = c.recoverSecondary(sidx, p, all, true)
+				}
+			}
 			if rbErr != nil {
 				return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
 			}
@@ -922,7 +990,7 @@ func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, bef
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 	for _, sidx := range c.sidxMap {
-		if err := sidx.rebuild(segs); err != nil {
+		if err := sidx.rebuild(segs, false); err != nil {
 			return err
 		}
 	}
@@ -1241,6 +1309,7 @@ func (c *Collection) rotateSegment() error {
 		return err
 	}
 	c.active = active
+	c.observeActive(active)
 
 	// Persist the newly created segment's directory entry so a crash cannot
 	// lose the file. Skipped in SyncModeNone to preserve fast-mode throughput.
@@ -1698,7 +1767,7 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 
-	if err := sidx.rebuild(all); err != nil {
+	if err := sidx.rebuild(all, false); err != nil {
 		c.sidxMu.Lock()
 		delete(c.sidxMap, field)
 		c.sidxMu.Unlock()

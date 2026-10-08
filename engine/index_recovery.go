@@ -55,6 +55,9 @@ func (c *Collection) IndexRecoveryStats() IndexRecoveryStats {
 }
 
 func (c *Collection) reportRecovery(kind string, bytes int64, start time.Time) {
+	if l := c.cfg.Logger; l != nil {
+		l.Info("index recovery at open", "collection", c.name, "kind", kind, "bytes", bytes, "duration", time.Since(start))
+	}
 	if h := c.cfg.OnIndexRecovery; h != nil {
 		h(c.name, kind, bytes, time.Since(start))
 	}
@@ -77,7 +80,17 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 	start := time.Now()
 	rebuild := func() (bool, error) {
 		c.indexRebuilds.Add(1)
-		if err := c.index.Rebuild(all); err != nil {
+		// Rebuilding is only automatic from segments that read back intact: gate
+		// on a full tolerant scan first (fail-closed unless the policy opted in).
+		tolerant, err := c.integrityGate(all)
+		if err != nil {
+			return false, err
+		}
+		rebuildFn := c.index.Rebuild
+		if tolerant {
+			rebuildFn = c.index.rebuildTolerant
+		}
+		if err := rebuildFn(all); err != nil {
 			return false, fmt.Errorf("collection: rebuild index: %w", err)
 		}
 		c.reportRecovery(IndexRecoveryRebuild, totalSize(all), start)
@@ -313,7 +326,7 @@ func totalSize(segs []*Segment) (n int64) {
 func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Segment, force bool) (changed bool, err error) {
 	rebuild := func() (bool, error) {
 		c.sidxRebuilds.Add(1)
-		if err := sidx.rebuild(all); err != nil {
+		if err := sidx.rebuild(all, c.tolerantOpen); err != nil {
 			return false, err
 		}
 		return true, nil

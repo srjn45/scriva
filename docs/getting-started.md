@@ -301,6 +301,28 @@ before the OS flushes. Use `interval` or `always` when that matters. See
 [architecture.md](architecture.md#durability) for details. Benchmark the
 trade-off on your own hardware with `make bench`.
 
+### Corruption at open: `--integrity-policy`
+
+After a crash, open replays the bytes appended since the last persisted index
+and, if the index cannot be trusted, rebuilds it from the segments. Those are
+the only automatic repairs (plus trimming a torn, never-acknowledged tail on the
+newest segment). If the segments themselves are damaged (a bad region, a glued
+line) or the record history is ambiguous (duplicate ids, id reuse after delete,
+revision conflicts), the server **refuses to start** with an error matching
+`engine.ErrIntegrity` that names the first finding.
+
+| `--integrity-policy` | Behaviour on corruption/conflicts |
+|---|---|
+| `fail` (default) | Refuse to open; nothing is modified |
+| `rebuild-index-only` | Same refusal; pins that rebuilding derived indexes is the only repair |
+| `report` | Open anyway, skip damaged regions (intact records stay readable), log and count the findings |
+
+Inspect a directory without opening it via the integrity verification API
+(`engine.VerifyDir`). The embedded façade offers `scriva.WithIntegrityPolicy`,
+`scriva.WithOnIntegrity` and `scriva.WithLogger`. Recovery, integrity, append,
+poison and lock events are exported as Prometheus metrics (see
+[Prometheus metrics](#prometheus-metrics)) and structured logs.
+
 ---
 
 ## Encryption at rest (embedded)
@@ -1932,6 +1954,15 @@ Available metrics:
 | `scriva_compaction_runs_total` | Counter | `collection` | Total compaction runs per collection |
 | `scriva_compaction_duration_seconds` | Histogram | `collection` | Compaction run duration |
 | `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` | gRPC unary request duration by method and status code |
+| `scriva_recovery_total` | Counter | `collection`, `kind` | Index recovery actions at open (`replay`, `rebuild`, `spotcheck_fail`) |
+| `scriva_recovery_duration_seconds` | Histogram | `collection`, `kind` | Duration of each recovery action |
+| `scriva_recovery_bytes_total` | Counter | `collection`, `kind` | Segment bytes replayed/scanned by recovery |
+| `scriva_integrity_open_total` | Counter | `collection`, `policy`, `outcome` | Open-time integrity scans (`clean`, `reported`, `failed`) |
+| `scriva_integrity_findings_total` | Counter | `collection`, `severity`, `code` | Non-informational findings from open-time scans |
+| `scriva_append_total` / `scriva_append_bytes_total` | Counter | `collection` | Successful segment appends / bytes |
+| `scriva_append_errors_total` | Counter | `collection`, `reason` | Failed appends (`poisoned`, `too_large`, `io`) |
+| `scriva_segment_poisoned_total` | Counter | `collection` | Segments poisoned by an unrollbackable write |
+| `scriva_dir_lock_total` | Counter | `result` | Data-directory lock attempts (`acquired`, `contended`, `failed`) |
 
 Disable metrics by setting `--metrics-addr ""` (or `metrics_addr: ""` in the config file).
 

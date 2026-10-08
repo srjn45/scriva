@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,6 +54,16 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	}
 
 	dl, err := lockDir(dataDir)
+	if h := cfg.OnLock; h != nil {
+		switch {
+		case err == nil:
+			h(dataDir, LockAcquired)
+		case errors.Is(err, ErrDatabaseLocked):
+			h(dataDir, LockContended)
+		default:
+			h(dataDir, LockFailed)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +93,12 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		}
 		col, err := OpenCollection(e.Name(), dataDir, cfg)
 		if err != nil {
+			// Release everything acquired so far so a refused open (for example
+			// ErrIntegrity) leaves the directory re-openable in this process.
+			for _, c := range db.collections {
+				_ = c.Close()
+			}
+			_ = dl.release()
 			return nil, fmt.Errorf("db: open collection %q: %w", e.Name(), err)
 		}
 		col.broker = db.broker
@@ -239,3 +256,10 @@ func (db *DB) Close() error {
 
 	return firstErr
 }
+
+// Results reported through CollectionConfig.OnLock.
+const (
+	LockAcquired  = "acquired"
+	LockContended = "contended"
+	LockFailed    = "failed"
+)
