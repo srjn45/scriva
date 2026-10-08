@@ -25,6 +25,17 @@ type Metrics struct {
 	GRPCDuration       *prometheus.HistogramVec
 	ScanRowsScanned    *prometheus.HistogramVec
 	QuotaRejectedTotal *prometheus.CounterVec
+
+	RecoveryTotal        *prometheus.CounterVec
+	RecoveryDuration     *prometheus.HistogramVec
+	RecoveryBytesTotal   *prometheus.CounterVec
+	IntegrityOpenTotal   *prometheus.CounterVec
+	IntegrityFindings    *prometheus.CounterVec
+	AppendTotal          *prometheus.CounterVec
+	AppendBytesTotal     *prometheus.CounterVec
+	AppendErrorsTotal    *prometheus.CounterVec
+	SegmentPoisonedTotal *prometheus.CounterVec
+	DirLockTotal         *prometheus.CounterVec
 }
 
 // New creates a Metrics and registers all instruments with reg.
@@ -68,7 +79,52 @@ func New(reg prometheus.Registerer) *Metrics {
 		Help: "Total number of writes refused because they would exceed a collection's quota.",
 	}, []string{"collection"})
 
-	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal)
+	// Crash-recovery / integrity observability (open-time).
+	m.RecoveryTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_recovery_total",
+		Help: "Index recovery actions taken at open, by kind (replay|rebuild|spotcheck_fail).",
+	}, []string{"collection", "kind"})
+	m.RecoveryDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "scriva_recovery_duration_seconds",
+		Help:    "Duration of index recovery actions at open, by kind.",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 60, 300},
+	}, []string{"collection", "kind"})
+	m.RecoveryBytesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_recovery_bytes_total",
+		Help: "Segment bytes replayed or scanned by index recovery at open, by kind.",
+	}, []string{"collection", "kind"})
+	m.IntegrityOpenTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_integrity_open_total",
+		Help: "Open-time integrity scans by policy and outcome (clean|reported|failed).",
+	}, []string{"collection", "policy", "outcome"})
+	m.IntegrityFindings = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_integrity_findings_total",
+		Help: "Integrity findings seen by open-time scans, by severity and code.",
+	}, []string{"collection", "severity", "code"})
+	m.AppendTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_append_total",
+		Help: "Successful segment appends.",
+	}, []string{"collection"})
+	m.AppendBytesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_append_bytes_total",
+		Help: "Bytes appended to segments.",
+	}, []string{"collection"})
+	m.AppendErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_append_errors_total",
+		Help: "Failed segment appends by reason (poisoned|too_large|io).",
+	}, []string{"collection", "reason"})
+	m.SegmentPoisonedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_segment_poisoned_total",
+		Help: "Active segments poisoned by a write that could not be rolled back.",
+	}, []string{"collection"})
+	m.DirLockTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_dir_lock_total",
+		Help: "Data-directory lock acquisitions by result (acquired|contended|failed).",
+	}, []string{"result"})
+
+	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal,
+		m.RecoveryTotal, m.RecoveryDuration, m.RecoveryBytesTotal, m.IntegrityOpenTotal, m.IntegrityFindings,
+		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal)
 	return m
 }
 
@@ -157,4 +213,48 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 // Pass prometheus.DefaultGatherer for the default registry.
 func Handler(gatherer prometheus.Gatherer) http.Handler {
 	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})
+}
+
+// ObserveRecovery records one index-recovery action performed at open. It
+// matches engine.CollectionConfig.OnIndexRecovery.
+func (m *Metrics) ObserveRecovery(collection, kind string, bytes int64, dur time.Duration) {
+	m.RecoveryTotal.WithLabelValues(collection, kind).Inc()
+	m.RecoveryDuration.WithLabelValues(collection, kind).Observe(dur.Seconds())
+	if bytes > 0 {
+		m.RecoveryBytesTotal.WithLabelValues(collection, kind).Add(float64(bytes))
+	}
+}
+
+// ObserveIntegrity records one open-time integrity scan: its outcome and each
+// finding at warning level or above (informational findings are not counted).
+func (m *Metrics) ObserveIntegrity(collection, policy, outcome string, findings []IntegrityFinding) {
+	m.IntegrityOpenTotal.WithLabelValues(collection, policy, outcome).Inc()
+	for _, f := range findings {
+		m.IntegrityFindings.WithLabelValues(collection, f.Severity, f.Code).Inc()
+	}
+}
+
+// IntegrityFinding is the metrics-layer view of an engine finding, keeping this
+// package free of an engine dependency.
+type IntegrityFinding struct{ Severity, Code string }
+
+// ObserveAppend records one segment append attempt. reason classifies a failure
+// ("" for success).
+func (m *Metrics) ObserveAppend(collection string, bytes int, reason string) {
+	if reason != "" {
+		m.AppendErrorsTotal.WithLabelValues(collection, reason).Inc()
+		return
+	}
+	m.AppendTotal.WithLabelValues(collection).Inc()
+	m.AppendBytesTotal.WithLabelValues(collection).Add(float64(bytes))
+}
+
+// ObserveSegmentPoisoned records a segment poisoning event.
+func (m *Metrics) ObserveSegmentPoisoned(collection string) {
+	m.SegmentPoisonedTotal.WithLabelValues(collection).Inc()
+}
+
+// ObserveDirLock records a data-directory lock acquisition attempt.
+func (m *Metrics) ObserveDirLock(result string) {
+	m.DirLockTotal.WithLabelValues(result).Inc()
 }

@@ -66,6 +66,13 @@ type Config struct {
 	SyncMode     string        `yaml:"sync_mode"`     // none|always|interval (default: none)
 	SyncInterval time.Duration `yaml:"sync_interval"` // flush cadence for interval mode (default: 1s)
 
+	// IndexPersistInterval is the background index persist cadence (default: 30s, negative = disabled).
+	IndexPersistInterval time.Duration `yaml:"index_persist_interval"`
+
+	// IntegrityPolicy is what open does on corruption or conflicting history:
+	// fail (default, fail-closed) | report | rebuild-index-only.
+	IntegrityPolicy string `yaml:"integrity_policy"`
+
 	// Transactions
 	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
 
@@ -136,8 +143,11 @@ func DefaultConfig() Config {
 		SyncMode:        string(engine.SyncModeNone),
 		SyncInterval:    engine.DefaultSyncInterval,
 		TxTimeout:       5 * time.Minute,
-		WatchBufferSize: engine.DefaultWatchBufferSize,
-		DefaultTTL:      0,
+
+		IndexPersistInterval: engine.DefaultIndexPersistInterval,
+		IntegrityPolicy:      string(engine.PolicyFail),
+		WatchBufferSize:      engine.DefaultWatchBufferSize,
+		DefaultTTL:           0,
 
 		ReplicateFrom:       "",
 		FollowerID:          "",
@@ -166,8 +176,11 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		CompactDirtyPct: c.CompactDirtyPct,
 		SyncMode:        engine.SyncMode(c.SyncMode),
 		SyncInterval:    c.SyncInterval,
-		WatchBufferSize: c.WatchBufferSize,
-		DefaultTTL:      c.DefaultTTL,
+
+		IndexPersistInterval: c.IndexPersistInterval,
+		IntegrityPolicy:      engine.IntegrityPolicy(c.IntegrityPolicy),
+		WatchBufferSize:      c.WatchBufferSize,
+		DefaultTTL:           c.DefaultTTL,
 
 		ReplicationRingSize: c.ReplicationRingSize,
 		// A node started with --replicate-from opens in the follower role so the
@@ -213,9 +226,12 @@ type fileConfig struct {
 	CompactDirtyPct float64        `yaml:"compact_dirty_pct"`
 	SyncMode        string         `yaml:"sync_mode"`
 	SyncInterval    string         `yaml:"sync_interval"`
-	TxTimeout       string         `yaml:"tx_timeout"`
-	WatchBufferSize int            `yaml:"watch_buffer_size"`
-	DefaultTTL      string         `yaml:"default_ttl"`
+
+	IndexPersistInterval string `yaml:"index_persist_interval"`
+	IntegrityPolicy      string `yaml:"integrity_policy"`
+	TxTimeout            string `yaml:"tx_timeout"`
+	WatchBufferSize      int    `yaml:"watch_buffer_size"`
+	DefaultTTL           string `yaml:"default_ttl"`
 
 	ReplicateFrom       string `yaml:"replicate_from"`
 	FollowerID          string `yaml:"follower_id"`
@@ -264,9 +280,12 @@ func LoadConfigFile(path string) (Config, error) {
 		CompactDirtyPct: defaults.CompactDirtyPct,
 		SyncMode:        defaults.SyncMode,
 		SyncInterval:    defaults.SyncInterval.String(),
-		TxTimeout:       defaults.TxTimeout.String(),
-		WatchBufferSize: defaults.WatchBufferSize,
-		DefaultTTL:      defaults.DefaultTTL.String(),
+
+		IndexPersistInterval: defaults.IndexPersistInterval.String(),
+		IntegrityPolicy:      defaults.IntegrityPolicy,
+		TxTimeout:            defaults.TxTimeout.String(),
+		WatchBufferSize:      defaults.WatchBufferSize,
+		DefaultTTL:           defaults.DefaultTTL.String(),
 
 		ReplicateFrom:       defaults.ReplicateFrom,
 		FollowerID:          defaults.FollowerID,
@@ -304,6 +323,11 @@ func LoadConfigFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config file sync_interval %q: %w", fc.SyncInterval, err)
 	}
 
+	indexPersistInterval, err := time.ParseDuration(fc.IndexPersistInterval)
+	if err != nil {
+		return Config{}, fmt.Errorf("config file index_persist_interval %q: %w", fc.IndexPersistInterval, err)
+	}
+
 	txTimeout, err := time.ParseDuration(fc.TxTimeout)
 	if err != nil {
 		return Config{}, fmt.Errorf("config file tx_timeout %q: %w", fc.TxTimeout, err)
@@ -331,9 +355,12 @@ func LoadConfigFile(path string) (Config, error) {
 		CompactDirtyPct: fc.CompactDirtyPct,
 		SyncMode:        fc.SyncMode,
 		SyncInterval:    syncInterval,
-		TxTimeout:       txTimeout,
-		WatchBufferSize: fc.WatchBufferSize,
-		DefaultTTL:      defaultTTL,
+
+		IndexPersistInterval: indexPersistInterval,
+		IntegrityPolicy:      fc.IntegrityPolicy,
+		TxTimeout:            txTimeout,
+		WatchBufferSize:      fc.WatchBufferSize,
+		DefaultTTL:           defaultTTL,
 
 		ReplicateFrom:       fc.ReplicateFrom,
 		FollowerID:          fc.FollowerID,

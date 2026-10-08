@@ -744,6 +744,9 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 	if err := col.CompactNow(); err != nil {
+		if errors.Is(err, engine.ErrCompactionDeferred) {
+			return nil, status.Error(codes.Unavailable, "compaction deferred by active scan; retry shortly")
+		}
 		return nil, status.Errorf(codes.Internal, "compact failed: %v", err)
 	}
 	return &pb.CompactResponse{Ok: true}, nil

@@ -54,6 +54,47 @@ make test         # go test ./... -race -count=1 -coverprofile=coverage.out
 - All tests must pass before opening a PR.
 - Integration tests (`server/grpc_integration_test.go`) spin up a real in-process gRPC server — no mocking of the engine layer.
 
+### Randomized model test and soak
+
+`engine/model_harness_test.go` (`TestModel`) applies a seeded random op sequence to a
+collection and an in-memory model: insert/update/delete/get/scan/scan-index, clean
+reopen, crash-reopen (with optional torn tail), torn writes (injected ENOSPC), compaction
+interleaved with tiny-segment rotation, `CommitTx` with injected write failure, crash-image
+recovery (open a copy of the live dir, check Get/scan/`IndexLookup`), periodic online
+`Verify`, and `Repair` as a no-op on a copied healthy DB. CI runs a fixed set of seeds
+(`modelDefaultSeeds`, 200 steps). Failures print `replay: SCRIVA_MODEL_SEED=<n>`.
+
+| Env var | Meaning |
+|---|---|
+| `SCRIVA_MODEL_SEED` | comma-separated seeds to run (replay) |
+| `SCRIVA_MODEL_STEPS` | ops per seed (default 200) |
+| `SCRIVA_MODEL_OPS` | comma-separated op names to run (default: all) |
+| `SCRIVA_MODEL_SEED_COUNT` / `SCRIVA_MODEL_SEED_BASE` | soak: N consecutive seeds from BASE (default 1000) |
+| `SCRIVA_MODEL_RACE_COMPACTION=1` | let background compaction race the next op (exercises scan-layout lease deferral) |
+
+```bash
+make test-soak                                   # 100 seeds x 500 steps, race detector
+make test-soak SOAK_SEEDS=300 SOAK_STEPS=1000    # longer; also SOAK_BASE, SOAK_TIMEOUT
+```
+
+### Crash, fault and integrity tests
+
+All of these run under `make test` (race detector on) and are hermetic (`t.TempDir()`):
+
+| Test | What it covers |
+|---|---|
+| `TestCrashMatrix_*` (`engine/crash_matrix_test.go`) | single-writer crash at every step boundary, short/torn writes, rotation, compaction swap, index persist, shutdown, using the fault-injecting FS in `faultfs_test.go` |
+| `TestKill9_*` (`engine/multiprocess_kill_test.go`, non-Windows) | a re-exec'd child is SIGKILLed mid-write/rotate/compact; recovered state must equal the acknowledged ops. `SCRIVA_KILL_SEED=<n>` replays one seed, `SCRIVA_KILL_SOAK=1` raises iterations |
+| `TestIntegrityFixtures`, `TestIntegrityFixturesUpToDate` | synthetic incident directories in `engine/testdata/integrity/`; never hand-edit — regenerate with `go generate ./engine` and commit the result |
+| `verify_test.go`, `repair_test.go`, `salvage_test.go`, `sidx_recovery_test.go` | `Verify` / `Repair` / index recovery |
+
+```bash
+go test ./engine -race -count=1 -run 'TestCrashMatrix|TestKill9'
+SCRIVA_KILL_SOAK=1 go test ./engine -race -count=1 -run TestKill9
+go generate ./engine                                     # rewrite integrity fixtures
+go test ./engine -run xxx -bench 'Open|Persist' -benchtime=2x   # recovery cost (SCRIVA_BENCH_N=300000 for the documented table)
+```
+
 Run a specific package:
 
 ```bash

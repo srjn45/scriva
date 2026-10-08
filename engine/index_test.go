@@ -2,6 +2,10 @@
 package engine
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -59,8 +63,8 @@ func TestIndexPersistAndLoad(t *testing.T) {
 	path := filepath.Join(dir, "index.json")
 
 	idx := newIndex()
-	idx.Set(1, IndexEntry{SegmentPath: "seg_000001.ndjson", Offset: 0})
-	idx.Set(2, IndexEntry{SegmentPath: "seg_000001.ndjson", Offset: 100})
+	idx.Set(1, IndexEntry{SegmentPath: filepath.Join(dir, "seg_000001.ndjson"), Offset: 0})
+	idx.Set(2, IndexEntry{SegmentPath: filepath.Join(dir, "seg_000001.ndjson"), Offset: 100})
 
 	if err := idx.Persist(path); err != nil {
 		t.Fatalf("Persist: %v", err)
@@ -151,5 +155,101 @@ func TestIndexRebuildFromSegments(t *testing.T) {
 	}
 	if idx.Len() != 1 {
 		t.Fatalf("expected Len 1, got %d", idx.Len())
+	}
+}
+
+func TestIndexV2RelativePathsAndCoverage(t *testing.T) {
+	dir := t.TempDir()
+	segPath := filepath.Join(dir, "seg_000001.ndjson")
+	if err := os.WriteFile(segPath, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seg, err := openActiveSegment(segPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seg.Close()
+
+	idx := newIndex()
+	idx.Set(1, IndexEntry{SegmentPath: segPath, Offset: 0, Rev: 3})
+	snap, err := idx.Snapshot([]*Segment{seg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "index.json")
+	if err := snap.Persist(path); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	var f indexFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Version != indexFormatV2 || f.Entries[1].SegmentPath != "seg_000001.ndjson" {
+		t.Fatalf("not v2/relative: %s", raw)
+	}
+
+	// Move the directory; entries must resolve under the new location.
+	dst := filepath.Join(t.TempDir(), "moved")
+	if err := os.Rename(dir, dst); err != nil {
+		t.Fatal(err)
+	}
+	idx2 := newIndex()
+	if err := idx2.Load(filepath.Join(dst, "index.json")); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := idx2.Get(1)
+	if e.SegmentPath != filepath.Join(dst, "seg_000001.ndjson") || e.Rev != 3 {
+		t.Fatalf("bad entry %+v", e)
+	}
+	sum := sha256.Sum256([]byte("hello\nworld\n"))
+	cov := idx2.Coverage()
+	if len(cov) != 1 || cov[0].Segment != "seg_000001.ndjson" || cov[0].Size != 12 || cov[0].Checksum != hex.EncodeToString(sum[:]) {
+		t.Fatalf("bad coverage %+v", cov)
+	}
+}
+
+func TestIndexV2TamperedChecksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.json")
+	idx := newIndex()
+	idx.Set(1, IndexEntry{SegmentPath: filepath.Join(dir, "s"), Offset: 5})
+	if err := idx.Persist(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	raw = bytes.Replace(raw, []byte(`"offset":5`), []byte(`"offset":6`), 1)
+	_ = os.WriteFile(path, raw, 0o644)
+	if err := newIndex().Load(path); !errors.Is(err, ErrIndexStale) {
+		t.Fatalf("want ErrIndexStale, got %v", err)
+	}
+	// Unknown version is rejected as stale.
+	_ = os.WriteFile(path, []byte(`{"version":99,"entries":{},"checksum":"x"}`), 0o644)
+	if err := newIndex().Load(path); !errors.Is(err, ErrIndexStale) {
+		t.Fatalf("want ErrIndexStale for unknown version, got %v", err)
+	}
+}
+
+func TestIndexLoadsV1AbsolutePaths(t *testing.T) {
+	dir := t.TempDir()
+	entries := map[uint64]IndexEntry{7: {SegmentPath: "/old/location/seg_000002.ndjson", Offset: 9, Rev: 2}}
+	payload, _ := json.Marshal(entries)
+	sum := sha256.Sum256(payload)
+	b, _ := json.Marshal(map[string]any{"entries": entries, "checksum": hex.EncodeToString(sum[:])})
+	path := filepath.Join(dir, "index.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := newIndex()
+	if err := idx.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := idx.Get(7)
+	if e.SegmentPath != filepath.Join(dir, "seg_000002.ndjson") || e.Offset != 9 || e.Rev != 2 {
+		t.Fatalf("bad entry %+v", e)
+	}
+	if idx.Coverage() != nil && len(idx.Coverage()) != 0 {
+		t.Fatalf("v1 should have no coverage")
 	}
 }

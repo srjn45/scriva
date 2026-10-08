@@ -2,8 +2,8 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +37,16 @@ const (
 // interval is configured.
 const DefaultSyncInterval = time.Second
 
+// DefaultIndexPersistInterval is the background index persist cadence used when
+// CollectionConfig.IndexPersistInterval is zero.
+const DefaultIndexPersistInterval = 30 * time.Second
+
+// DefaultIndexPersistMinInterval is the minimum spacing between background
+// persist passes when CollectionConfig.IndexPersistMinInterval is zero. Segment
+// rotations only request a persist; requests inside this window coalesce into a
+// single deferred pass.
+const DefaultIndexPersistMinInterval = 10 * time.Second
+
 // DefaultWatchBufferSize is the per-subscriber channel buffer used when no size
 // is configured.
 const DefaultWatchBufferSize = 64
@@ -57,6 +67,23 @@ type CollectionConfig struct {
 	SyncMode SyncMode
 	// SyncInterval is the flush cadence for SyncModeInterval. Default: 1s.
 	SyncInterval time.Duration
+
+	// IndexPersistInterval is how often a background goroutine persists the
+	// primary index (and secondary indexes) so a crash replays a bounded tail
+	// instead of rebuilding from every segment. Zero selects
+	// DefaultIndexPersistInterval; a negative value disables periodic persists
+	// (rotation, compaction and Close still persist). Default: 30s.
+	IndexPersistInterval time.Duration
+
+	// IndexPersistMinInterval is the minimum time between background persist
+	// passes. A segment rotation only requests a persist; requests arriving
+	// within this window of the previous pass coalesce into one deferred pass,
+	// so a heavy write load does not re-encode the whole index every rotation.
+	// The effective spacing is also at least 4x the duration of the previous
+	// pass, capping persister CPU at ~20%. Close and compaction persist
+	// unconditionally. Zero selects DefaultIndexPersistMinInterval; a negative
+	// value disables debouncing. Default: 10s.
+	IndexPersistMinInterval time.Duration
 
 	// WatchBufferSize is the per-subscriber channel buffer for Watch. A slow
 	// subscriber that fills its buffer receives an OpOverflow sentinel rather
@@ -141,8 +168,56 @@ type CollectionConfig struct {
 	// It mirrors Quotas. Unlisted collections stay unencrypted.
 	EncryptionByCollection map[string]*EncryptionPolicy
 
+	// OnIndexRecovery, when non-nil, is called at open for each index recovery
+	// action: kind is IndexRecoveryReplay (bytes = replayed segment bytes),
+	// IndexRecoveryRebuild (bytes = total segment bytes scanned) or
+	// IndexRecoverySpotCheckFail, with the elapsed time. Not called when the
+	// persisted index is fully current.
+	OnIndexRecovery func(collection, kind string, bytes int64, dur time.Duration)
+
+	// IntegrityPolicy selects what open does on corruption or conflicting
+	// history found in the segments. The zero value is PolicyFail
+	// (fail-closed); see IntegrityPolicy.
+	IntegrityPolicy IntegrityPolicy
+	// OnIntegrity, when non-nil, is called once per open that scanned the
+	// segments (a full index rebuild) with the policy, an IntegrityOutcome*
+	// value and the report. It fires before a refusal is returned.
+	OnIntegrity func(collection string, policy IntegrityPolicy, outcome string, report *CollectionReport)
+	// OnAppend, when non-nil, is called after every active-segment append
+	// attempt with the collection, the bytes written (0 on failure) and the
+	// error. It runs under the segment lock: keep it cheap and non-blocking.
+	OnAppend func(collection string, bytes int, err error)
+	// OnSegmentPoisoned, when non-nil, is called when a failed write could not
+	// be rolled back and the active segment refuses further appends until the
+	// collection is reopened.
+	OnSegmentPoisoned func(collection, segment string, cause error)
+	// OnLock, when non-nil, is called by Open with the result of acquiring the
+	// exclusive data-directory lock: LockAcquired, LockContended (another
+	// handle/process holds it) or LockFailed. DB-wide.
+	OnLock func(dataDir, result string)
+	// Logger, when non-nil, receives structured recovery, integrity and poison
+	// events. nil keeps the engine silent.
+	Logger *slog.Logger
+
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
+	// test hook invoked after compacted temps are written, before the swap lease
+	// is acquired.
+	postWriteCompactedHook func()
+	// test hook invoked after the post-swap primary index persist, before the
+	// secondary indexes are rebuilt from the new segment layout
+	preSidxRebuildHook func()
+	// test hook invoked by a point read after it resolved the record's location
+	// from the primary index and before it reads the segment (no lock held)
+	postLocateHook func()
+	// test hook invoked by a full scan (streamLive) at each scanHookPoint while
+	// the scan holds its shared layout lease.
+	scanHook func(point scanHookPoint, arg uint64)
+
+	// test seams (nil in production): decorate segment files and intercept the
+	// compactor's renames. See faultfs_test.go.
+	wrapFile fileWrapper
+	renameFn renameFunc
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -161,6 +236,8 @@ func defaultConfig() CollectionConfig {
 		SyncMode:        SyncModeNone,
 		SyncInterval:    DefaultSyncInterval,
 		WatchBufferSize: DefaultWatchBufferSize,
+
+		IndexPersistInterval: DefaultIndexPersistInterval,
 	}
 }
 
@@ -180,11 +257,16 @@ type Collection struct {
 	cfg       CollectionConfig
 	createdAt time.Time
 	mu        sync.RWMutex
-	sealed    []*Segment
-	active    *Segment
-	index     *Index
-	idSeq     atomic.Uint64 // monotonically increasing id counter
-	segSeq    atomic.Uint64 // monotonically increasing segment id counter
+	// layoutMu excludes a full segment scan from a compaction swap. Unlike mu it
+	// is not held by ordinary writers, so a slow client consuming ScanStream
+	// does not stall appends; it only keeps the scan's segment snapshot from
+	// being replaced or unlinked underneath it.
+	layoutMu sync.RWMutex
+	sealed   []*Segment
+	active   *Segment
+	index    *Index
+	idSeq    atomic.Uint64 // monotonically increasing id counter
+	segSeq   atomic.Uint64 // monotonically increasing segment id counter
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -227,14 +309,57 @@ type Collection struct {
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
 	compactMu sync.Mutex    // serializes compaction passes (background + on-demand)
+	// compactRetryPending coalesces retries deferred by active scans.
+	compactRetryPending atomic.Bool
+	compactRetryExp     atomic.Int64
 	// closeDone records that Close has persisted the final index. Guarded by
 	// compactMu: a pass that acquires the lock afterwards must not mutate the
 	// segment layout (see compact). Deliberately distinct from the closed
 	// channel, which tests close directly just to stop the background goroutine
 	// while still driving compact() by hand.
 	closeDone bool
-	closeOnce sync.Once
-	closed    chan struct{}
+	// swapFailed records a compaction swap that failed after mutating segment
+	// files. Guarded by compactMu; cleared only by reopening.
+	swapFailed bool
+	// layoutGen counts compaction swaps. It is bumped under mu (write) before
+	// the first segment file is replaced, so a lock-free point read can tell
+	// that the location it resolved may predate a swap (see getStored).
+	layoutGen atomic.Uint64
+	// indexRebuilds counts full primary-index rebuilds performed by load()
+	// (test-visible: asserts a clean reopen reuses the persisted index).
+	indexRebuilds atomic.Int64
+	// load-time recovery counters (see IndexRecoveryStats).
+	indexReplays      atomic.Int64
+	indexReplayBytes  atomic.Int64
+	spotCheckFailures atomic.Int64
+	sidxReplays       atomic.Int64
+	sidxRebuilds      atomic.Int64
+	closeOnce         sync.Once
+	closed            chan struct{}
+
+	// Background index persistence. persistMu serializes every writer of
+	// index.json/sidx files (loop, Close) so an older snapshot can never land
+	// after a newer one; lock order is compactMu → persistMu → mu. persistC
+	// requests an out-of-cycle persist (after rotation). persistWG tracks the
+	// loop so Close can wait for it. sealedCov memoizes sealed-segment coverage
+	// (guarded by persistMu; cleared by the compactor under mu when it replaces
+	// segment files).
+	persistMu sync.Mutex
+	persistC  chan struct{}
+	persistWG sync.WaitGroup
+	sealedCov map[string]SegmentCoverage
+	// covMemo shares segment-prefix hashes between the primary and secondary
+	// index recovery of one open; nil outside open.
+	covMemo    *coverageMemo
+	persistErr atomic.Int64 // failed background persists (test/observability)
+	// persistPasses counts background persist passes (test/observability).
+	persistPasses atomic.Int64
+
+	// Open-time integrity gate state (see integrityGate); touched only by load.
+	gateRan      bool
+	gateFailed   error
+	tolerantOpen bool
+	openReport   *CollectionReport
 }
 
 // OpenCollection opens or creates the collection rooted at dir.
@@ -266,6 +391,12 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	if cfg.WatchBufferSize <= 0 {
 		cfg.WatchBufferSize = DefaultWatchBufferSize
 	}
+	if cfg.IndexPersistInterval == 0 {
+		cfg.IndexPersistInterval = DefaultIndexPersistInterval
+	}
+	if cfg.IndexPersistMinInterval == 0 {
+		cfg.IndexPersistMinInterval = DefaultIndexPersistMinInterval
+	}
 	// Overlay a per-collection quota (S4) if one is configured for this name.
 	// Quotas is DB-wide (the server builds it from config); the embedded façade
 	// instead sets MaxRecords/MaxBytes directly and leaves Quotas nil.
@@ -292,9 +423,15 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		watchers: make(map[uint64]*watcher),
 		compactC: make(chan struct{}, 1),
 		closed:   make(chan struct{}),
+		persistC: make(chan struct{}, 1),
+
+		sealedCov: make(map[string]SegmentCoverage),
 	}
 
 	if err := c.load(); err != nil {
+		if c.active != nil {
+			_ = c.active.Close()
+		}
 		return nil, err
 	}
 
@@ -306,10 +443,33 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	go c.compactLoop()
+	c.persistWG.Add(1)
+	go c.persistLoop()
 	if c.cfg.SyncMode == SyncModeInterval {
 		go c.syncLoop()
 	}
 	return c, nil
+}
+
+// observeActive installs the append/poison observability hooks on seg.
+func (c *Collection) observeActive(seg *Segment) {
+	if h := c.cfg.OnAppend; h != nil {
+		name := c.name
+		seg.onAppend = func(n int, err error) { h(name, n, err) }
+	}
+	h, l := c.cfg.OnSegmentPoisoned, c.cfg.Logger
+	if h == nil && l == nil {
+		return
+	}
+	name, path := c.name, filepath.Base(seg.Path())
+	seg.onPoison = func(cause error) {
+		if l != nil {
+			l.Error("segment poisoned; appends refused until reopen", "collection", name, "segment", path, "cause", cause)
+		}
+		if h != nil {
+			h(name, path, cause)
+		}
+	}
 }
 
 // syncLoop periodically fsyncs the active segment when SyncModeInterval is
@@ -330,6 +490,125 @@ func (c *Collection) syncLoop() {
 	}
 }
 
+// persistLoop runs for the lifetime of the collection and persists the primary
+// and secondary indexes on a timer (when enabled) and whenever a segment
+// rotation requests it, so crash recovery replays a bounded tail. It exits when
+// the collection is closed; Close waits for it.
+func (c *Collection) persistLoop() {
+	defer c.persistWG.Done()
+	var tick <-chan time.Time
+	if c.cfg.IndexPersistInterval > 0 {
+		t := time.NewTicker(c.cfg.IndexPersistInterval)
+		defer t.Stop()
+		tick = t.C
+	}
+	last := time.Now() // start of the previous pass (open counts: load persisted)
+	var lastDur time.Duration
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-tick:
+		case <-c.persistC:
+			// Rotation request: debounce so bursts of rotations coalesce into
+			// one pass. Timer ticks are already rate-limited and run as-is.
+			if wait := c.persistDelay(last, lastDur); wait > 0 {
+				t := time.NewTimer(wait)
+				select {
+				case <-c.closed:
+					t.Stop()
+					return
+				case <-t.C:
+				}
+				// Drop a request that arrived while waiting; this pass covers it.
+				select {
+				case <-c.persistC:
+				default:
+				}
+			}
+		}
+		last = time.Now()
+		c.persistPasses.Add(1)
+		if err := c.persistIndexes(); err != nil {
+			c.persistErr.Add(1)
+		}
+		lastDur = time.Since(last)
+	}
+}
+
+// persistDelay returns how long a rotation-requested persist must still wait:
+// the larger of the configured minimum interval and 4x the previous pass
+// duration, measured from the previous pass's start.
+func (c *Collection) persistDelay(last time.Time, lastDur time.Duration) time.Duration {
+	if c.cfg.IndexPersistMinInterval < 0 {
+		return 0
+	}
+	min := c.cfg.IndexPersistMinInterval
+	if d := 4 * lastDur; d > min {
+		min = d
+	}
+	return min - time.Since(last)
+}
+
+// persistIndexes writes a consistent point-in-time primary index (with segment
+// coverage) and the secondary indexes. The active segment is fsynced first so
+// the coverage never claims bytes a crash could lose. It is a no-op once Close
+// has run. Sealed-segment coverage is memoized, so the work under the read lock
+// is bounded by the active segment size, not the data set.
+func (c *Collection) persistIndexes() error {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+
+	c.mu.RLock()
+	select {
+	case <-c.closed:
+		// Close (or a test) stopped us; Close writes the final index itself.
+		c.mu.RUnlock()
+		return nil
+	default:
+	}
+	if err := c.active.Sync(); err != nil {
+		c.mu.RUnlock()
+		return err
+	}
+	segs := make([]*Segment, 0, len(c.sealed)+1)
+	sealed := make(map[*Segment]bool, len(c.sealed))
+	for _, s := range c.sealed {
+		segs = append(segs, s)
+		sealed[s] = true
+	}
+	segs = append(segs, c.active)
+	snap, err := c.index.snapshotCached(segs, sealed, c.sealedCov)
+	// Secondary buckets are copied under the same lock so their coverage is
+	// exactly snap.coverage.
+	sidxSnaps := make(map[string]*sidxSnapshot)
+	if err == nil {
+		c.sidxMu.RLock()
+		for field, sidx := range c.sidxMap {
+			sidxSnaps[field] = sidx.snapshot()
+		}
+		c.sidxMu.RUnlock()
+	}
+	c.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+		return err
+	}
+	c.sidxMu.RLock() // excludes DropIndex so a dropped index's file isn't resurrected
+	defer c.sidxMu.RUnlock()
+	for field, sn := range sidxSnaps {
+		if _, live := c.sidxMap[field]; !live {
+			continue
+		}
+		if err := sn.write(sidxFilePath(c.dir, field), snap.coverage, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // load reads existing segments from disk, restores the index, and opens
 // or creates the active (write) segment.
 func (c *Collection) load() error {
@@ -347,7 +626,16 @@ func (c *Collection) load() error {
 	if err != nil {
 		return fmt.Errorf("collection: glob segments: %w", err)
 	}
-	sort.Strings(paths)
+	// Order by numeric segment id, not lexically, so the active (newest)
+	// segment is last even past seg_999999.
+	sort.SliceStable(paths, func(i, j int) bool {
+		ni, _ := segmentNum(paths[i])
+		nj, _ := segmentNum(paths[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return paths[i] < paths[j]
+	})
 
 	// Identify the active (latest) segment — the one we'll append to.
 	// All others are sealed.
@@ -365,11 +653,12 @@ func (c *Collection) load() error {
 		}
 	}
 
-	active, err := openActiveSegment(activePath)
+	active, err := openActiveSegmentWith(activePath, c.cfg.wrapFile)
 	if err != nil {
 		return fmt.Errorf("collection: open active segment: %w", err)
 	}
 	c.active = active
+	c.observeActive(active)
 
 	// Build the full segment list for index rebuild.
 	all := make([]*Segment, 0, len(c.sealed)+1)
@@ -385,35 +674,23 @@ func (c *Collection) load() error {
 	}
 	c.segSeq.Store(maxSeg)
 
-	// Try loading the persisted index.
+	// Validate the persisted index against the segments (tail replay or full
+	// rebuild); see recoverIndex.
 	indexPath := filepath.Join(c.dir, "index.json")
-	rebuilt := swapRecovered
-	if !rebuilt {
-		err = c.index.Load(indexPath)
-		if err != nil && !errors.Is(err, ErrIndexStale) && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("collection: load index: %w", err)
-		}
-		if err == nil {
-			// The checksum only guards the index's own contents. Verify every
-			// entry points inside a segment that actually exists — an index
-			// persisted by a Close() that raced a compaction swap validates its
-			// checksum yet references segments the swap deleted (#68).
-			sizes := make(map[string]int64, len(all))
-			for _, seg := range all {
-				sizes[seg.Path()] = seg.Size()
-			}
-			if !c.index.segmentsValid(sizes) {
-				err = ErrIndexStale
-			}
-		}
-		rebuilt = err != nil
+	c.covMemo = &coverageMemo{}
+	defer func() { c.covMemo = nil }()
+	rebuildsBefore := c.indexRebuilds.Load()
+	changed, err := c.recoverIndex(all, indexPath, swapRecovered)
+	if err != nil {
+		return err
 	}
-	if rebuilt {
-		// Stale, missing, or dangling — rebuild from the segments.
-		if rbErr := c.index.Rebuild(all); rbErr != nil {
-			return fmt.Errorf("collection: rebuild index: %w", rbErr)
+	// Only a full rebuild is worth persisting synchronously. A tail replay is
+	// O(tail) to redo, and the background persister (timer, rotation, Close)
+	// writes the result off the open path.
+	if changed && c.indexRebuilds.Load() != rebuildsBefore {
+		if snap, snErr := c.index.Snapshot(all); snErr == nil {
+			_ = snap.Persist(indexPath)
 		}
-		_ = c.index.Persist(indexPath)
 	}
 
 	// Reload any previously persisted secondary indexes.
@@ -424,24 +701,33 @@ func (c *Collection) load() error {
 			field := base[len("sidx_") : len(base)-len(".json")]
 			// Load() restores the persisted unique flag; false is a placeholder.
 			sidx := newSecondaryIndex(field, false)
-			if err := sidx.Load(p); err != nil {
-				// stale/corrupt — rebuild from segments
-				if rbErr := sidx.rebuild(all); rbErr != nil {
-					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+			sidxRebuildsBefore := c.sidxRebuilds.Load()
+			changed, rbErr := c.recoverSecondary(sidx, p, all, swapRecovered)
+			if rbErr != nil {
+				// A strict scan failed: decide whether that is corruption the
+				// policy refuses, or one it opted in to salvaging.
+				tolerant, gerr := c.integrityGate(all)
+				if gerr != nil {
+					return gerr
 				}
-				_ = sidx.Persist(p)
-			} else if rebuilt {
-				// The primary index had to be rebuilt, so this checksum-valid
-				// sidx may equally describe the pre-crash layout. Rebuild it
-				// from the same segments (Load already restored its unique flag).
-				if rbErr := sidx.rebuild(all); rbErr != nil {
-					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+				if tolerant {
+					sidx = newSecondaryIndex(field, false)
+					changed, rbErr = c.recoverSecondary(sidx, p, all, true)
 				}
-				_ = sidx.Persist(p)
+			}
+			if rbErr != nil {
+				return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+			}
+			if changed && c.sidxRebuilds.Load() != sidxRebuildsBefore {
+				_ = persistSecondary(sidx, p, all)
 			}
 			c.sidxMap[field] = sidx
 		}
 	}
+
+	// Prefix hashes computed while validating coverage are exact for these
+	// files, so the first periodic persist need not re-read sealed segments.
+	c.seedSealedCoverage(all)
 
 	// Restore the id counter.
 	// Fast path: load from meta.json written by a previous clean run or
@@ -455,7 +741,7 @@ func (c *Collection) load() error {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
-		if amax := c.activeMaxID(); amax > c.idSeq.Load() {
+		if amax := c.tailMaxID(all); amax > c.idSeq.Load() {
 			c.idSeq.Store(amax)
 		}
 		return nil
@@ -492,20 +778,29 @@ func (c *Collection) load() error {
 	return nil
 }
 
-// activeMaxID returns the highest entry id present in the active segment, or 0
-// if it is empty or unreadable. Used to reconcile the id counter on load.
-func (c *Collection) activeMaxID() uint64 {
-	entries, err := c.active.ScanAll()
-	if err != nil {
-		return 0
-	}
-	var maxID uint64
-	for _, e := range entries {
-		if e.ID > maxID {
-			maxID = e.ID
+// tailMaxID returns the highest entry id in the newest non-empty segment of
+// all (oldest first), or 0 if none is readable. Ids are assigned monotonically
+// and appended in order, so that segment holds the most recently assigned id.
+// Walking back past empty segments matters after a crash between rotation
+// creating a fresh active segment and meta.json being persisted: the active
+// segment is empty, and the stale counter would otherwise reissue ids.
+func (c *Collection) tailMaxID(all []*Segment) uint64 {
+	for i := len(all) - 1; i >= 0; i-- {
+		entries, err := all[i].ScanAll()
+		if err != nil {
+			continue
+		}
+		var maxID uint64
+		for _, e := range entries {
+			if e.ID > maxID {
+				maxID = e.ID
+			}
+		}
+		if maxID > 0 {
+			return maxID
 		}
 	}
-	return maxID
+	return 0
 }
 
 // syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
@@ -646,6 +941,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	}
 
 	c.mu.Lock()
+	startSize := c.active.Size()
 	// Atomic budget gate for the whole batch — refuse before any append.
 	if err := c.checkQuotaLocked(uint64(len(records)), newBytes); err != nil {
 		c.mu.Unlock()
@@ -660,14 +956,22 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	for i, e := range entries {
 		offset, err := c.active.Append(e)
 		if err != nil {
+			rollbackErr := c.rollbackBatchLocked(startSize, ids[:i], nil)
 			c.mu.Unlock()
+			if rollbackErr != nil {
+				return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
+			}
 			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 		}
 		c.index.Set(ids[i], IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: e.Epoch})
 		c.sidxIndexEntry(ids[i], records[i])
 	}
 	if err := c.syncActiveLocked(); err != nil {
+		rollbackErr := c.rollbackBatchLocked(startSize, ids, nil)
 		c.mu.Unlock()
+		if rollbackErr != nil {
+			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w (rollback: %w)", err, rollbackErr)
+		}
 		return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 	}
 	for _, e := range entries {
@@ -686,6 +990,41 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 		c.emit(WatchEvent{Op: store.OpInsert, ID: ids[i], Data: records[i], Ts: ts})
 	}
 	return ids, ts, nil
+}
+
+// rollbackBatchLocked restores the active segment and all in-memory indexes to
+// their state before a multi-entry write began. The caller holds c.mu. It is a
+// failure-only path, so rebuilding secondary indexes from the restored segment
+// is preferable to trying to reverse subtle sequences such as update/delete/
+// update of the same ID.
+//
+// inserted contains IDs which did not exist before the batch. before records
+// the original primary-index state for transaction-touched IDs; an absent map
+// value means that ID did not exist before the transaction.
+func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, before map[uint64]IndexEntry) error {
+	if err := c.active.rollback(startSize); err != nil {
+		return err
+	}
+	for _, id := range inserted {
+		c.index.Delete(id)
+	}
+	for id, entry := range before {
+		if entry.SegmentPath == "" {
+			c.index.Delete(id)
+			continue
+		}
+		c.index.Set(id, entry)
+	}
+
+	segs := append(append([]*Segment(nil), c.sealed...), c.active)
+	c.sidxMu.RLock()
+	defer c.sidxMu.RUnlock()
+	for _, sidx := range c.sidxMap {
+		if err := sidx.rebuild(segs, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Update overwrites the data for an existing record. Data that sets the
@@ -812,37 +1151,72 @@ type Record struct {
 // but without decrypting. Get decrypts on top of this, and the scan paths use it
 // directly so the single decrypt happens once at the yield boundary.
 func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
-	c.mu.RLock()
-	loc, ok := c.index.Get(id)
-	c.mu.RUnlock()
+	// A compaction swap replaces sealed segment files and rewrites every index
+	// location under c.mu. The segment read below runs without the lock, so a
+	// swap landing between the index lookup and the read would have it follow a
+	// pre-swap location into the post-swap layout: a segment that no longer
+	// exists, or a reused file name holding different bytes at that offset.
+	// Reads are therefore optimistic: one that overlapped a swap is discarded
+	// and retried. After a few overlaps the read is done under the lock, which
+	// excludes the swap, so it always terminates.
+	const optimisticReads = 3
+	for attempt := 0; ; attempt++ {
+		locked := attempt >= optimisticReads
 
-	if !ok {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
+		c.mu.RLock()
+		gen := c.layoutGen.Load()
+		loc, ok := c.index.Get(id)
+		var seg *Segment
+		if ok {
+			seg = c.segmentByPathLocked(loc.SegmentPath)
+		}
+		if !locked {
+			c.mu.RUnlock()
+		}
+
+		e, err := c.readLocated(id, loc, ok, seg)
+		if locked {
+			c.mu.RUnlock()
+			return e, loc, err
+		}
+		if c.layoutGen.Load() == gen {
+			return e, loc, err
+		}
+	}
+}
+
+// readLocated reads the record a primary-index lookup resolved to (loc, found,
+// seg), applying the not-found and TTL-expiry rules. The result is only
+// meaningful if no compaction swap ran since the lookup; getStored checks that.
+func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment) (store.Entry, error) {
+	if !found {
+		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	// Defensively hide records whose TTL has passed but which the reaper has not
 	// yet reclaimed, so an expired record is never observable.
 	if c.isExpired(loc) {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
+		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
-
-	seg := c.segmentByPath(loc.SegmentPath)
 	if seg == nil {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: segment not found for id %d", id)
+		return store.Entry{}, fmt.Errorf("collection: get: segment not found for id %d", id)
+	}
+	if c.cfg.postLocateHook != nil {
+		c.cfg.postLocateHook()
 	}
 
 	e, err := seg.ReadAt(loc.Offset)
 	if err != nil {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: %w", err)
+		return store.Entry{}, fmt.Errorf("collection: get: %w", err)
 	}
 	if e.ID != id {
-		return store.Entry{}, IndexEntry{}, &IntegrityError{
+		return store.Entry{}, &IntegrityError{
 			ID:          id,
 			FoundID:     e.ID,
 			SegmentPath: loc.SegmentPath,
 			Offset:      loc.Offset,
 		}
 	}
-	return e, loc, nil
+	return e, nil
 }
 
 // Get returns the fully-resolved record for id, including its current revision.
@@ -995,11 +1369,12 @@ func (c *Collection) rotateSegment() error {
 
 	// Number the new active segment globally to avoid collisions with compactor.
 	newPath := c.segmentPath(c.segSeq.Add(1))
-	active, err := openActiveSegment(newPath)
+	active, err := openActiveSegmentWith(newPath, c.cfg.wrapFile)
 	if err != nil {
 		return err
 	}
 	c.active = active
+	c.observeActive(active)
 
 	// Persist the newly created segment's directory entry so a crash cannot
 	// lose the file. Skipped in SyncModeNone to preserve fast-mode throughput.
@@ -1013,9 +1388,14 @@ func (c *Collection) rotateSegment() error {
 	_ = persistMeta(filepath.Join(c.dir, metaFilename),
 		c.metaSnapshot())
 
-	// Signal the compactor.
+	// Signal the compactor, and ask the persist loop to record the sealed
+	// segment in the on-disk index off the write path.
 	select {
 	case c.compactC <- struct{}{}:
+	default:
+	}
+	select {
+	case c.persistC <- struct{}{}:
 	default:
 	}
 	return nil
@@ -1064,6 +1444,19 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	}
 
 	c.mu.Lock()
+	startSize := c.active.Size()
+	// Save the first pre-commit primary-index state for every ID. Operations in
+	// a transaction may touch an ID more than once, so recording state per-op
+	// would restore an intermediate transaction state rather than the state
+	// visible before the commit began.
+	before := make(map[uint64]IndexEntry, len(ops))
+	present := make(map[uint64]bool, len(ops))
+	for _, op := range ops {
+		if _, seen := present[op.id]; seen {
+			continue
+		}
+		before[op.id], present[op.id] = c.index.Get(op.id)
+	}
 
 	// Pre-validate: ensure every update/delete target still exists.
 	for _, op := range ops {
@@ -1155,7 +1548,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: insert id %d: %w (rollback: %w)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: txEpoch})
@@ -1183,7 +1580,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.Epoch = txEpoch
 			offset, err := c.active.Append(e)
 			if err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: update id %d: %w (rollback: %w)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp, Epoch: txEpoch})
@@ -1195,7 +1596,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e := store.NewDelete(op.id)
 			e.Ts = op.ts
 			if _, err := c.active.Append(e); err != nil {
+				rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 				c.mu.Unlock()
+				if rollbackErr != nil {
+					return fmt.Errorf("tx commit: delete id %d: %w (rollback: %w)", op.id, err, rollbackErr)
+				}
 				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
 			}
 			c.index.Delete(op.id)
@@ -1206,7 +1611,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	}
 
 	if err := c.syncActiveLocked(); err != nil {
+		rollbackErr := c.rollbackBatchLocked(startSize, nil, before)
 		c.mu.Unlock()
+		if rollbackErr != nil {
+			return fmt.Errorf("tx commit: sync: %w (rollback: %w)", err, rollbackErr)
+		}
 		return fmt.Errorf("tx commit: sync: %w", err)
 	}
 	for _, e := range committed {
@@ -1252,18 +1661,28 @@ func (c *Collection) Close() error {
 	c.compactMu.Lock()
 	defer c.compactMu.Unlock()
 	c.closeDone = true
+	// Stop the background persister and wait out any persist in flight so the
+	// final index below is the last writer.
+	c.persistWG.Wait()
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if err := c.active.Close(); err != nil {
 		return err
 	}
-	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+	closeSegs := append(append([]*Segment(nil), c.sealed...), c.active)
+	snap, err := c.index.Snapshot(closeSegs)
+	if err != nil {
+		return err
+	}
+	if err := snap.Persist(filepath.Join(c.dir, "index.json")); err != nil {
 		return err
 	}
 	c.sidxMu.RLock()
 	for field, sidx := range c.sidxMap {
-		_ = sidx.Persist(sidxFilePath(c.dir, field))
+		_ = sidx.PersistWithCoverage(sidxFilePath(c.dir, field), snap.coverage)
 	}
 	c.sidxMu.RUnlock()
 	return persistMeta(filepath.Join(c.dir, metaFilename),
@@ -1393,6 +1812,13 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	if enc := c.enc.Load(); enc != nil && enc.isEncryptedField(field) {
 		return fmt.Errorf("%w: cannot index encrypted field %q", crypto.ErrFieldEncrypted, field)
 	}
+	// Register, rebuild and persist under the collection write lock: the
+	// coverage recorded with the file must describe exactly the segment bytes
+	// the buckets were built from, so no write may land in between — and no
+	// snapshot taken under c.mu (Verify) may observe the index registered but
+	// not yet built. Lock order is mu → sidxMu, as on the write path.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.sidxMu.Lock()
 	if _, exists := c.sidxMap[field]; exists {
 		c.sidxMu.Unlock()
@@ -1402,20 +1828,17 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	c.sidxMap[field] = sidx
 	c.sidxMu.Unlock()
 
-	// Rebuild under collection read lock so we get a consistent snapshot.
-	c.mu.RLock()
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
-	c.mu.RUnlock()
 
-	if err := sidx.rebuild(all); err != nil {
+	if err := sidx.rebuild(all, false); err != nil {
 		c.sidxMu.Lock()
 		delete(c.sidxMap, field)
 		c.sidxMu.Unlock()
 		return fmt.Errorf("collection: ensure index %q: %w", field, err)
 	}
-	return sidx.Persist(sidxFilePath(c.dir, field))
+	return persistSecondary(sidx, sidxFilePath(c.dir, field), all)
 }
 
 // DropIndex removes the secondary index for field and deletes its file.
@@ -1619,4 +2042,19 @@ func (c *Collection) indexRangeLookup(field string, op query.Op, val any) ([]uin
 		return nil, false
 	}
 	return sidx.LookupRange(op, val)
+}
+
+// seedSealedCoverage moves the prefix hashes verified during open into the
+// sealed-coverage cache (keyed by path and size, so a segment that has since
+// grown is never served a stale entry).
+func (c *Collection) seedSealedCoverage(all []*Segment) {
+	if c.covMemo == nil {
+		return
+	}
+	for _, seg := range all {
+		key := fmt.Sprintf("%s|%d", seg.Path(), seg.Size())
+		if sum, ok := c.covMemo.sums[key]; ok {
+			c.sealedCov[seg.Path()] = SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: seg.Size(), Checksum: sum}
+		}
+	}
 }

@@ -44,3 +44,27 @@ func (l *dirLock) unlockOS() error {
 	var overlapped windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &overlapped)
 }
+
+// probeDirLockOS reports whether another holder has the directory LOCK,
+// without creating the file or taking ownership.
+func probeDirLockOS(dir string) (bool, error) {
+	f, err := os.Open(filepath.Join(dir, "LOCK"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	var overlapped windows.Overlapped
+	// Shared, fail-immediately: conflicts only with an exclusive holder.
+	err = windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+	if err == windows.ERROR_LOCK_VIOLATION {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &overlapped)
+	return false, nil
+}

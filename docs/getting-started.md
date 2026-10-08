@@ -67,6 +67,8 @@ All flags and their defaults:
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval` |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval` |
+| `--index-persist-interval` | `30s` | Background index persist cadence; bounds the tail replayed after a crash (negative disables) |
+| `--integrity-policy` | `fail` | Open policy on segment corruption/conflicts: `fail`, `report`, or `rebuild-index-only` (see [Corruption at open](#corruption-at-open---integrity-policy)) |
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = disabled) |
 | `--default-ttl` | `0` | Default expiry applied to inserted records (`0` = never expire), e.g. `24h` |
 | `--watch-buffer` | `64` | Per-subscriber Watch event buffer; a slow subscriber gets an `OVERFLOW` signal once full |
@@ -100,6 +102,8 @@ compact_interval: 5m
 compact_dirty_pct: 0.30
 sync_mode: none             # none | always | interval
 sync_interval: 1s           # used when sync_mode: interval
+index_persist_interval: 30s # background index persist cadence (negative = off)
+integrity_policy: fail      # fail | report | rebuild-index-only
 tx_timeout: 5m              # reap transactions idle longer than this (0 = disabled)
 default_ttl: 0              # expire inserted records after this long (0 = never), e.g. 24h
 watch_buffer_size: 64       # per-subscriber Watch buffer before an OVERFLOW signal
@@ -298,6 +302,29 @@ writes, but a write acknowledged under `none` can still vanish if power is lost
 before the OS flushes. Use `interval` or `always` when that matters. See
 [architecture.md](architecture.md#durability) for details. Benchmark the
 trade-off on your own hardware with `make bench`.
+
+### Corruption at open: `--integrity-policy`
+
+After a crash, open replays the bytes appended since the last persisted index
+and, if the index cannot be trusted, rebuilds it from the segments. Those are
+the only automatic repairs (plus trimming a torn, never-acknowledged tail on the
+newest segment). If the segments themselves are damaged (a bad region, a glued
+line) or the record history is ambiguous (duplicate ids, id reuse after delete,
+revision conflicts), the server **refuses to start** with an error matching
+`engine.ErrIntegrity` that names the first finding.
+
+| `--integrity-policy` | Behaviour on corruption/conflicts |
+|---|---|
+| `fail` (default) | Refuse to open; nothing is modified |
+| `rebuild-index-only` | Same refusal; pins that rebuilding derived indexes is the only repair |
+| `report` | Open anyway, skip damaged regions (intact records stay readable), log and count the findings |
+
+Inspect a directory without opening it via the integrity verification API
+(`engine.VerifyDir`). The embedded façade offers `scriva.WithIntegrityPolicy`,
+`scriva.WithOnIntegrity` and `scriva.WithLogger`. Recovery, integrity, append,
+poison and lock events are exported as Prometheus metrics (see
+[Prometheus metrics](#prometheus-metrics)) and structured logs.
+If open fails, follow the [index recovery runbook](runbook-index-recovery.md).
 
 ---
 
@@ -623,6 +650,10 @@ scriva-cli delete products 1
 scriva-cli stats products
 scriva-cli compact products
 ```
+
+`compact` may report that an active full scan deferred the pass. This is
+retryable: wait briefly and run the command again; scans are deliberately not
+blocked by an on-demand compaction.
 
 ### Batch script (.fql)
 
@@ -1090,6 +1121,47 @@ curl -H "x-api-key: dev-key" -X POST \
 
 ---
 
+## Offline integrity check & repair
+
+Two local commands operate directly on a data directory (no server, no network). Stop the server first.
+
+```bash
+scriva verify --data ./data [--collection NAME] [--mode quick|full] [--json]
+scriva repair --data ./data [--collection NAME] [--salvage] [--on-conflict report|abort] [--dry-run] [--backup-dir DIR] [--json]
+```
+
+- `verify` is read-only. `repair --dry-run` verifies and prints the plan without changing anything.
+- `repair` takes a verified backup (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`) before its first change, rebuilds indexes/id counters from the segments, and prints the backup path and next steps. Damaged segment bytes are only touched with `--salvage`, which copies their valid records into a new segment and moves the damaged originals (never deletes them) to `<collection>/quarantine/<run>/` with a `MANIFEST.json`; open, verify and rebuild never read that directory; conflicting history is never resolved automatically (`--on-conflict abort` refuses before touching anything).
+- `repair` and `repair --dry-run` refuse a directory that is open in another process (exit 3).
+- `--backup-dir` must resolve outside `--data`; symlinks (including on the path to a not-yet-created directory) are followed before the check.
+- `verify` and `repair` skip the server's API key, TLS and ports entirely; they need only filesystem access to `--data`. `--mode full` (default) scans every segment; `--mode quick` is a bounded spot check for routine health probes.
+
+Example (a directory whose index offsets are wrong):
+
+```text
+$ scriva verify --data ./data
+verify ./data (mode full)
+  collection c: 1 segment(s), 4 live record(s), 2 finding(s)
+    [repairable-index] index-wrong-record seg_000001.ndjson@94: index offset holds a record for id 2, not 1
+    [repairable-index] index-dangling-offset seg_000001.ndjson@191: index offset is not the start of any record
+result: repairable (exit 1)
+
+$ scriva repair --data ./data --dry-run     # plan only, nothing modified
+$ scriva repair --data ./data               # backup first, then rebuild from segments
+  collection c: repaired
+    action: rebuild-derived index.json 4 live records, 1 segments, 0 secondary indexes, id counter 4
+backup: ./repair-backup-20261008T112034Z
+result: clean (exit 0)
+
+$ scriva verify --data ./data               # expect exit 0 before restarting the server
+```
+
+Guarantees: `verify` never writes; `repair` never edits or deletes segment bytes (`--salvage` only moves damaged originals into quarantine), always has a verified backup before its first change, never resolves conflicting history, and is safe to re-run after an interruption.
+
+Exit codes: `0` clean/repaired, `1` repairable (verify, or dry-run would apply changes), `2` data corruption or conflicts, `3` usage error, unreadable directory, or locked directory.
+
+For the full decision tree and safe stop → backup → repair → reverify sequence, see the [index recovery runbook](runbook-index-recovery.md).
+
 ## Backup & restore
 
 `scriva-cli backup` streams a consistent, gzip-compressed snapshot of the entire
@@ -1305,6 +1377,21 @@ engine acquires an exclusive OS-level advisory lock on the database directory.
 Only one writer (one process, or one DB instance within a process) may open a
 directory at a time; a second `Open` will fail with `ErrDatabaseLocked`. To share
 a database across multiple processes, use the gRPC server instead of embedding.
+
+**Always `Close`.** `Close` flushes, persists the index and releases the directory
+lock, so the next open is a fast clean reopen. Trap `SIGTERM`/`SIGINT` and close
+after your own work has drained; a hard kill is survivable (open trims a torn tail
+and replays the index from where it left off) but costs startup time:
+
+```go
+db, err := scriva.Open("./data")
+switch {
+case errors.Is(err, engine.ErrDatabaseLocked): // another owner has the directory
+case errors.Is(err, engine.ErrIntegrity):      // damaged data: stop, see the recovery runbook
+case err != nil:
+}
+defer db.Close()
+```
 
 ```go
 // Explicit per-record deadline, overriding any collection default.
@@ -1930,6 +2017,15 @@ Available metrics:
 | `scriva_compaction_runs_total` | Counter | `collection` | Total compaction runs per collection |
 | `scriva_compaction_duration_seconds` | Histogram | `collection` | Compaction run duration |
 | `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` | gRPC unary request duration by method and status code |
+| `scriva_recovery_total` | Counter | `collection`, `kind` | Index recovery actions at open (`replay`, `rebuild`, `spotcheck_fail`) |
+| `scriva_recovery_duration_seconds` | Histogram | `collection`, `kind` | Duration of each recovery action |
+| `scriva_recovery_bytes_total` | Counter | `collection`, `kind` | Segment bytes replayed/scanned by recovery |
+| `scriva_integrity_open_total` | Counter | `collection`, `policy`, `outcome` | Open-time integrity scans (`clean`, `reported`, `failed`) |
+| `scriva_integrity_findings_total` | Counter | `collection`, `severity`, `code` | Non-informational findings from open-time scans |
+| `scriva_append_total` / `scriva_append_bytes_total` | Counter | `collection` | Successful segment appends / bytes |
+| `scriva_append_errors_total` | Counter | `collection`, `reason` | Failed appends (`poisoned`, `too_large`, `io`) |
+| `scriva_segment_poisoned_total` | Counter | `collection` | Segments poisoned by an unrollbackable write |
+| `scriva_dir_lock_total` | Counter | `result` | Data-directory lock attempts (`acquired`, `contended`, `failed`) |
 
 Disable metrics by setting `--metrics-addr ""` (or `metrics_addr: ""` in the config file).
 
@@ -1941,6 +2037,13 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 ```
+
+Alert on `increase(scriva_integrity_open_total{outcome="failed"}[15m]) > 0`, `increase(scriva_segment_poisoned_total[15m]) > 0` and `increase(scriva_dir_lock_total{result="contended"}[15m]) > 0`; sample rules are in the [index recovery runbook](runbook-index-recovery.md#7-metrics-and-a-sample-alert). A frequent `scriva_recovery_total{kind="rebuild"}` means restarts are not clean — check that your orchestrator sends `SIGTERM` and waits long enough.
+
+### Graceful shutdown
+
+`SIGTERM`/`SIGINT` flips health to `NOT_SERVING`, drains in-flight RPCs, then closes the engine (flush, persist indexes, release the directory lock). Give the process time to finish (Kubernetes: `terminationGracePeriodSeconds`; systemd: `TimeoutStopSec`) before `SIGKILL`, because a killed server reopens with an index replay instead of a clean reopen. Only one `scriva serve` (or embedded program) may own a data directory.
+
 ---
 
 ## Structured logging

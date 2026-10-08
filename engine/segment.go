@@ -44,16 +44,67 @@ type Segment struct {
 	path   string
 	size   int64
 	sealed bool
-	file   *os.File // non-nil only for the active (write) segment
+	file   segFile // non-nil only for the active (write) segment
+	// poisoned is set when a failed Append could not be rolled back, so the
+	// file may hold torn bytes past s.size. Every later Append is refused;
+	// reopening runs recoverPartialLine, which trims the torn tail.
+	poisoned error
+	// onAppend and onPoison are optional observability hooks installed by the
+	// owning collection (nil for compactor temp segments and in tests). They
+	// run under s.mu and must not block or call back into the segment.
+	onAppend func(bytes int, err error)
+	onPoison func(cause error)
+}
+
+// ErrSegmentPoisoned is returned by Append on an active segment whose earlier
+// failed write could not be rolled back.
+var ErrSegmentPoisoned = errors.New("segment: poisoned by unrecoverable partial write")
+
+// segFile is the set of file operations the active segment performs. *os.File
+// satisfies it, and an *os.File stored in the interface is a plain pointer, so
+// the production path pays one indirect call per op and no allocation. It is a
+// test seam: see fileWrapper and the fault harness in faultfs_test.go.
+type segFile interface {
+	Write(b []byte) (int, error)
+	Sync() error
+	Truncate(size int64) error
+	Close() error
+	Stat() (os.FileInfo, error)
+	ReadAt(b []byte, off int64) (int, error)
+	Seek(offset int64, whence int) (int64, error)
+}
+
+// fileWrapper lets tests decorate the file backing an active segment. Nil in
+// production (CollectionConfig.wrapFile).
+type fileWrapper func(path string, f segFile) segFile
+
+// renameFunc is the rename seam used by compaction; nil means os.Rename.
+type renameFunc func(oldpath, newpath string) error
+
+func doRename(fn renameFunc, oldpath, newpath string) error {
+	if fn != nil {
+		return fn(oldpath, newpath)
+	}
+	return os.Rename(oldpath, newpath)
 }
 
 // openActiveSegment opens (or creates) an active segment at path.
 // On open it scans to the last valid newline and truncates any partial
 // trailing line left by a previous crash.
 func openActiveSegment(path string) (*Segment, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	return openActiveSegmentWith(path, nil)
+}
+
+// openActiveSegmentWith is openActiveSegment with an optional file wrapper
+// applied before crash recovery, so recovery truncation is interceptable too.
+func openActiveSegmentWith(path string, wrap fileWrapper) (*Segment, error) {
+	osf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("segment: open %q: %w", path, err)
+	}
+	var f segFile = osf
+	if wrap != nil {
+		f = wrap(path, f)
 	}
 
 	size, err := recoverPartialLine(f)
@@ -72,7 +123,7 @@ func openSealedSegment(path string, size int64) *Segment {
 
 // recoverPartialLine seeks backwards from EOF to find the last complete line
 // (ending in '\n'), truncates any bytes after it, and returns the valid size.
-func recoverPartialLine(f *os.File) (int64, error) {
+func recoverPartialLine(f segFile) (int64, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return 0, err
@@ -136,6 +187,10 @@ func recoverPartialLine(f *os.File) (int64, error) {
 func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.onAppend != nil {
+		before := s.size
+		defer func() { s.onAppend(int(s.size-before), err) }()
+	}
 
 	if s.sealed {
 		return 0, fmt.Errorf("segment: append to sealed segment %q", s.path)
@@ -154,12 +209,55 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 		return 0, fmt.Errorf("%w: record id=%d encodes to %d bytes, limit is %d", ErrRecordTooLarge, e.ID, len(b), maxScanTokenSize)
 	}
 
+	if s.poisoned != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+
 	offset = s.size
-	if _, err = s.file.Write(b); err != nil {
+	n, err := s.file.Write(b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		// Even a reported zero-byte write may have changed the file (and a short
+		// write certainly has). Always restore the known-good boundary. If that
+		// fails the tail is unknown, so poison instead of appending after it.
+		if terr := s.rollbackLocked(s.size); terr != nil {
+			return 0, fmt.Errorf("segment: write %q: %w (rollback: %w)", s.path, err, terr)
+		}
 		return 0, fmt.Errorf("segment: write %q: %w", s.path, err)
 	}
 	s.size += int64(len(b))
 	return offset, nil
+}
+
+// rollback truncates an active segment to a previously committed boundary.
+// It is used by multi-entry collection writes to discard an already-appended
+// prefix when a later append or fsync fails. A failed truncate poisons the
+// segment: continuing at an unknown offset could silently corrupt records.
+func (s *Segment) rollback(size int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed {
+		return fmt.Errorf("segment: rollback sealed segment %q", s.path)
+	}
+	return s.rollbackLocked(size)
+}
+
+// rollbackLocked requires s.mu.
+func (s *Segment) rollbackLocked(size int64) error {
+	if s.poisoned != nil {
+		return fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+	if err := s.file.Truncate(size); err != nil {
+		s.poisoned = fmt.Errorf("rollback truncate to %d: %w", size, err)
+		if s.onPoison != nil {
+			s.onPoison(s.poisoned)
+		}
+		return fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+	s.size = size
+	return nil
 }
 
 // Sync flushes any buffered writes for the active segment to stable storage
@@ -241,15 +339,26 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 // Returning an error from yield stops the scan and returns that error, which
 // lets callers terminate early (e.g. once a limit is reached).
 func (s *Segment) ScanFrom(yield func(offset int64, e store.Entry) error) error {
+	return s.ScanFromOffset(0, yield)
+}
+
+// ScanFromOffset is ScanFrom starting at byte offset from, which must be a
+// record boundary. Offsets passed to yield are absolute within the file.
+func (s *Segment) ScanFromOffset(from int64, yield func(offset int64, e store.Entry) error) error {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return fmt.Errorf("segment: scanfrom open %q: %w", s.path, err)
 	}
 	defer func() { _ = f.Close() }()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return fmt.Errorf("segment: scanfrom seek %d in %q: %w", from, s.path, err)
+		}
+	}
 
 	scanner := newSegmentScanner(f)
 
-	var off int64
+	off := from
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++

@@ -71,6 +71,7 @@ ScrivaDB stores each collection as a set of **NDJSON segment files** — one JSO
 Key properties:
 
 - **Exclusive directory lock** — the engine takes an OS-level advisory lock (`LOCK` file) on the data directory to prevent corruption from concurrent writers; a second process trying to open the directory fails fast
+- **Fail-closed, verifiable recovery** — open validates the persisted indexes against the segments (v2 coverage + fingerprints; replay only the unpersisted tail), refuses to start on damaged segments or ambiguous history (`--integrity-policy fail`), and `scriva verify` / `scriva repair` inspect and rebuild a stopped data directory with a verified backup first. See the [recovery runbook](docs/runbook-index-recovery.md)
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
 - **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
 - **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
@@ -206,6 +207,7 @@ covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
 | Document | Description |
 |---|---|
 | [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics, logging, health probes |
+| [Index recovery runbook](docs/runbook-index-recovery.md) | Verify, repair and recover from index/data integrity problems |
 | [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, secondary indexes, crash safety |
 | [Embedding](docs/embedding.md) | Use ScrivaDB as an in-process Go library: `scriva`/`engine` API, keyed ops, CAS, Watch, migration, versioning policy |
 

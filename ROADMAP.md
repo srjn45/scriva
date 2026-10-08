@@ -256,6 +256,17 @@ Optional TLS on the TCP gRPC listener via `--tls-cert` / `--tls-key` server flag
 - `scriva_grpc_request_duration_seconds` — histogram by method + status code (via unary interceptor)
 - Served at `--metrics-addr` (default `:9090`) on `/metrics`; set to empty string to disable
 
+#### ~~7. Index/data integrity hardening (issue #107)~~ ✅ Done
+Fixed the index/data desync class and made recovery verifiable. See [docs/architecture.md](docs/architecture.md#in-memory-primary-index) and the [recovery runbook](docs/runbook-index-recovery.md).
+- [x] Exclusive directory lock (`ErrDatabaseLocked`); compaction swap hardening (manifest, ordered fsyncs, temp cleanup); secondary-index rebuild after swap
+- [x] Index format v2: relative segment names, per-segment coverage with fingerprints; O(tail) replay after a crash; one-time rebuild for v1 files
+- [x] Partial-write rollback and segment poisoning (`ErrSegmentPoisoned`)
+- [x] `engine.Verify` / `VerifyDir`, `engine.Repair` (backup, journal, salvage), `scriva verify` / `scriva repair`
+- [x] Fail-closed open policy (`--integrity-policy fail|report|rebuild-index-only`, `ErrIntegrity`)
+- [x] Recovery, integrity, append, poison and lock Prometheus metrics
+- [x] Test infrastructure: crash matrix, fault-injecting filesystem, kill -9 multi-process tests, synthetic incident fixtures, randomized model test + `make test-soak`
+- [x] Recovery-cost benchmarks and guardrails ([architecture.md](docs/architecture.md#recovery-cost-and-performance-guardrails))
+
 ---
 
 ## Post-v0.1.0 roadmap (Hardening & Scale)

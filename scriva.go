@@ -28,6 +28,7 @@ package scriva
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -53,12 +54,44 @@ func WithSyncInterval(d time.Duration) Option {
 	return func(c *engine.CollectionConfig) { c.SyncInterval = d }
 }
 
+// WithIndexPersistInterval sets how often the primary and secondary indexes are
+// persisted in the background to bound crash-recovery replay. The default is
+// 30s; a negative value disables periodic persists (rotation, compaction and
+// Close still persist).
+func WithIndexPersistInterval(d time.Duration) Option {
+	return func(c *engine.CollectionConfig) { c.IndexPersistInterval = d }
+}
+
+// WithIntegrityPolicy sets what Open does when it finds segment corruption or
+// conflicting record history during recovery. The default is engine.PolicyFail:
+// Open returns an error matching engine.ErrIntegrity (an
+// *engine.OpenIntegrityError carrying the report) instead of guessing.
+// engine.PolicyReport opens anyway and salvages intact records.
+func WithIntegrityPolicy(p engine.IntegrityPolicy) Option {
+	return func(c *engine.CollectionConfig) { c.IntegrityPolicy = p }
+}
+
+// WithOnIntegrity registers a callback for every open-time integrity scan; it
+// fires before a refusal is returned, so the report is observable even when
+// Open fails.
+func WithOnIntegrity(fn func(collection string, policy engine.IntegrityPolicy, outcome string, report *engine.CollectionReport)) Option {
+	return func(c *engine.CollectionConfig) { c.OnIntegrity = fn }
+}
+
+// WithLogger routes structured recovery, integrity and segment-poison events to
+// l. Without it the engine is silent.
+func WithLogger(l *slog.Logger) Option {
+	return func(c *engine.CollectionConfig) { c.Logger = l }
+}
+
 // WithSegmentMaxSize sets the maximum active-segment size before rotation.
 func WithSegmentMaxSize(n int64) Option {
 	return func(c *engine.CollectionConfig) { c.SegmentMaxSize = n }
 }
 
-// WithCompactInterval sets the background compaction cadence.
+// WithCompactInterval sets the background compaction cadence. A forced engine
+// compaction can return engine.ErrCompactionDeferred while a full scan owns the
+// segment layout; callers should retry it rather than treating it as success.
 func WithCompactInterval(d time.Duration) Option {
 	return func(c *engine.CollectionConfig) { c.CompactInterval = d }
 }

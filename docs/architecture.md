@@ -352,9 +352,28 @@ map[uint64]IndexEntry{
 ```
 
 - Updated on every write (same write lock scope)
-- Persisted to `index.json` with a SHA-256 checksum on every close
-- Loaded on startup; rebuilt from segment scans if checksum fails
+- Persisted to `index.json` with a SHA-256 checksum on every close, after every compaction, when a segment rotation *requests* one, and by a background goroutine every `--index-persist-interval` (default 30s; negative disables the timer). Each persist fsyncs the active segment first so coverage never claims bytes a crash could lose, and secondary indexes (`sidx_*.json`) are written in the same pass. Rotation-requested persists are debounced: they coalesce and run no more often than `CollectionConfig.IndexPersistMinInterval` (default 10s) nor more than once per 4x the previous pass's duration, so a write burst never re-encodes the whole index per 4 MiB segment; Close and compaction always persist. Sealed-segment coverage is memoized and cheap (below), so the work done under the read lock is bounded by the active segment size. All writers of these files serialize on one mutex, and `Close()` stops and waits for the background persister before writing the final index.
+- Format v2 is self-describing (`"version": 2`): segment paths are stored relative to the collection directory (so a data dir can be moved without a rebuild), and a `coverage` list records, per segment, the byte count covered and a fingerprint of those bytes: every segment, sealed or active, records the full SHA-256 of its covered prefix, and open re-reads and re-hashes every covered prefix before trusting the primary or any secondary index (one read per segment, shared by all indexes of the collection; hashes of sealed segments are memoized so a steady-state persist does not re-read them). A bounded fingerprint is deliberately not accepted: a same-size edit of an early record in a sealed segment would keep its id, offset and size, pass the identity spot-check, and leave a secondary index silently stale. Index files from earlier builds that carry only the 64 KiB `tail` fingerprint prove nothing about the prefix; they force one rebuild and are rewritten with full checksums. A length or checksum mismatch forces a rebuild; the identity spot-check still runs as an extra guard. Cost: clean open and verify are O(covered bytes) in hashing. The checksum covers version, entries and coverage and is computed over the exact bytes written, so `Load` verifies it without re-marshalling the index. Legacy v1 files (absolute paths, no coverage) still load; their paths are re-rooted at the collection directory.
+- Loaded on startup and **validated against the segments, never trusted** (see below); rebuilt from segment scans if the checksum fails
 - Rebuilt after compaction (offsets change)
+- Compaction is deterministic (resolved records are written in id order), reuses the replaced segments' names in order (aborting before the swap if the output would need more segments than the input), discards stale `.compact_*` temps before each pass, fsyncs the renames before unlinking old segments, and rebuilds + snapshots the secondary indexes under the same write lock as the swap so no concurrent write can be lost. A full scan holds a shared layout lease while walking its segment snapshot; a compaction probes that lease before creating its manifest and defers with a bounded backoff when scans are active, so it never queues a writer that blocks later scans. Primary and secondary indexes are then persisted with v2 coverage of the new layout before the swap manifest is retired. A swap that fails after the first rename blocks further passes until reopen, where `recoverCompaction` rolls it forward.
+
+### Load-time validation and tail replay
+
+After an unclean stop the persisted `index.json` is checksum-valid but stale (it was written by the last clean close or compaction). On open the engine reconciles it with the segments using its v2 `coverage`, ordering segments by **numeric** id (not lexical name):
+
+| Condition | Action |
+|---|---|
+| every covered segment exists, its first `size` bytes hash to the recorded SHA-256, and only the newest covered segment grew | replay only `[covered, EOF)` of that segment onto the loaded index |
+| unlisted segments newer than all covered ones (rotation after the last persist) | replay them in full |
+| v1 file (no coverage), corrupt/truncated file, missing or shorter covered segment, hash mismatch, a non-newest covered segment grew, an unlisted segment older than the covered range | full rebuild from all segments |
+| a spot check fails: up to 64 random plus the 16 newest entries must each point at a line boundary whose decoded `id` matches | full rebuild |
+
+Secondary indexes (`sidx_<field>.json`) follow the same protocol independently: each carries its own v2 coverage and checksum, is replayed from the covered tail when only the newest segment grew, and is rebuilt from the segments when its file is missing, corrupt, v1, or its coverage disagrees (`Collection.IndexRecoveryStats()` counts `SecondaryReplays` / `SecondaryRebuilds`). A primary rebuild always forces a secondary rebuild. Persisted index paths are relative to the collection directory, so a data directory may be moved or restored elsewhere without triggering a rebuild.
+
+Replay and `Rebuild` share one routine (`applyEntries`), so insert/update (rev bump, last-writer-wins) and delete (entry removed — deletes are not resurrected) behave identically. A torn last line in the active segment is trimmed by `recoverPartialLine` before replay. The recovered index is persisted and the secondary indexes are rebuilt from the segments whenever the primary changed. Cost: validating coverage hashes the covered bytes (sequential read), far cheaper than a full decode-and-rebuild; replay cost is bounded by the unpersisted tail.
+
+Recovery is observable: `Collection.IndexRecoveryStats()` exposes replay/rebuild/spot-check-failure counters and replayed bytes, and `CollectionConfig.OnIndexRecovery(collection, kind, bytes, dur)` fires with kind `replay`, `rebuild` or `spotcheck_fail` (not at all on a clean reopen).
 
 ### Identity verification & integrity protection
 
@@ -365,6 +384,84 @@ During scans (`ScanStream` and `streamLive`), if an entry in a segment is encoun
 At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.DataLoss` rather than `NotFound` across `FindById`, `FindByKey`, `Find`, and `Aggregate`.
 
 ---
+
+### Integrity verification (`Verify`)
+
+`engine/verify.go` is a read-only detector. It reports what is wrong and where; it never repairs, trims, resolves or rewrites anything (repair, the CLI surface and the open-time policy are separate layers built on its report).
+
+| Entry point | Runs against | Notes |
+|---|---|---|
+| `(*DB).Verify(ctx, VerifyOptions)` | every open collection (or `VerifyOptions.Collections`) | online |
+| `(*Collection).Verify(ctx, VerifyOptions)` | one open collection | online |
+| `engine.VerifyDir(ctx, dataDir, VerifyOptions)` | a directory that is **not** opened | offline; also validates the persisted `index.json` / `sidx_*.json` / `meta.json` exactly as they sit on disk, without running open-time recovery |
+
+All three return an `*IntegrityReport`: database-level `Findings` (lock state) plus one `CollectionReport` per collection (`Stats`, `Findings`, and `Truncated` counts once `MaxFindingsPerCode`, default 1000, is hit). Helpers: `AllFindings()`, `MaxSeverity()`, `Clean()` (nothing above `info`), `Has(code)`, `Codes()`. Each `Finding` carries a `Severity`, a stable machine-readable `Code`, a `Location` (`Segment` base name, `Offset`, `ID`, `Field`) and a human `Message`.
+
+**Online snapshot.** An online run holds `compactMu` for its whole duration (compaction is the only thing that replaces sealed files) and, under `c.mu.RLock`, copies the primary index, every secondary index's buckets, the id counter and each segment's size. Every writer mutates segment + indexes inside one `c.mu.Lock` section, so that copy is a consistent cut. The lock is then released and the segments are scanned only up to the snapshotted sizes — appends extend files past them and are never seen, so writers are not blocked and a concurrent append can never look like a torn line. `ensureIndex` registers a new secondary index under `c.mu` too, so a snapshot never observes an index that is registered but not yet built.
+
+**Ground truth.** In `full` mode every segment is scanned with the tolerant salvage scanner (`scanSegmentTolerantLimit`) and folded, segment by segment, into a per-id replay that applies exactly the `Index.Rebuild` semantics (last line wins, revision = max(replay count, revision on the line), delete resets). Memory is proportional to the number of ids and entries, not to the data size. The primary and secondary indexes are then compared against that truth. History that a single in-order writer cannot produce is reported as a `conflict` and never resolved.
+
+**Interrupted compaction.** If `compact.manifest` is present, an offline run reads the layout that open will roll forward to (each outstanding temp stands in for its final segment, listed removals are ignored) so superseded history sitting next to its compacted form is not misread as conflicting writers. The files themselves are not touched.
+
+**Modes.** `quick` validates persisted-index coverage and fingerprints the same way open does, spot-checks a deterministic sample of index entries (the 16 newest ids plus up to 64 evenly spaced), checks the file set, the id counter and parses only the newest segment. `full` (the default) additionally parses every segment and runs the truth comparison.
+
+Severities, in increasing order: `info` (expected or self-healing at open), `repairable-index` (a derived structure disagrees with the segments; rebuilding from segments fixes it without data loss), `data-corruption` (segment bytes are damaged), `conflict` (ambiguous history; must not be auto-resolved).
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `segment-torn-tail` | info / data-corruption | partial last line of the newest segment (info: open trims it); anywhere else it is corruption |
+| `segment-bad-region` | data-corruption | a complete line that is not a valid record |
+| `segment-glued-line` | data-corruption | a partial record glued in front of a valid one on the same line |
+| `segment-unreadable` | data-corruption | a segment (or the collection directory) cannot be read |
+| `orphan-segment-file` | info | a `seg_*` file the naming scheme does not reach, a `seg_*.ndjson` with no number (open still replays it), or — online — a segment on disk the open handle does not hold |
+| `leftover-temp-file` | info | `.compact_*` not named by a manifest, or a `*.tmp` (offline only) |
+| `compaction-manifest-pending` | repairable-index | an interrupted swap; open rolls it forward and rebuilds |
+| `compaction-manifest-corrupt` | data-corruption | manifest unparseable; open refuses to guess |
+| `lock-held` | info | another holder has the directory `LOCK` (offline run) |
+| `lock-held-by-this-process` | info | always present on `DB.Verify` |
+| `lock-probe-failed` | info | lock state could not be determined |
+| `meta-missing` | info | open recomputes the id counter |
+| `meta-unreadable` | repairable-index | |
+| `idcounter-behind` | repairable-index | counter below the highest id present (after the active-segment reconciliation open performs) |
+| `record-expired-live` | info | past its TTL, not yet reaped |
+| `duplicate-record-identical` | info | the same write appears twice with identical content and revision |
+| `conflict-duplicate-id` | conflict | a live id is inserted again with different content or revision |
+| `conflict-id-reuse-after-delete` | conflict | an id is inserted again after its delete |
+| `conflict-write-after-delete` | conflict | an id is updated after its delete |
+| `conflict-revision-regression` | conflict | an update's revision goes backwards, or two different updates share one revision |
+| `index-missing` / `index-unreadable` | repairable-index | `index.json` absent with data present / fails checksum or parse |
+| `index-coverage-unknown` | repairable-index | v1 file without coverage |
+| `index-coverage-mismatch` | repairable-index | covered bytes shrank, changed, or a non-newest covered segment grew |
+| `index-coverage-segment-missing` | repairable-index | covers a segment that is not on disk |
+| `index-stale-tail` | repairable-index | bytes appended after the last persist (unclean stop); open replays them |
+| `index-segment-unlisted` | repairable-index | a segment older than covered ones is absent from coverage |
+| `index-spotcheck-failed` | repairable-index | quick mode: a sampled entry does not point at a record with its id |
+| `index-missing-record` | repairable-index | a live record is absent from the index |
+| `index-stale-record` | repairable-index | entry points at an older version, or its rev / expiry / epoch differ |
+| `index-wrong-record` | repairable-index | the offset holds a record with a different id |
+| `index-dangling-offset` | repairable-index | the offset is not the start of any record |
+| `index-dangling-entry` | repairable-index | no segment holds any record for the id |
+| `index-resurrected-delete` | repairable-index | the id's latest record is a delete |
+| `sidx-unreadable`, `sidx-coverage-unknown`, `sidx-coverage-mismatch`, `sidx-coverage-segment-missing`, `sidx-stale-tail`, `sidx-segment-unlisted` | repairable-index | as the `index-*` equivalents, per field (`Location.Field`) |
+| `sidx-missing-entry` / `sidx-extra-entry` / `sidx-wrong-bucket` | repairable-index | secondary index disagrees with the record's value |
+| `sidx-unique-violation` | conflict | several live records share a value under a unique index |
+
+The engine emits no metrics from `Verify`; callers that want them instrument around the call.
+
+**Guarantees.** `Verify` never writes, trims or locks anything and returns the same findings for the same bytes. Online it is a consistent cut that does not block writers; offline (`VerifyDir`, `scriva verify`) it reflects the directory as it sits on disk, and a directory held open by a live process is reported (`lock-held`) because in-flight writes may show up as findings. A `Clean()` report from a `full` run means every segment line parses, the history is unambiguous and the primary and secondary indexes equal what a rebuild would produce; `quick` gives no such guarantee for bytes before the newest segment's tail beyond the sampled entries.
+
+### Offline repair (`engine.Repair`, `scriva repair`)
+
+`engine/repair.go` repairs what `Verify` reports as `repairable-index`, and nothing else unless asked. The segments are the source of truth and are never edited, except for the three cases below.
+
+1. **Lock, then plan.** `Repair` takes the directory lock first (a directory open elsewhere fails with `ErrDatabaseLocked`, CLI exit 3), verifies in `full` mode, and builds a per-collection plan. `--dry-run` stops here (it likewise refuses a held lock with exit 3).
+2. **Backup before the first change.** A byte-for-byte copy (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`, which must be outside it) is written and every file re-hashed (SHA-256). A backup that does not verify aborts the run with nothing changed. A `REPAIR_JOURNAL.json` in the data directory pins the backup and the multi-step plan.
+3. **Rebuild derived state.** The primary index, secondary indexes and `meta.json` (id counter) are rebuilt atomically (temp → fsync → rename) from a tolerant scan of the segments, with v2 coverage that open accepts without further work. Tombstones stay in the segments and so stay deleted. An interrupted compaction swap is rolled forward exactly as open would.
+4. **Segment-level changes** are limited to: trimming an unacknowledged torn tail on the newest segment (as open does); renaming unnumbered `seg_*.ndjson` files to the next free number when their ids overlap no other segment; and, only with `--salvage`, moving the valid records of damaged segments into one new segment (originals are quarantined, never deleted: each is renamed into `<collection>/quarantine/<run>/`, a subdirectory that open, verify and the rebuild do not descend into, after a `MANIFEST.json` with size and SHA-256 is written first; every move is an atomic same-filesystem rename, so an interrupted run leaves each original in exactly one place and a rerun, driven by the journal, finishes the moves and re-checks hashes. The verified backup holds a second copy). The backup directory must resolve outside the data directory with symlinks followed, including through not-yet-existing path components.
+5. **Conflicts are never resolved.** Duplicate ids, id reuse after delete, revision regressions and unique violations are listed in the report; `--on-conflict abort` refuses before the backup is taken. Salvage is refused for a collection with conflicts, and such a collection is left untouched (`ErrRepairIncomplete`, exit 2); the other collections are still repaired.
+6. **Restartable and idempotent.** Re-running after a crash resumes from the journal (`Resumed: true`); re-running on a repaired directory does nothing.
+
+Repair has no open-time hook: the server never repairs by itself. See the [runbook](runbook-index-recovery.md) for the operator sequence.
 
 ## Secondary Indexes
 
@@ -383,6 +480,7 @@ map[string]map[string][]uint64
 - Maintained automatically on every Insert / Update / Delete (same write lock scope)
 - Persisted to `sidx_<field>.json` with a SHA-256 checksum
 - Reloaded on startup; rebuilt from segments if the checksum fails
+- **v2 format with coverage**: like `index.json`, a cleanly persisted `sidx_<field>.json` records the segment bytes it describes (segment name, size, SHA-256 of those bytes) inside its checksum. On load the same rules as the primary index apply: the newest covered segment may have grown and newer unlisted segments are replayed onto the buckets (tail replay, last writer wins, unique flag preserved); any other growth, a missing/shorter segment, a hash mismatch, a corrupt file, or a **v1 file (no coverage)** forces a full rebuild, after which the file is rewritten as v2. `IndexRecoveryStats` exposes `SecondaryReplays`/`SecondaryRebuilds`.
 - Rebuilt transparently after each compaction run
 
 ### Range queries (ordered key view)
@@ -697,6 +795,28 @@ While compaction runs (steps 3-5), concurrent writes might fill the active segme
 - **Naming:** Compaction reuses the file names of the segments it read, and draws any additional names from a globally monotonic sequence (`segSeq`). This guarantees its output files never overwrite segments that were newly sealed during the pass.
 - **Swap:** At step 7, compaction only replaces the segments it explicitly snapshotted. Any segments sealed during the pass (which were appended to `c.sealed` outside the snapshot) are preserved and appended after the new segments.
 
+### Compaction and concurrent point reads
+
+A point read (`Get`, `GetByKey`, `FindByID`, an index-driven scan candidate)
+resolves the record's location from the primary index under the read lock and
+then reads the segment file *without* the lock, so reads never hold up writers
+during disk I/O. The swap (steps 6–10) moves every sealed record: a location
+resolved before it names a file that may no longer exist, or a reused file name
+whose offset now holds different bytes.
+
+Point reads are therefore optimistic. The collection keeps a layout generation
+that the swap bumps under the write lock, before the first rename. A read
+samples it together with the index lookup and re-checks it after the segment
+read; if a swap began in between, the result (value or error) is discarded and
+the read is retried against the new layout. After three overlapping swaps the
+read is performed under the read lock, which excludes the swap, so it always
+terminates. Rotation needs no such handling: sealing a segment changes neither
+its path nor its offsets.
+
+Full scans (`ScanStream` without a usable index) do not have this protection
+yet: they walk a snapshot of the segment list and can fail or miss records if a
+swap lands mid-scan.
+
 ### Crash consistency
 
 The swap (steps 6–12) is crash-atomic. The manifest written in step 5 is an
@@ -786,6 +906,19 @@ durable writes — correct, but the slowest option. `interval` is the recommende
 middle ground for most workloads. Sealing a segment and `Close()` always fsync
 regardless of mode.
 
+What each mode means for the other durability-relevant events:
+
+| Event | `none` | `interval` / `always` |
+|---|---|---|
+| Segment rotation | sealing fsyncs the old segment | same, plus an `fsync` of the directory for the new file |
+| Index persist (`index.json`, `sidx_*.json`) | fsyncs the active segment first so coverage never claims bytes a crash could lose; metadata files use temp → fsync → rename | same, plus directory fsync |
+| Compaction swap | manifest, renames and unlinks are fsynced in order | same |
+| `Close()` / `SIGTERM` | flushes, persists the index and releases the lock | same |
+| After `kill -9` | nothing acknowledged is lost (the data is in the page cache); open trims a torn tail and replays the index from its covered prefix | same |
+| After power loss | the tail since the last OS flush may be lost | loss bounded by the interval (`interval`) or nil for acknowledged writes (`always`) |
+
+A crash or power loss can drop the latest writes, but open never leaves a half-applied one: a torn final line is trimmed, `CommitTx` is all-or-nothing, and the index is validated against the segments rather than trusted.
+
 > Pick the mode that matches your data's value. `none` is appropriate for caches
 > and rebuildable data; `always` for data you cannot afford to lose on power loss.
 
@@ -802,6 +935,49 @@ Note that partial-line recovery protects against *torn* writes (an incomplete
 final line), not against *lost* writes — a write acknowledged under `--sync=none`
 can still be lost if the machine loses power before the OS flushes its page
 cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that window.
+
+### Partial writes and segment poisoning
+
+A failed `Append` (ENOSPC, EIO, short write) may leave bytes on disk even when it reports zero written. The segment therefore **always truncates back to its last known-good size** after a failed write, and the collection also rolls back an already-appended prefix of a multi-entry write (batch, transaction commit) when a later append or fsync fails. Memory state (index, size) only advances after a write fully succeeded, so a failed write is invisible to readers and to the next reopen.
+
+If the rollback truncate itself fails, the tail of the file is unknown and appending after it could glue a record onto garbage. The segment is then **poisoned**: every later append returns `engine.ErrSegmentPoisoned` (wrapping the original cause) until the process restarts. Reads and other collections keep working. Poisoning increments `scriva_segment_poisoned_total` and `scriva_append_errors_total{reason="poisoned"}`. The recovery is to fix the underlying fault (disk space, device health), restart so that open re-validates and trims the tail, then run `scriva verify` if you saw it. A record too large to be scanned back is refused up front (`ErrRecordTooLarge`) rather than written.
+
+### Directory lock and filesystem assumptions
+
+- **Single writer.** Opening a database takes an exclusive, non-blocking advisory lock (`flock` on Unix, `LockFileEx` on Windows) on `<data>/LOCK`; the lock is released by `Close()` and by process exit, including `kill -9`, so a crashed owner never leaves a stale lock. The lock is per open file description, so a second `Open` in the *same* process is refused too.
+- **Local filesystems.** ScrivaDB assumes POSIX-like local-filesystem semantics: atomic `rename`, `fsync` that really reaches stable storage, and working `flock`. If the filesystem does not support the lock (some NFS setups) open fails with an `unsupported file system` error rather than running unprotected. Network or FUSE filesystems that merely accept the lock without enforcing it across hosts are **not** safe for a shared data directory; never point two hosts at one directory.
+- **Directory fsync.** New, rotated and renamed files are made durable by an `fsync` of the parent directory under `--sync=interval`/`always` (a no-op on Windows).
+- **No lock-free readers.** Other processes (`scriva verify` on a live directory, backup scripts) see an unsynchronized view; use `scriva-cli backup` against a running server, or stop the server first.
+
+### Upgrading from v1 index files and mixed binaries
+
+Index and secondary-index files written by earlier releases (no `version`, absolute segment paths, no coverage) are **v1**. The first open by the new engine cannot prove a v1 file current, so it rebuilds the index from the segments once (`scriva_recovery_total{kind="rebuild"}` increments) and rewrites it as v2; the next open is a normal clean reopen. See *v1 index upgrade* in the table above for the cost. No manual step and no segment rewrite is involved: the segment format is unchanged.
+
+Going back is safe for data: a pre-v2 binary reads the v2 `index.json`, fails its (v1-style) checksum, treats it as stale and rebuilds from segments, rewriting it as v1. It does not understand the directory lock, the integrity gate or `repair`, so never run an old and a new binary on one directory at the same time, and do not use an old binary's `kill -9` recovery as a substitute for `scriva verify`.
+
+### Recovery cost and performance guardrails
+
+Measured with `engine/bench_*_test.go` (300,000 records of ~170 B, 4 MiB
+segments, `SyncModeNone`, Intel i7-7700HQ; wall time per `OpenCollection`;
+medians of 3 alternating runs of compiled test binaries on a noisy shared host).
+"Baseline" is `main` before the integrity work (`f643158`); "Before" is the
+integration branch before the perf fix; "Now" includes it.
+Reproduce: `SCRIVA_BENCH_N=300000 go test ./engine -run xxx -bench 'Open|Persist' -benchtime=2x`.
+
+| Scenario | Baseline | Before | Now | Notes |
+|---|---|---|---|---|
+| Clean reopen (valid v2 coverage) | 1.21 s | 1.37 s | 0.94 s | sealed segments validated by length + tail fingerprint; index checksum verified without re-marshalling. **Superseded by full-prefix checksums** (next paragraph) |
+| Crash reopen, tail of 1k / 10k records | n/a (stale index trusted silently) | 3.7 s / 3.8 s | 0.93 s / 0.96 s | clean open + O(tail); a replayed index is persisted by the background persister, not synchronously on open |
+| v1 index upgrade (one-time rebuild) | n/a | see `BenchmarkOpenV1Upgrade` | unchanged | rewritten as v2; next open is a clean reopen |
+| One index persist pass | n/a | O(data) hashing + 2 marshals | O(segments) hashing + 1 marshal (first pass after open re-uses the hashes verified at open) | background goroutine; writers are not blocked |
+
+**Full-prefix coverage (correctness fix).** Sealed segments were fingerprinted by their last 64 KiB only, which left earlier bytes covered by a spot check alone. Coverage now hashes whole prefixes. Measured on the same 300,000-record set (`-bench 'OpenClean|PersistIndexes' -benchtime=5x`, one noisy run each, same host, before = tail fingerprint, after = full checksum): `OpenClean` 0.87 s → 1.04 s (+20%), `PersistIndexes` 0.71 s → 1.01 s (a cold persist now hashes all sealed segments once; later passes are memoized). The extra cost is SHA-256 over the data at open, roughly the price of one sequential read of the segments; it is the price of proving the prefix rather than sampling it.
+
+Write path (`Insert`/`Delete`, `none`/`interval`, ns/op medians): `Insert`
+36.0 µs baseline, 64.9 µs before, 38.7 µs now; `Delete` 16.4 µs / 15.3 µs /
+17.2 µs. The success path issues exactly the same syscalls as before. Rotation
+only *requests* a persist, which is debounced (see above), so the full-index
+encode no longer runs every ~25k inserts.
 
 ---
 
@@ -1137,7 +1313,20 @@ ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/
 | `scriva_compaction_duration_seconds` | Histogram | `collection` |
 | `scriva_grpc_request_duration_seconds` | Histogram | `method`, `code` |
 | `scriva_scan_rows_scanned` | Histogram | `collection` |
+| `scriva_recovery_total`, `_duration_seconds`, `_bytes_total` | Counter/Histogram | `collection`, `kind` |
+| `scriva_integrity_open_total` | Counter | `collection`, `policy`, `outcome` |
+| `scriva_integrity_findings_total` | Counter | `collection`, `severity`, `code` |
+| `scriva_append_total`, `scriva_append_bytes_total` | Counter | `collection` |
+| `scriva_append_errors_total` | Counter | `collection`, `reason` |
+| `scriva_segment_poisoned_total` | Counter | `collection` |
+| `scriva_dir_lock_total` | Counter | `result` |
 
 Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `scriva_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
+
+The recovery, integrity, append, poison and lock series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
+
+### Fail-closed open policy
+
+`recoverIndex` is the single choke point where open might touch history. A tail replay applies only the bytes after the persisted coverage; a strict decode failure there falls through to a full rebuild. Every full rebuild first runs `integrityGate`: one tolerant scan of all segments through the same checks as `Verify` (bad regions, glued lines, duplicate/conflicting ids, revision regressions). Findings of severity `data-corruption` or `conflict` make open return `*engine.OpenIntegrityError` (matches `engine.ErrIntegrity`, carries the `CollectionReport`) under `fail`/`rebuild-index-only`; under `report` the index and secondary indexes are rebuilt from the salvaged records instead and the report is kept on `Collection.OpenIntegrityReport()`. A refused open closes the files it opened and releases the directory lock. Conflicts inside a trusted persisted-index tail are not re-derived at open (that would defeat O(tail) reopen); `Verify` reports them.
 
 For **distributed tracing** (opt-in OpenTelemetry, `--otlp-endpoint`), which complements these pull-based metrics with per-request spans across the gateway → gRPC → engine-scan hops, see [Tracing (OpenTelemetry)](#tracing-opentelemetry) above.

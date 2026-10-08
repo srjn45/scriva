@@ -2,6 +2,8 @@ package scriva_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -203,5 +205,44 @@ func TestCollectionFirstCallWinsAndCaches(t *testing.T) {
 	}
 	if got := second.Config().SyncMode; got != engine.SyncModeAlways {
 		t.Fatalf("cached SyncMode = %q, want %q (first call wins)", got, engine.SyncModeAlways)
+	}
+}
+
+func TestOpenFailsClosedOnCorruptionAndReportOptsIn(t *testing.T) {
+	dir := t.TempDir()
+	db, err := scriva.Open(dir, scriva.WithSegmentMaxSize(300))
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := db.Collection("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		if _, _, err := col.Insert(map[string]any{"xxxxxxxx": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "c", "seg_000001.ndjson")
+	b, _ := os.ReadFile(p)
+	b[20] ^= 1
+	_ = os.WriteFile(p, b, 0o644)
+	_ = os.Remove(filepath.Join(dir, "c", "index.json"))
+
+	var outcome string
+	hook := scriva.WithOnIntegrity(func(_ string, _ engine.IntegrityPolicy, o string, _ *engine.CollectionReport) { outcome = o })
+	if _, err := scriva.Open(dir, hook); !errors.Is(err, engine.ErrIntegrity) || outcome != engine.IntegrityOutcomeFailed {
+		t.Fatalf("default Open: err=%v outcome=%q", err, outcome)
+	}
+	db, err = scriva.Open(dir, hook, scriva.WithIntegrityPolicy(engine.PolicyReport))
+	if err != nil {
+		t.Fatalf("report policy: %v", err)
+	}
+	defer db.Close()
+	if outcome != engine.IntegrityOutcomeReported {
+		t.Fatalf("outcome = %q", outcome)
 	}
 }
