@@ -444,7 +444,7 @@ func loadJournal(dataDir string) (*repairJournal, error) {
 	}
 	var j repairJournal
 	if err := json.Unmarshal(b, &j); err != nil {
-		return nil, fmt.Errorf("repair: journal %q is unreadable (%v); the backup it names is intact, remove the journal only after checking the directory against it", journalPath(dataDir), err)
+		return nil, fmt.Errorf("repair: journal %q is unreadable (%w); the backup it names is intact, remove the journal only after checking the directory against it", journalPath(dataDir), err)
 	}
 	if st, err := os.Stat(j.BackupDir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("repair: journal names backup %q, which is missing", j.BackupDir)
@@ -461,7 +461,6 @@ type repairWork struct {
 	blocked   string
 	actions   []RepairAction
 
-	segs       []vseg // numbered segment layout after adoption renames, ordered
 	renames    map[string]string
 	salvageRep *SalvageReport
 	metaReset  bool
@@ -491,6 +490,29 @@ func unnumberedSegments(dir string) []string {
 	return out
 }
 
+// compactManifestReadable is true when the manifest is absent or parses. Any
+// other read failure counts as unreadable: the plan must not guess past it.
+func compactManifestReadable(dir string) bool {
+	b, err := os.ReadFile(compactManifestPath(dir))
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	var m compactManifest
+	return json.Unmarshal(b, &m) == nil
+}
+
+func readSidxFile(path string) (sidxFile, bool) {
+	var f sidxFile
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return f, false
+	}
+	return f, json.Unmarshal(b, &f) == nil
+}
+
 func block(w *repairWork, format string, args ...any) { w.blocked = fmt.Sprintf(format, args...) }
 
 // planCollection decides, read-only, whether the collection can be rebuilt
@@ -505,12 +527,9 @@ func planCollection(ctx context.Context, w *repairWork, jc *journalCol, opts Rep
 		return nil
 	}
 
-	if b, err := os.ReadFile(compactManifestPath(w.dir)); err == nil {
-		var m compactManifest
-		if json.Unmarshal(b, &m) != nil {
-			block(w, "compact.manifest is unreadable; refusing to guess which side of the compaction swap the segments are on")
-			return nil
-		}
+	if !compactManifestReadable(w.dir) {
+		block(w, "compact.manifest is unreadable; refusing to guess which side of the compaction swap the segments are on")
+		return nil
 	}
 	for _, f := range w.before.Findings {
 		if f.Code == CodeSegmentUnreadable {
@@ -534,9 +553,8 @@ func planCollection(ctx context.Context, w *repairWork, jc *journalCol, opts Rep
 	for _, p := range paths {
 		base := filepath.Base(p)
 		field := base[len("sidx_") : len(base)-len(".json")]
-		b, err := os.ReadFile(p)
-		var f sidxFile
-		if err != nil || json.Unmarshal(b, &f) != nil {
+		f, ok := readSidxFile(p)
+		if !ok {
 			block(w, "%s is unreadable, so whether index %q is unique cannot be determined without guessing", base, field)
 			return nil
 		}

@@ -153,7 +153,6 @@ func checkLive(t *testing.T, dir string, pol IntegrityPolicy, live map[uint64]st
 
 func TestIntegrityFixtures(t *testing.T) {
 	for _, tc := range integrityCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pristine := fixtureCopy(t, tc.name)
