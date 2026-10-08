@@ -40,6 +40,8 @@ embedding-specific contract.
 
 ## [Unreleased]
 
+- **Engine:** Full scans now pin their segment layout while compaction defers safely with bounded retry, preventing scan/compaction races without blocking new scans.
+
 Index/data integrity hardening (issue #107). **Upgrade note:** index files written by earlier releases (v1: absolute paths, no coverage) are rebuilt from the segments **once** on first open and rewritten as v2; no manual step, and the segment format is unchanged. A pre-v2 binary opened on a v2 directory treats the index as stale and rebuilds it from segments (data is safe), but it has no directory lock, integrity gate or `repair` — never run old and new binaries on one directory at the same time. A server that previously started on damaged segments now **refuses to start** by default (`--integrity-policy fail`); run `scriva verify` / the [runbook](docs/runbook-index-recovery.md), or pass `--integrity-policy report` to open past the damage.
 
 ### Added

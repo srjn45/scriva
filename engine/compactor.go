@@ -12,6 +12,46 @@ import (
 	"github.com/srjn45/scriva/store"
 )
 
+const (
+	compactionRetryDelay    = 100 * time.Millisecond
+	compactionRetryMaxDelay = 3 * time.Second
+)
+
+// ErrCompactionDeferred reports that CompactNow could not start without
+// blocking active full scans. A background pass is rescheduled automatically.
+var ErrCompactionDeferred = errors.New("compactor: deferred by active scan")
+
+// rescheduleCompaction retries a pass deferred by an active full scan. The
+// flag coalesces retries, avoiding a busy loop when a client consumes a stream
+// slowly; the deferral itself is logged at the call site for observability.
+func (c *Collection) rescheduleCompaction() {
+	if !c.compactRetryPending.CompareAndSwap(false, true) {
+		return
+	}
+	exp := c.compactRetryExp.Add(1) - 1
+	if exp > 5 {
+		exp = 5
+	}
+	delay := compactionRetryDelay << exp
+	if delay > compactionRetryMaxDelay {
+		delay = compactionRetryMaxDelay
+	}
+	go func() {
+		t := time.NewTimer(delay)
+		defer t.Stop()
+		select {
+		case <-c.closed:
+			return
+		case <-t.C:
+		}
+		c.compactRetryPending.Store(false)
+		select {
+		case c.compactC <- struct{}{}:
+		default:
+		}
+	}()
+}
+
 // compactLoop runs in a goroutine for the lifetime of a Collection.
 // It triggers compaction either when signalled (via compactC) or on a timer.
 func (c *Collection) compactLoop() {
@@ -111,6 +151,22 @@ func (c *Collection) compact(force bool) error {
 		return nil
 	}
 
+	// Cheap early probe: do not spend a full rewrite when an existing scan is
+	// already using the layout. Release it immediately so the rewrite itself
+	// never blocks new scans.
+	if !c.layoutMu.TryLock() {
+		if c.cfg.Logger != nil {
+			c.cfg.Logger.Warn("compaction deferred while scans hold layout lease", "collection", c.name)
+		}
+		c.rescheduleCompaction()
+		if force {
+			return ErrCompactionDeferred
+		}
+		return nil
+	}
+	c.layoutMu.Unlock()
+	c.compactRetryExp.Store(0)
+
 	// --- Step 3: Replay all entries, keep latest per id ---
 	resolved, err := resolveEntries(toCompact)
 	if err != nil {
@@ -147,6 +203,29 @@ func (c *Collection) compact(force bool) error {
 		_ = discardCompactTemps(c.dir)
 		return fmt.Errorf("compactor: compacted output (%d segments) exceeds input (%d); aborting before swap", len(tempSegs), len(toCompact))
 	}
+	if c.cfg.postWriteCompactedHook != nil {
+		c.cfg.postWriteCompactedHook()
+	}
+	// Take the exclusive lease only for the durable swap. If a scan began while
+	// temps were written, discard them: no manifest exists yet, so crash
+	// recovery continues to trust the untouched old layout.
+	if !c.layoutMu.TryLock() {
+		_ = discardCompactTemps(c.dir)
+		if c.cfg.Logger != nil {
+			c.cfg.Logger.Warn("compaction deferred while scans hold layout lease", "collection", c.name)
+		}
+		c.rescheduleCompaction()
+		if force {
+			return ErrCompactionDeferred
+		}
+		return nil
+	}
+	layoutLocked := true
+	defer func() {
+		if layoutLocked {
+			c.layoutMu.Unlock()
+		}
+	}()
 	// Nothing survived (all deletes) — still need to swap under lock.
 
 	// --- Step 5: Durably record the swap intent, then swap under write lock ---
@@ -170,8 +249,14 @@ func (c *Collection) compact(force bool) error {
 		}
 	}
 	if err := writeCompactManifest(c.dir, compactManifest{Renames: renames, Removals: removals}); err != nil {
+		// writeFileAtomic can report an error after the final rename (for
+		// example while syncing the directory). Retire any possible durable
+		// intent before deleting its sources; otherwise recovery could treat
+		// missing temps as already-renamed and remove the old segments.
+		if clearErr := clearCompactManifest(c.dir); clearErr != nil {
+			return fmt.Errorf("compactor: write manifest: %w", errors.Join(err, fmt.Errorf("clear possible intent: %w", clearErr)))
+		}
 		_ = discardCompactTemps(c.dir)
-		_ = clearCompactManifest(c.dir)
 		return fmt.Errorf("compactor: write manifest: %w", err)
 	}
 
@@ -200,8 +285,11 @@ func (c *Collection) compact(force bool) error {
 				// Nothing was replaced yet: abandon the pass and keep serving
 				// the untouched old layout.
 				c.mu.Unlock()
+				if clearErr := clearCompactManifest(c.dir); clearErr != nil {
+					c.swapFailed = true
+					return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, errors.Join(err, fmt.Errorf("clear manifest: %w", clearErr)))
+				}
 				_ = discardCompactTemps(c.dir)
-				_ = clearCompactManifest(c.dir)
 				return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
 			}
 			c.swapFailed = true
@@ -270,6 +358,8 @@ func (c *Collection) compact(force bool) error {
 	c.sidxMu.RUnlock()
 
 	c.mu.Unlock()
+	c.layoutMu.Unlock()
+	layoutLocked = false
 
 	// Persist updated primary index. On failure the manifest is deliberately
 	// left in place so the next open rebuilds from the segments instead of
