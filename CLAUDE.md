@@ -77,6 +77,24 @@ make test-soak                                   # 100 seeds x 500 steps, race d
 make test-soak SOAK_SEEDS=300 SOAK_STEPS=1000    # longer; also SOAK_BASE, SOAK_TIMEOUT
 ```
 
+### Crash, fault and integrity tests
+
+All of these run under `make test` (race detector on) and are hermetic (`t.TempDir()`):
+
+| Test | What it covers |
+|---|---|
+| `TestCrashMatrix_*` (`engine/crash_matrix_test.go`) | single-writer crash at every step boundary, short/torn writes, rotation, compaction swap, index persist, shutdown, using the fault-injecting FS in `faultfs_test.go` |
+| `TestKill9_*` (`engine/multiprocess_kill_test.go`, non-Windows) | a re-exec'd child is SIGKILLed mid-write/rotate/compact; recovered state must equal the acknowledged ops. `SCRIVA_KILL_SEED=<n>` replays one seed, `SCRIVA_KILL_SOAK=1` raises iterations |
+| `TestIntegrityFixtures`, `TestIntegrityFixturesUpToDate` | synthetic incident directories in `engine/testdata/integrity/`; never hand-edit — regenerate with `go generate ./engine` and commit the result |
+| `verify_test.go`, `repair_test.go`, `salvage_test.go`, `sidx_recovery_test.go` | `Verify` / `Repair` / index recovery |
+
+```bash
+go test ./engine -race -count=1 -run 'TestCrashMatrix|TestKill9'
+SCRIVA_KILL_SOAK=1 go test ./engine -race -count=1 -run TestKill9
+go generate ./engine                                     # rewrite integrity fixtures
+go test ./engine -run xxx -bench 'Open|Persist' -benchtime=2x   # recovery cost (SCRIVA_BENCH_N=300000 for the documented table)
+```
+
 Run a specific package:
 
 ```bash
