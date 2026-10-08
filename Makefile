@@ -14,10 +14,16 @@ LDFLAGS      := -s -w
 EMBED_PKGS    := ./engine ./store ./query
 FORBIDDEN_DEPS := grpc|protobuf|prometheus|cobra|grpc-gateway|opentelemetry
 
-.PHONY: all build proto openapi test bench fuzz lint deps-check run cli clean release help
+.PHONY: all build proto openapi test test-soak bench fuzz lint deps-check run cli clean release help
 
 # FUZZTIME controls how long each fuzz target runs (override on the CLI).
 FUZZTIME     ?= 10s
+
+# Model soak knobs (see `make test-soak`).
+SOAK_SEEDS   ?= 100
+SOAK_STEPS   ?= 500
+SOAK_BASE    ?= 1000
+SOAK_TIMEOUT ?= 60m
 
 all: build
 
@@ -44,6 +50,11 @@ openapi:
 test:
 	$(GO) test ./... -race -count=1 -coverprofile=coverage.out
 	$(GO) tool cover -func=coverage.out | tail -1
+
+## test-soak: long randomized model soak (SOAK_SEEDS, SOAK_STEPS, SOAK_BASE, SOAK_TIMEOUT)
+test-soak:
+	SCRIVA_MODEL_SEED_COUNT=$(SOAK_SEEDS) SCRIVA_MODEL_SEED_BASE=$(SOAK_BASE) SCRIVA_MODEL_STEPS=$(SOAK_STEPS) \
+		$(GO) test ./engine -race -count=1 -run 'TestModel$$' -timeout $(SOAK_TIMEOUT)
 
 ## bench: run engine microbenchmarks (insert/find/scan) with allocation stats
 bench:

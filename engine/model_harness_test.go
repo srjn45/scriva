@@ -13,6 +13,9 @@ package engine
 //	                    enabled-by-default ops). Naming a disabled op opts in,
 //	                    which is how a fix task turns its operation on.
 //	SCRIVA_MODEL_STEPS  ops per seed (default 200)
+//	SCRIVA_MODEL_SEED_COUNT  soak: run this many consecutive seeds starting at
+//	                    SCRIVA_MODEL_SEED_BASE (default 1000); ignored when
+//	                    SCRIVA_MODEL_SEED is set. See `make test-soak`.
 //
 // On failure the last modelTraceTail ops are printed together with the seed so
 // the run can be replayed with SCRIVA_MODEL_SEED=<n>.
@@ -20,13 +23,17 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/srjn45/scriva/query"
 )
@@ -35,6 +42,7 @@ const (
 	modelTraceTail    = 25
 	modelDefaultSteps = 200
 	modelIndexField   = "tag"
+	modelSegmentMax   = 1024
 )
 
 // modelDefaultSeeds are fixed so CI is deterministic.
@@ -62,10 +70,13 @@ var modelOps = []modelOp{
 	{name: "scan-index", weight: 8, run: (*modelRun).opScanIndex},
 	{name: "reopen", weight: 4, run: (*modelRun).opReopen},
 
-	{name: "crash-reopen", weight: 4, disabledBy: "stale-index-after-crash (TestCrashStaleIndex): index-vs-segment reconciliation task, #107 phase 2", run: (*modelRun).opUnimplemented},
-	{name: "torn-write", weight: 3, disabledBy: "partial-write offsets (TestPartialWriteOffsets): write-failure rollback task, #107 phase 2", run: (*modelRun).opUnimplemented},
-	{name: "compact", weight: 3, disabledBy: "compaction vs secondary-index desync: compaction/index task, #107 phase 2", run: (*modelRun).opUnimplemented},
-	{name: "commit-tx", weight: 3, disabledBy: "CommitTx atomicity (TestCommitTxAtomicity): transaction atomicity task, #107 phase 2", run: (*modelRun).opUnimplemented},
+	{name: "crash-reopen", weight: 4, run: (*modelRun).opCrashReopen},
+	{name: "torn-write", weight: 4, run: (*modelRun).opTornWrite},
+	{name: "compact", weight: 3, run: (*modelRun).opCompact},
+	{name: "commit-tx", weight: 4, run: (*modelRun).opCommitTx},
+	{name: "image-recover", weight: 2, run: (*modelRun).opImageRecover},
+	{name: "verify", weight: 3, run: (*modelRun).opVerify},
+	{name: "repair-noop", weight: 1, run: (*modelRun).opRepairNoop},
 }
 
 // modelRun is the state of one seeded run.
@@ -74,12 +85,40 @@ type modelRun struct {
 	seed  int64
 	rng   *rand.Rand
 	dir   string
+	fs    *faultFS // fault seam of the current handle; replaced on every open
 	db    *DB
 	col   *Collection
 	state map[uint64]map[string]any // expected live records
 	gone  []uint64                  // ids that must be absent
 	trace []string
 	step  int
+}
+
+// modelRaceCompaction (SCRIVA_MODEL_RACE_COMPACTION=1) lets the rotation-
+// triggered background compaction run concurrently with the next op. That
+// exposes a known engine bug (see settleCompaction); it is off by default so
+// the model stays deterministic.
+var modelRaceCompaction = os.Getenv("SCRIVA_MODEL_RACE_COMPACTION") == "1"
+
+// settleCompaction waits for background compaction triggered by the last op
+// (segment rotation) to finish. KNOWN BUG: ScanStream snapshots the segment
+// list and walks it without excluding a concurrent compaction swap, so a scan
+// racing a background pass can fail with an IntegrityError ("index for id N
+// points to id 0"), a "scanfrom open ... no such file" error, or silently miss
+// live records. Until scans are made safe against compaction, the model only
+// interleaves compaction deterministically (explicit compact op, rotation) and
+// settles the background pass between ops.
+func (m *modelRun) settleCompaction() {
+	for i := 0; i < 3; i++ {
+		for len(m.col.compactC) > 0 {
+			time.Sleep(time.Millisecond)
+		}
+		m.col.compactMu.Lock()   // waits out a pass in flight
+		m.col.compactMu.Unlock() //nolint:staticcheck // barrier only
+		// The compactor goroutine may have taken the signal but not yet the
+		// lock; give it time to get there so the next barrier waits for it.
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (m *modelRun) tracef(format string, a ...any) {
@@ -104,6 +143,20 @@ func (m *modelRun) randData() map[string]any {
 	}
 }
 
+// put records id as live with data d. An id that was reserved by a failed
+// insert/transaction is not durable and may legitimately be handed out again
+// after a reopen, so it stops being "must be absent" once it is live again.
+func (m *modelRun) put(id uint64, d map[string]any) {
+	m.state[id] = d
+	kept := m.gone[:0]
+	for _, g := range m.gone {
+		if g != id { // an id can be listed more than once
+			kept = append(kept, g)
+		}
+	}
+	m.gone = kept
+}
+
 func (m *modelRun) pickID() (uint64, bool) {
 	if len(m.state) == 0 {
 		return 0, false
@@ -118,7 +171,15 @@ func (m *modelRun) pickID() (uint64, bool) {
 
 func (m *modelRun) open() {
 	m.t.Helper()
-	db, err := Open(m.dir, CollectionConfig{CompactInterval: 24 * 3600 * 1e9})
+	m.fs = newFaultFS()
+	// A tiny segment size forces frequent rotation (and the background
+	// compaction it can trigger) to interleave with every other op.
+	db, err := Open(m.dir, CollectionConfig{
+		CompactInterval: 24 * 3600 * 1e9,
+		SegmentMaxSize:  modelSegmentMax,
+		wrapFile:        m.fs.wrap,
+		renameFn:        m.fs.rename,
+	})
 	if err != nil {
 		m.fail("open: %v", err)
 	}
@@ -144,7 +205,7 @@ func (m *modelRun) opInsert() error {
 	if _, dup := m.state[id]; dup {
 		return fmt.Errorf("insert reused live id %d", id)
 	}
-	m.state[id] = d
+	m.put(id, d)
 	m.tracef("insert id=%d %v", id, d)
 	return nil
 }
@@ -158,7 +219,7 @@ func (m *modelRun) opUpdate() error {
 	if _, err := m.col.Update(id, d); err != nil {
 		return fmt.Errorf("update %d: %w", id, err)
 	}
-	m.state[id] = d
+	m.put(id, d)
 	m.tracef("update id=%d %v", id, d)
 	return nil
 }
@@ -284,7 +345,14 @@ func (m *modelRun) checkDisk() error {
 }
 
 // verifyAll is the full post-op invariant: lookups, scan and absent ids.
-func (m *modelRun) verifyAll() error {
+func (m *modelRun) verifyAll() error { return m.verifyCol(m.col) }
+
+// verifyCol checks col against the model. It is also used on a recovered copy
+// of the database, which must satisfy the same invariants as the live handle.
+func (m *modelRun) verifyCol(col *Collection) error {
+	c := *m
+	c.col = col
+	m = &c
 	for id, d := range m.state {
 		rec, err := m.col.Get(id)
 		if err != nil {
@@ -309,12 +377,263 @@ func (m *modelRun) verifyAll() error {
 		if err := m.checkScan(f, func(d map[string]any) bool { return d[modelIndexField] == tag }, true); err != nil {
 			return err
 		}
+		// Direct secondary-index lookup must agree with the model too.
+		ids, ok := m.col.IndexLookup(modelIndexField, tag)
+		if !ok {
+			return fmt.Errorf("IndexLookup: no index on %q", modelIndexField)
+		}
+		var want []uint64
+		for id, d := range m.state {
+			if d[modelIndexField] == tag {
+				want = append(want, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+		if fmt.Sprint(ids) != fmt.Sprint(want) {
+			return fmt.Errorf("IndexLookup(%s=%s) = %v, model %v", modelIndexField, tag, ids, want)
+		}
 	}
 	return nil
 }
 
-func (m *modelRun) opUnimplemented() error {
-	return fmt.Errorf("op is registered but has no implementation yet; its fixing task must provide one")
+// disarmWrite clears an armed write fault that was not consumed.
+func (m *modelRun) disarmWrite() { m.fs.failWriteAt(0, 0, nil) }
+
+// opCrashReopen abandons the handle without Close (kill -9), optionally with a
+// torn partial line left at the end of the newest segment, and reopens. Every
+// acknowledged write must survive and the torn tail must not.
+func (m *modelRun) opCrashReopen() error {
+	torn := m.rng.Intn(3) == 0
+	m.tracef("crash-reopen torn=%v", torn)
+	m.fs.kill()
+	// A real kill -9 stops every goroutine. Stop the abandoned handle's
+	// background loops (without Close's flush/persist) and wait them out so they
+	// cannot touch the directory the new handle is about to own.
+	m.col.closeOnce.Do(func() { close(m.col.closed) })
+	m.col.persistWG.Wait()
+	m.col.compactMu.Lock()
+	m.col.compactMu.Unlock() //nolint:staticcheck // barrier only
+	m.fs.releaseFDs()
+	if err := m.db.lock.release(); err != nil {
+		return fmt.Errorf("release lock: %w", err)
+	}
+	if torn {
+		segs, _ := filepath.Glob(filepath.Join(colDirOf(m.dir), "seg_*.ndjson"))
+		if len(segs) > 0 {
+			sort.Strings(segs)
+			f, err := os.OpenFile(segs[len(segs)-1], os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return err
+			}
+			_, werr := f.WriteString(`{"id":999999,"op":"ins`)
+			cerr := f.Close()
+			if err := errors.Join(werr, cerr); err != nil {
+				return fmt.Errorf("write torn tail: %w", err)
+			}
+		}
+	}
+	m.open()
+	return m.checkDisk()
+}
+
+// opTornWrite makes one write persist only a prefix and fail. A failed op must
+// leave the model untouched; if the armed fault was consumed elsewhere (a
+// background compaction) the op succeeded and is applied.
+func (m *modelRun) opTornWrite() error {
+	kind := m.rng.Intn(3)
+	prefix := m.rng.Intn(14)
+	before := m.fs.faults()
+	m.fs.failWriteAt(m.fs.count("write")+1, prefix, syscall.ENOSPC)
+	defer m.disarmWrite()
+	switch kind {
+	case 0:
+		d := m.randData()
+		id, _, err := m.col.Insert(d)
+		m.tracef("torn insert prefix=%d err=%v", prefix, err)
+		if err == nil {
+			m.put(id, d)
+		}
+		return m.tornResult(err, before)
+	case 1:
+		id, ok := m.pickID()
+		if !ok {
+			return nil
+		}
+		d := m.randData()
+		_, err := m.col.Update(id, d)
+		m.tracef("torn update id=%d prefix=%d err=%v", id, prefix, err)
+		if err == nil {
+			m.put(id, d)
+		}
+		return m.tornResult(err, before)
+	default:
+		id, ok := m.pickID()
+		if !ok {
+			return nil
+		}
+		err := m.col.Delete(id)
+		m.tracef("torn delete id=%d prefix=%d err=%v", id, prefix, err)
+		if err == nil {
+			delete(m.state, id)
+			m.gone = append(m.gone, id)
+		}
+		return m.tornResult(err, before)
+	}
+}
+
+func (m *modelRun) tornResult(err error, faultsBefore int) error {
+	if err != nil && !errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("unexpected error (want ENOSPC or success): %w", err)
+	}
+	if err != nil && m.fs.faults() == faultsBefore {
+		return fmt.Errorf("op failed without an injected fault: %w", err)
+	}
+	return nil
+}
+
+func (m *modelRun) opCompact() error {
+	m.tracef("compact")
+	if err := m.col.CompactNow(); err != nil {
+		return fmt.Errorf("compact: %w", err)
+	}
+	return nil
+}
+
+// opCommitTx commits a small random transaction, half the time with an
+// injected write failure. A failed commit must be all-or-nothing.
+func (m *modelRun) opCommitTx() error {
+	n := 1 + m.rng.Intn(4)
+	used := map[uint64]bool{}
+	var ops []txOp
+	var inserted []uint64
+	next := map[uint64]map[string]any{} // post-commit data; nil = deleted
+	for i := 0; i < n; i++ {
+		now := time.Now().UTC()
+		switch k := m.rng.Intn(3); {
+		case k == 0 || len(m.state) == 0:
+			id := m.col.ReserveID()
+			d := m.randData()
+			ops = append(ops, txOp{kind: txOpInsert, id: id, data: d, ts: now})
+			inserted = append(inserted, id)
+			next[id] = d
+		default:
+			id, _ := m.pickID()
+			if used[id] {
+				continue
+			}
+			used[id] = true
+			if k == 1 {
+				d := m.randData()
+				ops = append(ops, txOp{kind: txOpUpdate, id: id, data: d, ts: now})
+				next[id] = d
+			} else {
+				ops = append(ops, txOp{kind: txOpDelete, id: id, ts: now})
+				next[id] = nil
+			}
+		}
+	}
+	inject := m.rng.Intn(2) == 0
+	before := m.fs.faults()
+	if inject {
+		m.fs.failWriteAt(m.fs.count("write")+1+m.rng.Intn(len(ops)), m.rng.Intn(10), syscall.ENOSPC)
+		defer m.disarmWrite()
+	}
+	err := m.col.CommitTx(ops)
+	m.tracef("commit-tx ops=%d inject=%v err=%v", len(ops), inject, err)
+	if err != nil {
+		if !errors.Is(err, syscall.ENOSPC) || m.fs.faults() == before {
+			return fmt.Errorf("commit: %w", err)
+		}
+		m.gone = append(m.gone, inserted...) // reserved ids must stay absent
+		return nil
+	}
+	for id, d := range next {
+		if d == nil {
+			delete(m.state, id)
+			m.gone = append(m.gone, id)
+		} else {
+			m.put(id, d)
+		}
+	}
+	return nil
+}
+
+// opImageRecover opens a copy of the live directory (a crash image: nothing
+// flushed, index.json/sidx files possibly stale) and requires the recovered
+// copy to agree with the model, including secondary-index lookups.
+func (m *modelRun) opImageRecover() error {
+	m.tracef("image-recover")
+	m.col.compactMu.Lock() // no segment swap mid-copy
+	img := copyDataDir(m.t, m.dir)
+	m.col.compactMu.Unlock()
+	db, err := Open(img, CollectionConfig{CompactInterval: 24 * 3600 * 1e9, SegmentMaxSize: modelSegmentMax})
+	if err != nil {
+		return fmt.Errorf("open crash image: %w", err)
+	}
+	defer db.Close()
+	col, err := db.Collection("c")
+	if err != nil {
+		return fmt.Errorf("image collection: %w", err)
+	}
+	return m.verifyCol(col)
+}
+
+// opVerify runs the online full Verify; a healthy live DB has no findings
+// above informational severity.
+func (m *modelRun) opVerify() error {
+	m.tracef("verify")
+	rep, err := m.db.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+	return noSevereFindings(rep)
+}
+
+func noSevereFindings(rep *IntegrityReport) error {
+	for _, c := range rep.Collections {
+		for _, f := range c.Findings {
+			if f.Severity.rank() > SeverityInfo.rank() {
+				return fmt.Errorf("finding in %s: %+v", c.Name, f)
+			}
+		}
+	}
+	return nil
+}
+
+// opRepairNoop closes cleanly, runs Repair on a copy of the healthy directory
+// and requires it to change nothing, then reopens the original.
+func (m *modelRun) opRepairNoop() error {
+	m.tracef("repair-noop")
+	if err := m.db.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	img := copyDataDir(m.t, m.dir)
+	before := segHashes(m.t, colDirOf(img))
+	rep, err := Repair(context.Background(), img, RepairOptions{BackupDir: m.t.TempDir()})
+	if err != nil {
+		return fmt.Errorf("repair: %w", err)
+	}
+	if rep.BackupDir != "" {
+		return fmt.Errorf("repair of a healthy copy took a backup: %s", rep.BackupDir)
+	}
+	for _, c := range rep.Collections {
+		if c.Status != RepairUnchanged || len(c.Actions) != 0 {
+			return fmt.Errorf("repair of a healthy copy not a no-op: %s status=%s actions=%+v", c.Name, c.Status, c.Actions)
+		}
+	}
+	if after := segHashes(m.t, colDirOf(img)); after != before {
+		return fmt.Errorf("repair changed segment bytes of a healthy copy")
+	}
+	vrep, err := VerifyDir(context.Background(), img, VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		return fmt.Errorf("verify copy: %w", err)
+	}
+	if err := noSevereFindings(vrep); err != nil {
+		return fmt.Errorf("copy after repair: %w", err)
+	}
+	m.open()
+	return m.checkDisk()
 }
 
 // parseModelSeeds reads SCRIVA_MODEL_SEED (comma-separated) or returns the defaults.
@@ -361,6 +680,25 @@ func selectModelOps(env string) ([]modelOp, error) {
 	return out, nil
 }
 
+// soakSeeds returns count consecutive seeds starting at base (default 1000).
+func soakSeeds(count, base string) ([]int64, error) {
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 1 {
+		return nil, fmt.Errorf("bad SCRIVA_MODEL_SEED_COUNT %q", count)
+	}
+	start := int64(1000)
+	if base != "" {
+		if start, err = strconv.ParseInt(base, 10, 64); err != nil {
+			return nil, fmt.Errorf("bad SCRIVA_MODEL_SEED_BASE %q", base)
+		}
+	}
+	out := make([]int64, n)
+	for i := range out {
+		out[i] = start + int64(i)
+	}
+	return out, nil
+}
+
 func pickOp(rng *rand.Rand, ops []modelOp) modelOp {
 	total := 0
 	for _, op := range ops {
@@ -380,6 +718,11 @@ func TestModel(t *testing.T) {
 	seeds, err := parseModelSeeds(os.Getenv("SCRIVA_MODEL_SEED"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if n := os.Getenv("SCRIVA_MODEL_SEED_COUNT"); n != "" && os.Getenv("SCRIVA_MODEL_SEED") == "" {
+		if seeds, err = soakSeeds(n, os.Getenv("SCRIVA_MODEL_SEED_BASE")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ops, err := selectModelOps(os.Getenv("SCRIVA_MODEL_OPS"))
 	if err != nil {
@@ -408,8 +751,12 @@ func runModel(t *testing.T, seed int64, steps int, ops []modelOp) {
 	t.Cleanup(func() { _ = m.db.Close() })
 	for m.step = 1; m.step <= steps; m.step++ {
 		op := pickOp(m.rng, ops)
+		seq := m.col.segSeq.Load()
 		if err := op.run(m); err != nil {
 			m.fail("%s: %v", op.name, err)
+		}
+		if !modelRaceCompaction && m.col.segSeq.Load() != seq {
+			m.settleCompaction() // only a rotation can have signalled the compactor
 		}
 		if err := m.verifyAll(); err != nil {
 			m.fail("after %s: %v", op.name, err)
@@ -440,6 +787,9 @@ func TestModelHarnessSelfCheck(t *testing.T) {
 		if op.disabledBy != "" {
 			t.Fatalf("disabled op %s enabled by default", op.name)
 		}
+	}
+	if o, err := soakSeeds("3", "10"); err != nil || len(o) != 3 || o[2] != 12 {
+		t.Fatalf("soak seeds: %v %v", o, err)
 	}
 	if o, err := selectModelOps("crash-reopen"); err != nil || len(o) != 1 {
 		t.Fatalf("explicit opt-in: %v %v", o, err)
