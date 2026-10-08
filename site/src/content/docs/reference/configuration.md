@@ -40,6 +40,8 @@ See the fully commented
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction. |
 | `--sync` | `none` | Durability mode: `none`, `always`, or `interval`. |
 | `--sync-interval` | `1s` | Flush cadence when `--sync=interval`. |
+| `--index-persist-interval` | `30s` | Background index persist cadence; bounds the tail replayed after a crash (negative = off). |
+| `--integrity-policy` | `fail` | Open policy on damaged segments: `fail` (refuse to start), `report` (open past damage and count it), `rebuild-index-only`. |
 | `--tx-timeout` | `5m` | Idle timeout before an open transaction is reaped (`0` = off). |
 | `--default-ttl` | `0` | Default expiry for inserted records (`0` = never), e.g. `24h`. |
 | `--watch-buffer` | `64` | Per-subscriber Watch buffer; overflow signals a slow subscriber. |

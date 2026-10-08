@@ -369,6 +369,8 @@ After an unclean stop the persisted `index.json` is checksum-valid but stale (it
 | v1 file (no coverage), corrupt/truncated file, missing or shorter covered segment, hash mismatch, a non-newest covered segment grew, an unlisted segment older than the covered range | full rebuild from all segments |
 | a spot check fails: up to 64 random plus the 16 newest entries must each point at a line boundary whose decoded `id` matches | full rebuild |
 
+Secondary indexes (`sidx_<field>.json`) follow the same protocol independently: each carries its own v2 coverage and checksum, is replayed from the covered tail when only the newest segment grew, and is rebuilt from the segments when its file is missing, corrupt, v1, or its coverage disagrees (`Collection.IndexRecoveryStats()` counts `SecondaryReplays` / `SecondaryRebuilds`). A primary rebuild always forces a secondary rebuild. Persisted index paths are relative to the collection directory, so a data directory may be moved or restored elsewhere without triggering a rebuild.
+
 Replay and `Rebuild` share one routine (`applyEntries`), so insert/update (rev bump, last-writer-wins) and delete (entry removed — deletes are not resurrected) behave identically. A torn last line in the active segment is trimmed by `recoverPartialLine` before replay. The recovered index is persisted and the secondary indexes are rebuilt from the segments whenever the primary changed. Cost: validating coverage hashes the covered bytes (sequential read), far cheaper than a full decode-and-rebuild; replay cost is bounded by the unpersisted tail.
 
 Recovery is observable: `Collection.IndexRecoveryStats()` exposes replay/rebuild/spot-check-failure counters and replayed bytes, and `CollectionConfig.OnIndexRecovery(collection, kind, bytes, dur)` fires with kind `replay`, `rebuild` or `spotcheck_fail` (not at all on a clean reopen).
@@ -445,6 +447,21 @@ Severities, in increasing order: `info` (expected or self-healing at open), `rep
 | `sidx-unique-violation` | conflict | several live records share a value under a unique index |
 
 The engine emits no metrics from `Verify`; callers that want them instrument around the call.
+
+**Guarantees.** `Verify` never writes, trims or locks anything and returns the same findings for the same bytes. Online it is a consistent cut that does not block writers; offline (`VerifyDir`, `scriva verify`) it reflects the directory as it sits on disk, and a directory held open by a live process is reported (`lock-held`) because in-flight writes may show up as findings. A `Clean()` report from a `full` run means every segment line parses, the history is unambiguous and the primary and secondary indexes equal what a rebuild would produce; `quick` gives no such guarantee for bytes before the newest segment's tail beyond the sampled entries.
+
+### Offline repair (`engine.Repair`, `scriva repair`)
+
+`engine/repair.go` repairs what `Verify` reports as `repairable-index`, and nothing else unless asked. The segments are the source of truth and are never edited, except for the three cases below.
+
+1. **Lock, then plan.** `Repair` takes the directory lock first (a directory open elsewhere fails with `ErrDatabaseLocked`, CLI exit 3), verifies in `full` mode, and builds a per-collection plan. `--dry-run` stops here.
+2. **Backup before the first change.** A byte-for-byte copy (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`, which must be outside it) is written and every file re-hashed (SHA-256). A backup that does not verify aborts the run with nothing changed. A `REPAIR_JOURNAL.json` in the data directory pins the backup and the multi-step plan.
+3. **Rebuild derived state.** The primary index, secondary indexes and `meta.json` (id counter) are rebuilt atomically (temp → fsync → rename) from a tolerant scan of the segments, with v2 coverage that open accepts without further work. Tombstones stay in the segments and so stay deleted. An interrupted compaction swap is rolled forward exactly as open would.
+4. **Segment-level changes** are limited to: trimming an unacknowledged torn tail on the newest segment (as open does); renaming unnumbered `seg_*.ndjson` files to the next free number when their ids overlap no other segment; and, only with `--salvage`, moving the valid records of damaged segments into one new segment (originals are quarantined, i.e. removed from the directory but kept in the backup).
+5. **Conflicts are never resolved.** Duplicate ids, id reuse after delete, revision regressions and unique violations are listed in the report; `--on-conflict abort` refuses before the backup is taken. Salvage is refused for a collection with conflicts, and such a collection is left untouched (`ErrRepairIncomplete`, exit 2); the other collections are still repaired.
+6. **Restartable and idempotent.** Re-running after a crash resumes from the journal (`Resumed: true`); re-running on a repaired directory does nothing.
+
+Repair has no open-time hook: the server never repairs by itself. See the [runbook](runbook-index-recovery.md) for the operator sequence.
 
 ## Secondary Indexes
 
@@ -867,6 +884,19 @@ durable writes — correct, but the slowest option. `interval` is the recommende
 middle ground for most workloads. Sealing a segment and `Close()` always fsync
 regardless of mode.
 
+What each mode means for the other durability-relevant events:
+
+| Event | `none` | `interval` / `always` |
+|---|---|---|
+| Segment rotation | sealing fsyncs the old segment | same, plus an `fsync` of the directory for the new file |
+| Index persist (`index.json`, `sidx_*.json`) | fsyncs the active segment first so coverage never claims bytes a crash could lose; metadata files use temp → fsync → rename | same, plus directory fsync |
+| Compaction swap | manifest, renames and unlinks are fsynced in order | same |
+| `Close()` / `SIGTERM` | flushes, persists the index and releases the lock | same |
+| After `kill -9` | nothing acknowledged is lost (the data is in the page cache); open trims a torn tail and replays the index from its covered prefix | same |
+| After power loss | the tail since the last OS flush may be lost | loss bounded by the interval (`interval`) or nil for acknowledged writes (`always`) |
+
+A crash or power loss can drop the latest writes, but open never leaves a half-applied one: a torn final line is trimmed, `CommitTx` is all-or-nothing, and the index is validated against the segments rather than trusted.
+
 > Pick the mode that matches your data's value. `none` is appropriate for caches
 > and rebuildable data; `always` for data you cannot afford to lose on power loss.
 
@@ -883,6 +913,25 @@ Note that partial-line recovery protects against *torn* writes (an incomplete
 final line), not against *lost* writes — a write acknowledged under `--sync=none`
 can still be lost if the machine loses power before the OS flushes its page
 cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that window.
+
+### Partial writes and segment poisoning
+
+A failed `Append` (ENOSPC, EIO, short write) may leave bytes on disk even when it reports zero written. The segment therefore **always truncates back to its last known-good size** after a failed write, and the collection also rolls back an already-appended prefix of a multi-entry write (batch, transaction commit) when a later append or fsync fails. Memory state (index, size) only advances after a write fully succeeded, so a failed write is invisible to readers and to the next reopen.
+
+If the rollback truncate itself fails, the tail of the file is unknown and appending after it could glue a record onto garbage. The segment is then **poisoned**: every later append returns `engine.ErrSegmentPoisoned` (wrapping the original cause) until the process restarts. Reads and other collections keep working. Poisoning increments `scriva_segment_poisoned_total` and `scriva_append_errors_total{reason="poisoned"}`. The recovery is to fix the underlying fault (disk space, device health), restart so that open re-validates and trims the tail, then run `scriva verify` if you saw it. A record too large to be scanned back is refused up front (`ErrRecordTooLarge`) rather than written.
+
+### Directory lock and filesystem assumptions
+
+- **Single writer.** Opening a database takes an exclusive, non-blocking advisory lock (`flock` on Unix, `LockFileEx` on Windows) on `<data>/LOCK`; the lock is released by `Close()` and by process exit, including `kill -9`, so a crashed owner never leaves a stale lock. The lock is per open file description, so a second `Open` in the *same* process is refused too.
+- **Local filesystems.** ScrivaDB assumes POSIX-like local-filesystem semantics: atomic `rename`, `fsync` that really reaches stable storage, and working `flock`. If the filesystem does not support the lock (some NFS setups) open fails with an `unsupported file system` error rather than running unprotected. Network or FUSE filesystems that merely accept the lock without enforcing it across hosts are **not** safe for a shared data directory; never point two hosts at one directory.
+- **Directory fsync.** New, rotated and renamed files are made durable by an `fsync` of the parent directory under `--sync=interval`/`always` (a no-op on Windows).
+- **No lock-free readers.** Other processes (`scriva verify` on a live directory, backup scripts) see an unsynchronized view; use `scriva-cli backup` against a running server, or stop the server first.
+
+### Upgrading from v1 index files and mixed binaries
+
+Index and secondary-index files written by earlier releases (no `version`, absolute segment paths, no coverage) are **v1**. The first open by the new engine cannot prove a v1 file current, so it rebuilds the index from the segments once (`scriva_recovery_total{kind="rebuild"}` increments) and rewrites it as v2; the next open is a normal clean reopen. See *v1 index upgrade* in the table above for the cost. No manual step and no segment rewrite is involved: the segment format is unchanged.
+
+Going back is safe for data: a pre-v2 binary reads the v2 `index.json`, fails its (v1-style) checksum, treats it as stale and rebuilds from segments, rewriting it as v1. It does not understand the directory lock, the integrity gate or `repair`, so never run an old and a new binary on one directory at the same time, and do not use an old binary's `kill -9` recovery as a substitute for `scriva verify`.
 
 ### Recovery cost and performance guardrails
 

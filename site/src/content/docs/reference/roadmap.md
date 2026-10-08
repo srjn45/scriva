@@ -8,6 +8,9 @@ and backwards compatibility is maintained from here.
 
 ## Shipped
 
+- **Integrity & recovery** — v2 index coverage with O(tail) crash replay, fail-closed
+  open policy, segment poisoning, directory lock, and offline `scriva verify` /
+  `scriva repair`.
 - **Storage** — append-only NDJSON segments, CRC32C integrity, background
   compaction, online backup + restore.
 - **Durability** — `none` / `interval` / `always` fsync modes.

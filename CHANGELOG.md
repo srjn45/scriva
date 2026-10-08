@@ -40,7 +40,17 @@ embedding-specific contract.
 
 ## [Unreleased]
 
+Index/data integrity hardening (issue #107). **Upgrade note:** index files written by earlier releases (v1: absolute paths, no coverage) are rebuilt from the segments **once** on first open and rewritten as v2; no manual step, and the segment format is unchanged. A pre-v2 binary opened on a v2 directory treats the index as stale and rebuilds it from segments (data is safe), but it has no directory lock, integrity gate or `repair` — never run old and new binaries on one directory at the same time. A server that previously started on damaged segments now **refuses to start** by default (`--integrity-policy fail`); run `scriva verify` / the [runbook](docs/runbook-index-recovery.md), or pass `--integrity-policy report` to open past the damage.
+
 ### Added
+
+- **`scriva verify` and `scriva repair`:** offline commands on a stopped data directory (`--data`, `--collection`, `--mode quick|full`, `--json`; repair adds `--dry-run`, `--salvage`, `--on-conflict report|abort`, `--backup-dir`). Exit codes `0` clean, `1` repairable, `2` corruption/conflicts, `3` usage/locked. `repair` takes a verified backup first, rebuilds only derived structures, never resolves conflicting history, and is restartable. Go API: `engine.Verify`, `engine.VerifyDir`, `engine.Repair`.
+- **`--integrity-policy fail|report|rebuild-index-only`** (config `integrity_policy`; façade `scriva.WithIntegrityPolicy`, `WithOnIntegrity`, `WithLogger`): open refuses damaged segments and ambiguous history with `engine.ErrIntegrity` (`*engine.OpenIntegrityError`) by default.
+- **Index format v2:** relative segment names (data directories are relocatable) and per-segment coverage fingerprints; sealed segments use a cheap tail fingerprint. After an unclean stop open replays only the unpersisted tail (O(tail)) instead of trusting a stale index; secondary indexes follow the same protocol.
+- **Segment poisoning:** a failed write is rolled back to the last good boundary; if that fails the segment returns `engine.ErrSegmentPoisoned` until restart instead of appending after unknown bytes.
+- **Metrics:** `scriva_recovery_*`, `scriva_integrity_open_total`, `scriva_integrity_findings_total`, `scriva_append_total`/`_bytes_total`/`_errors_total`, `scriva_segment_poisoned_total`, `scriva_dir_lock_total`.
+- **Tests and tooling:** crash matrix with a fault-injecting filesystem, kill -9 multi-process tests, generated synthetic incident fixtures, a randomized model test and `make test-soak`, recovery-cost benchmarks.
+- **Docs:** durability per sync mode, repair guarantees, poisoning, lock/filesystem assumptions and recovery-cost data in [`docs/architecture.md`](docs/architecture.md); verify/repair examples and shutdown guidance in [`docs/getting-started.md`](docs/getting-started.md).
 
 - **Index recovery runbook:** [`docs/runbook-index-recovery.md`](docs/runbook-index-recovery.md) — symptoms, a `scriva verify --mode full` decision tree, the safe stop/backup/repair/reverify sequence, embedder guidance, and sample alerts.
 - **Directory-level lock:** the engine now acquires an OS-level advisory lock (`flock` on Unix, `LockFileEx` on Windows) on the data directory upon `engine.Open`. A second writer (in the same or a different process) attempting to open the directory fails fast with `engine.ErrDatabaseLocked`, protecting the append-only files from silent corruption by concurrent writers.

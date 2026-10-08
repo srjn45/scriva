@@ -24,8 +24,38 @@ middle ground for in-process use.
 - Every segment entry carries a **CRC32C checksum**. On read, a mismatch is
   reported rather than silently returning wrong data — so on-disk bit-rot is
   caught, not propagated.
-- The in-memory `id` index is persisted with its own checksum for fast, verified
-  restarts.
+- The in-memory `id` index is persisted with its own checksum **and per-segment
+  coverage fingerprints**. After a crash, open checks the file against the
+  segments and replays only the bytes written since the last persist; anything it
+  cannot prove current is rebuilt from the segments, which are the source of
+  truth. A one-time rebuild happens when upgrading index files from older
+  releases.
+- A failed write is rolled back to the last good byte. If even the rollback
+  fails, the segment is *poisoned* (`ErrSegmentPoisoned`) and refuses appends
+  until restart, rather than risk writing after garbage.
+- Open is **fail-closed**: damaged segments or ambiguous history stop the server
+  from starting (`--integrity-policy fail`, the default) instead of serving
+  wrong answers. Only one process may own a data directory (an exclusive `LOCK`
+  file; use a local filesystem).
+- `kill -9` loses nothing that was acknowledged; **power loss** can lose writes
+  not yet flushed, bounded by your sync mode above.
+
+## Verify and repair
+
+With the server stopped, check a data directory and repair derived state
+(indexes, id counter) from the segments:
+
+```bash
+scriva verify --data ./data                 # exit 0 clean, 1 repairable, 2 corruption/conflict, 3 usage
+scriva repair --data ./data --dry-run       # show the plan, change nothing
+scriva repair --data ./data                 # verified backup first, then rebuild
+scriva verify --data ./data                 # confirm exit 0 before restarting
+```
+
+`repair` never edits segment bytes unless you pass `--salvage`, and never
+resolves conflicting history on its own. See the
+[index recovery runbook](https://github.com/srjn45/scriva/blob/main/docs/runbook-index-recovery.md)
+for the full decision tree.
 
 ## Online backup
 

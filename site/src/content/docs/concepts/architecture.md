@@ -34,7 +34,12 @@ Every line carries the record's `id`, `key`, `rev`, your `data`, and a **CRC32C*
 4. The write is durably flushed according to the [`--sync` mode](/scriva/guides/durability-and-backup/).
 
 Because writes never modify existing bytes, a crash can at worst leave a torn
-trailing line, which is detected and skipped on restart.
+trailing line, which is trimmed on restart. On open the persisted index is
+validated against the segments (never trusted): only the bytes written after its
+last persist are replayed, and anything unprovable is rebuilt from the segments.
+Damaged segments or ambiguous history make open fail closed; see
+[Durability & backup](/scriva/guides/durability-and-backup/#verify-and-repair)
+for `scriva verify` / `scriva repair`.
 
 ## Read path
 
