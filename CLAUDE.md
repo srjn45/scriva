@@ -54,6 +54,29 @@ make test         # go test ./... -race -count=1 -coverprofile=coverage.out
 - All tests must pass before opening a PR.
 - Integration tests (`server/grpc_integration_test.go`) spin up a real in-process gRPC server — no mocking of the engine layer.
 
+### Randomized model test and soak
+
+`engine/model_harness_test.go` (`TestModel`) applies a seeded random op sequence to a
+collection and an in-memory model: insert/update/delete/get/scan/scan-index, clean
+reopen, crash-reopen (with optional torn tail), torn writes (injected ENOSPC), compaction
+interleaved with tiny-segment rotation, `CommitTx` with injected write failure, crash-image
+recovery (open a copy of the live dir, check Get/scan/`IndexLookup`), periodic online
+`Verify`, and `Repair` as a no-op on a copied healthy DB. CI runs a fixed set of seeds
+(`modelDefaultSeeds`, 200 steps). Failures print `replay: SCRIVA_MODEL_SEED=<n>`.
+
+| Env var | Meaning |
+|---|---|
+| `SCRIVA_MODEL_SEED` | comma-separated seeds to run (replay) |
+| `SCRIVA_MODEL_STEPS` | ops per seed (default 200) |
+| `SCRIVA_MODEL_OPS` | comma-separated op names to run (default: all) |
+| `SCRIVA_MODEL_SEED_COUNT` / `SCRIVA_MODEL_SEED_BASE` | soak: N consecutive seeds from BASE (default 1000) |
+| `SCRIVA_MODEL_RACE_COMPACTION=1` | let background compaction race the next op (exposes the known scan-vs-compaction bug) |
+
+```bash
+make test-soak                                   # 100 seeds x 500 steps, race detector
+make test-soak SOAK_SEEDS=300 SOAK_STEPS=1000    # longer; also SOAK_BASE, SOAK_TIMEOUT
+```
+
 Run a specific package:
 
 ```bash
