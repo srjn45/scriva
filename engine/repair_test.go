@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -242,6 +245,121 @@ func TestRepairRefusesOpenDirectory(t *testing.T) {
 	}
 }
 
+func assertQuarantined(t *testing.T, colDir string, sr *SalvageReport, name string, want []byte) {
+	t.Helper()
+	if sr.QuarantineDir == "" {
+		t.Fatal("report does not name the quarantine directory")
+	}
+	qdir := filepath.Join(colDir, filepath.FromSlash(sr.QuarantineDir))
+	got, err := os.ReadFile(filepath.Join(qdir, name))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("quarantined %s missing or altered: %v", name, err)
+	}
+	b, err := os.ReadFile(filepath.Join(qdir, quarantineManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man quarantineManifest
+	if err := json.Unmarshal(b, &man); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(want)
+	if len(man.Files) == 0 || man.Files[0].Name != name || man.Files[0].SHA256 != hex.EncodeToString(sum[:]) || man.Files[0].Size != int64(len(want)) {
+		t.Fatalf("manifest does not describe %s: %+v", name, man)
+	}
+}
+
+func TestRepairSalvageQuarantineIsNotReplayedAndRepairIsIdempotent(t *testing.T) {
+	dir, lost := damagedSegments(t)
+	colDir := filepath.Join(dir, "c")
+	orig, _ := os.ReadFile(filepath.Join(colDir, "seg_000001.ndjson"))
+	rep := mustRepair(t, dir, RepairOptions{Salvage: true, BackupDir: t.TempDir()})
+	sr := colRepair(t, rep, "c").Salvage
+	assertQuarantined(t, colDir, sr, "seg_000001.ndjson", orig)
+
+	// Open, verify and a second repair all ignore the quarantined bytes.
+	wantVerifyClean(t, dir)
+	db, col := openRepaired(t, dir, CollectionConfig{CompactInterval: time.Hour, SegmentMaxSize: 150})
+	if _, err := col.Get(lost); err == nil {
+		t.Fatal("record from a lost region reappeared")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := mustRepair(t, dir, RepairOptions{Salvage: true, BackupDir: t.TempDir()})
+	if c := colRepair(t, again, "c"); c.Status != RepairUnchanged {
+		t.Fatalf("second repair: %+v", c)
+	}
+	assertQuarantined(t, colDir, sr, "seg_000001.ndjson", orig)
+}
+
+func TestRepairBackupDirSymlinkBypassIsRejected(t *testing.T) {
+	setup := func(t *testing.T) (dir, outside string) {
+		t.Helper()
+		dir = filepath.Join(t.TempDir(), "data")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		seedClosed(t, dir, vcfg, 2)
+		return dir, t.TempDir()
+	}
+	cases := map[string]func(t *testing.T, dir, outside string) string{
+		"symlink to the data dir": func(t *testing.T, dir, outside string) string {
+			l := filepath.Join(outside, "link")
+			if err := os.Symlink(dir, l); err != nil {
+				t.Skip(err)
+			}
+			return l
+		},
+		"new child beneath a symlink to the data dir": func(t *testing.T, dir, outside string) string {
+			l := filepath.Join(outside, "link")
+			if err := os.Symlink(dir, l); err != nil {
+				t.Skip(err)
+			}
+			return filepath.Join(l, "not", "yet", "bk")
+		},
+		"dotdot after a symlink": func(t *testing.T, dir, outside string) string {
+			l := filepath.Join(outside, "link")
+			if err := os.Symlink(filepath.Join(dir, "c"), l); err != nil {
+				t.Skip(err)
+			}
+			return l + string(filepath.Separator) + ".." + string(filepath.Separator) + "newbk" // Join would clean the ".." lexically
+		},
+		"symlinked ancestor of the data dir's child": func(t *testing.T, dir, outside string) string {
+			l := filepath.Join(outside, "parent")
+			if err := os.Symlink(filepath.Dir(dir), l); err != nil {
+				t.Skip(err)
+			}
+			return filepath.Join(l, "data", "bk")
+		},
+	}
+	for name, mk := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, outside := setup(t)
+			bk := mk(t, dir, outside)
+			before := snapshotDir(t, dir)
+			if _, err := Repair(context.Background(), dir, RepairOptions{BackupDir: bk}); err == nil || !strings.Contains(err.Error(), "outside the data directory") {
+				t.Fatalf("symlinked backup dir inside the data dir was accepted: %v", err)
+			}
+			if snapshotDir(t, dir) != before {
+				t.Fatal("data dir modified")
+			}
+		})
+	}
+
+	t.Run("symlink to an outside dir is fine", func(t *testing.T) {
+		dir, outside := setup(t)
+		real := t.TempDir()
+		l := filepath.Join(outside, "link")
+		if err := os.Symlink(real, l); err != nil {
+			t.Skip(err)
+		}
+		if err := checkBackupOutside(dir, filepath.Join(l, "new")); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestRepairBackupMustBeOutsideDataDir(t *testing.T) {
 	dir := t.TempDir()
 	seedClosed(t, dir, vcfg, 2)
@@ -444,11 +562,13 @@ func TestRepairSalvageIntoNewSegment(t *testing.T) {
 	if len(sr.Quarantined) != 1 || sr.Quarantined[0] != "seg_000001.ndjson" || sr.BadRegions != 1 || sr.Entries == 0 {
 		t.Fatalf("salvage report: %+v", sr)
 	}
-	// The damaged original is gone from the directory but intact in the backup;
-	// every other original segment is byte-identical.
+	// The damaged original leaves the replay set but is never deleted: it is
+	// intact in quarantine (with a manifest) and in the backup; every other
+	// original segment is byte-identical.
 	if _, err := os.Stat(damaged); err == nil {
-		t.Fatal("damaged segment still in the directory")
+		t.Fatal("damaged segment still in the replay set")
 	}
+	assertQuarantined(t, colDir, sr, "seg_000001.ndjson", origDamaged)
 	if b, err := os.ReadFile(filepath.Join(rep.BackupDir, "c", "seg_000001.ndjson")); err != nil || string(b) != string(origDamaged) {
 		t.Fatalf("backup of the damaged segment is not intact: %v", err)
 	}
@@ -610,6 +730,7 @@ func TestRepairSalvageRefusedWithConflicts(t *testing.T) {
 func TestRepairInterruptionAndRerun(t *testing.T) {
 	stages := []string{
 		"backup-done", "compaction-done:c", "renamed:c", "salvage-written:c",
+		"quarantine-manifest", "quarantine-moved:seg_000001.ndjson", "quarantined:c",
 		"pre-rebuild:c", "sidx-written:c", "index-written:c",
 	}
 	for _, stage := range stages {
@@ -667,6 +788,11 @@ func TestRepairInterruptionAndRerun(t *testing.T) {
 				t.Fatal("journal not retired after the completed rerun")
 			}
 			wantVerifyClean(t, dir)
+			if c := colRepair(t, rep, "c"); c.Salvage != nil {
+				if qs, _ := filepath.Glob(filepath.Join(colDir, "quarantine", "*", "seg_000001.ndjson")); len(qs) != 1 {
+					t.Fatalf("damaged original not preserved in quarantine after a resumed run: %v", qs)
+				}
+			}
 			_, col := openRepaired(t, dir, CollectionConfig{CompactInterval: time.Hour, SegmentMaxSize: 150})
 			if _, err := col.Get(lost); err == nil {
 				t.Fatal("destroyed record reappeared")

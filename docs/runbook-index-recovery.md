@@ -52,7 +52,10 @@ Finding severities, lowest to highest: `info` < `repairable-index` <
 **2a. Data corruption (exit 2, `data-corruption`).** `repair --dry-run` shows
 what would happen. Plain `repair` rebuilds indexes but leaves damaged bytes
 alone. `repair --salvage` moves the valid records out of damaged segments into
-a new segment; the originals stay in the repair backup. Review the dry-run, and
+a new segment. The damaged originals are never deleted: they are moved
+byte-for-byte to `<collection>/quarantine/<run>/` (with a `MANIFEST.json` of
+sizes and SHA-256 hashes; open, verify and rebuild ignore that directory) and a
+second copy stays in the repair backup. Review the dry-run, and
 prefer restoring a known-good backup if the lost region matters.
 
 **2b. Conflicts (exit 2, `conflict`).** Conflicting history is **never

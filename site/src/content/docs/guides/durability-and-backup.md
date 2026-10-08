@@ -52,7 +52,7 @@ scriva repair --data ./data                 # verified backup first, then rebuil
 scriva verify --data ./data                 # confirm exit 0 before restarting
 ```
 
-`repair` never edits segment bytes unless you pass `--salvage`, and never
+`repair` never edits or deletes segment bytes (`--salvage` only moves damaged originals into a `quarantine/` folder), and never
 resolves conflicting history on its own. See the
 [index recovery runbook](https://github.com/srjn45/scriva/blob/main/docs/runbook-index-recovery.md)
 for the full decision tree.
