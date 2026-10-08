@@ -271,7 +271,7 @@ func TestIndexPersist_CrashWithDebouncedPersistRecoversExactState(t *testing.T) 
 	}
 }
 
-func TestIndexLoad_LegacyCoverageWithoutTailStillVerified(t *testing.T) {
+func TestIndexLoad_SealedCoverageFullyVerified(t *testing.T) {
 	t.Parallel()
 	data := t.TempDir()
 	dir := filepath.Join(data, "c")
@@ -287,9 +287,9 @@ func TestIndexLoad_LegacyCoverageWithoutTailStillVerified(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Sealed segments carry a tail fingerprint and no full hash.
+	// Sealed segments carry a full checksum of the covered prefix.
 	idx := loadedCoverage(t, dir)
-	if len(idx.coverage) < 2 || idx.coverage[0].Tail == "" || idx.coverage[0].Checksum != "" {
+	if len(idx.coverage) < 2 || idx.coverage[0].Tail != "" || idx.coverage[0].Checksum == "" {
 		t.Fatalf("unexpected coverage %+v", idx.coverage)
 	}
 	// A flipped byte in a sealed segment's tail forces a rebuild, not a trust.
