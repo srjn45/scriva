@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -38,9 +40,26 @@ var (
 )
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
-		os.Exit(1)
+	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// execute runs the root command and maps its error to a process exit code.
+// verify/repair return an *exitError carrying their documented codes; any
+// other error is a plain failure (1).
+func execute(args []string, stdout, stderr io.Writer) int {
+	root := rootCmd()
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	err := root.Execute()
+	if err == nil {
+		return 0
 	}
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+	return 1
 }
 
 func rootCmd() *cobra.Command {
@@ -50,7 +69,7 @@ func rootCmd() *cobra.Command {
 		Version: version,
 	}
 	root.SetVersionTemplate("scriva {{.Version}}\n")
-	root.AddCommand(serveCmd(), versionCmd())
+	root.AddCommand(serveCmd(), versionCmd(), verifyCmd(), repairCmd())
 	return root
 }
 
