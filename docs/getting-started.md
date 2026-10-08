@@ -1114,6 +1114,21 @@ curl -H "x-api-key: dev-key" -X POST \
 
 ---
 
+## Offline integrity check & repair
+
+Two local commands operate directly on a data directory (no server, no network). Stop the server first.
+
+```bash
+scriva verify --data ./data [--collection NAME] [--mode quick|full] [--json]
+scriva repair --data ./data [--collection NAME] [--salvage] [--on-conflict report|abort] [--dry-run] [--backup-dir DIR] [--json]
+```
+
+- `verify` is read-only. `repair --dry-run` verifies and prints the plan without changing anything.
+- `repair` takes a verified backup (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`) before its first change, rebuilds indexes/id counters from the segments, and prints the backup path and next steps. Damaged segment bytes are only rewritten with `--salvage`; conflicting history is never resolved automatically (`--on-conflict abort` refuses before touching anything).
+- `repair` refuses a directory that is open in another process.
+
+Exit codes: `0` clean/repaired, `1` repairable (verify, or dry-run would apply changes), `2` data corruption or conflicts, `3` usage error, unreadable directory, or locked directory.
+
 ## Backup & restore
 
 `scriva-cli backup` streams a consistent, gzip-compressed snapshot of the entire
