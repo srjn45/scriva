@@ -322,6 +322,7 @@ Inspect a directory without opening it via the integrity verification API
 `scriva.WithOnIntegrity` and `scriva.WithLogger`. Recovery, integrity, append,
 poison and lock events are exported as Prometheus metrics (see
 [Prometheus metrics](#prometheus-metrics)) and structured logs.
+If open fails, follow the [index recovery runbook](runbook-index-recovery.md).
 
 ---
 
@@ -1128,6 +1129,8 @@ scriva repair --data ./data [--collection NAME] [--salvage] [--on-conflict repor
 - `repair` refuses a directory that is open in another process.
 
 Exit codes: `0` clean/repaired, `1` repairable (verify, or dry-run would apply changes), `2` data corruption or conflicts, `3` usage error, unreadable directory, or locked directory.
+
+For the full decision tree and safe stop → backup → repair → reverify sequence, see the [index recovery runbook](runbook-index-recovery.md).
 
 ## Backup & restore
 

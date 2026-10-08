@@ -206,6 +206,7 @@ covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
 | Document | Description |
 |---|---|
 | [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics, logging, health probes |
+| [Index recovery runbook](docs/runbook-index-recovery.md) | Verify, repair and recover from index/data integrity problems |
 | [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, secondary indexes, crash safety |
 | [Embedding](docs/embedding.md) | Use ScrivaDB as an in-process Go library: `scriva`/`engine` API, keyed ops, CAS, Watch, migration, versioning policy |
 
