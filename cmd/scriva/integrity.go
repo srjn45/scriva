@@ -199,7 +199,8 @@ history is never resolved, only reported (or, with --on-conflict abort, refused
 before anything is touched). Damaged segments are only rewritten with --salvage.
 
 The server must be stopped: repair refuses a directory that is open elsewhere.
---dry-run verifies and prints the plan without modifying anything.
+--dry-run verifies and prints the plan without modifying anything; it also
+refuses (exit 3) a directory that is open elsewhere.
 
 Exit codes: 0 clean/repaired, 1 (dry-run) repairs would be applied, 2 corruption
 or conflicts remain, 3 usage error / directory locked.`,
@@ -250,7 +251,7 @@ or conflicts remain, 3 usage error / directory locked.`,
 	f := cmd.Flags()
 	f.StringVar(&dataDir, "data", "", "Data directory to repair (required)")
 	f.StringVar(&collection, "collection", "", "Repair only this collection (default: all)")
-	f.BoolVar(&salvage, "salvage", false, "Move valid records out of damaged segments into a new segment (originals stay in the backup)")
+	f.BoolVar(&salvage, "salvage", false, "Move valid records out of damaged segments into a new segment (originals are quarantined, never deleted)")
 	f.StringVar(&onConflict, "on-conflict", "report", "Conflicting history policy: report or abort")
 	f.BoolVar(&dryRun, "dry-run", false, "Print the plan without modifying anything")
 	f.BoolVar(&asJSON, "json", false, "Emit the report as JSON")
@@ -315,8 +316,8 @@ func printRepair(w io.Writer, rep *engine.RepairReport, err error, code int) {
 			_, _ = fmt.Fprintf(w, "    action: %s %s %s\n", a.Kind, a.Target, a.Detail)
 		}
 		if s := c.Salvage; s != nil {
-			_, _ = fmt.Fprintf(w, "    salvage: %d entries into %s, %d bad region(s) lost, quarantined %v\n",
-				s.Entries, s.NewSegment, s.BadRegions, s.Quarantined)
+			_, _ = fmt.Fprintf(w, "    salvage: %d entries into %s, %d bad region(s) lost, originals %v moved to %s/ (not deleted)\n",
+				s.Entries, s.NewSegment, s.BadRegions, s.Quarantined, s.QuarantineDir)
 		}
 		for _, f := range c.Conflicts {
 			printFinding(w, f)
@@ -344,6 +345,16 @@ func runRepairDryRun(ctx context.Context, cmd *cobra.Command, dir, collection st
 	if err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: %v\n", err)
 		return usageErr("%v", err)
+	}
+	// The plan is only meaningful for a quiescent directory, and the real
+	// repair would refuse a held lock; mirror that so dry-run never reports a
+	// plan that cannot be applied.
+	for _, f := range rep.Findings {
+		if f.Code == engine.CodeLockHeld {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: %v\n", engine.ErrDatabaseLocked)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "the data directory is open in another process; stop the server and retry")
+			return &exitError{code: exitUsage, msg: engine.ErrDatabaseLocked.Error()}
+		}
 	}
 	type planItem struct {
 		Collection string   `json:"collection"`

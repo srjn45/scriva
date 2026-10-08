@@ -1131,8 +1131,9 @@ scriva repair --data ./data [--collection NAME] [--salvage] [--on-conflict repor
 ```
 
 - `verify` is read-only. `repair --dry-run` verifies and prints the plan without changing anything.
-- `repair` takes a verified backup (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`) before its first change, rebuilds indexes/id counters from the segments, and prints the backup path and next steps. Damaged segment bytes are only rewritten with `--salvage`; conflicting history is never resolved automatically (`--on-conflict abort` refuses before touching anything).
-- `repair` refuses a directory that is open in another process.
+- `repair` takes a verified backup (`repair-backup-<UTC time>`, next to the data directory unless `--backup-dir`) before its first change, rebuilds indexes/id counters from the segments, and prints the backup path and next steps. Damaged segment bytes are only touched with `--salvage`, which copies their valid records into a new segment and moves the damaged originals (never deletes them) to `<collection>/quarantine/<run>/` with a `MANIFEST.json`; open, verify and rebuild never read that directory; conflicting history is never resolved automatically (`--on-conflict abort` refuses before touching anything).
+- `repair` and `repair --dry-run` refuse a directory that is open in another process (exit 3).
+- `--backup-dir` must resolve outside `--data`; symlinks (including on the path to a not-yet-created directory) are followed before the check.
 - `verify` and `repair` skip the server's API key, TLS and ports entirely; they need only filesystem access to `--data`. `--mode full` (default) scans every segment; `--mode quick` is a bounded spot check for routine health probes.
 
 Example (a directory whose index offsets are wrong):
@@ -1155,7 +1156,7 @@ result: clean (exit 0)
 $ scriva verify --data ./data               # expect exit 0 before restarting the server
 ```
 
-Guarantees: `verify` never writes; `repair` never edits segment bytes unless `--salvage` is given, always has a verified backup before its first change, never resolves conflicting history, and is safe to re-run after an interruption.
+Guarantees: `verify` never writes; `repair` never edits or deletes segment bytes (`--salvage` only moves damaged originals into quarantine), always has a verified backup before its first change, never resolves conflicting history, and is safe to re-run after an interruption.
 
 Exit codes: `0` clean/repaired, `1` repairable (verify, or dry-run would apply changes), `2` data corruption or conflicts, `3` usage error, unreadable directory, or locked directory.
 

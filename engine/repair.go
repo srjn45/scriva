@@ -71,8 +71,11 @@ type RepairOptions struct {
 	OnConflict ConflictPolicy
 	// Salvage allows moving the valid records of segments that contain
 	// damaged regions into a NEW segment, when doing so provably cannot change
-	// what any id resolves to. The damaged originals are then removed from the
-	// directory (the verified backup keeps them). Without Salvage a
+	// what any id resolves to. The damaged originals are never deleted: they
+	// are moved, byte-for-byte, into <collection>/quarantine/<run>/ (a
+	// subdirectory open, verify and rebuild never read) together with a
+	// MANIFEST.json of sizes and SHA-256 hashes, and the verified backup
+	// keeps a second copy. Without Salvage a
 	// collection with damaged segment bytes is left untouched and reported.
 	Salvage bool
 	// AllowMetaReset permits rewriting an unreadable meta.json without its
@@ -103,10 +106,13 @@ type RepairAction struct {
 // SalvageReport describes a salvage into a new segment.
 type SalvageReport struct {
 	NewSegment  string   `json:"new_segment"`
-	Quarantined []string `json:"quarantined"` // damaged originals removed (kept in the backup)
-	Entries     int      `json:"entries"`
-	GluedEmbeds int      `json:"glued_entries"` // entries recovered after corrupt bytes on the same line
-	BadRegions  int      `json:"bad_regions"`   // damaged regions whose contents are lost
+	Quarantined []string `json:"quarantined"` // damaged originals moved out of the replay set (never deleted)
+	// QuarantineDir is where the originals now live, relative to the
+	// collection directory (quarantine/<run>); it holds a MANIFEST.json.
+	QuarantineDir string `json:"quarantine_dir,omitempty"`
+	Entries       int    `json:"entries"`
+	GluedEmbeds   int    `json:"glued_entries"` // entries recovered after corrupt bytes on the same line
+	BadRegions    int    `json:"bad_regions"`   // damaged regions whose contents are lost
 }
 
 // CollectionRepair is the result for one collection.
@@ -160,7 +166,7 @@ type journalCol struct {
 	// them. Persisted before the first rename so a rerun finishes the job.
 	Renames map[string]string `json:"renames,omitempty"`
 	// Salvage, once SalvageWritten, names the new segment and the originals to
-	// remove; the originals' contents then live only in the new segment (and
+	// quarantine; the originals' contents then live only in the new segment (and
 	// the backup), so the plan must not be recomputed.
 	Salvage        *SalvageReport `json:"salvage,omitempty"`
 	SalvageWritten bool           `json:"salvage_written,omitempty"`
@@ -236,10 +242,8 @@ func Repair(ctx context.Context, dataDir string, opts RepairOptions) (*RepairRep
 	if opts.BackupDir == "" {
 		opts.BackupDir = filepath.Dir(absData)
 	}
-	if absBk, err := filepath.Abs(opts.BackupDir); err != nil {
+	if err := checkBackupOutside(absData, opts.BackupDir); err != nil {
 		return nil, err
-	} else if rel, err := filepath.Rel(absData, absBk); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
-		return nil, fmt.Errorf("repair: backup dir %q must be outside the data directory", opts.BackupDir)
 	}
 
 	lock, err := lockDir(dataDir)
@@ -778,13 +782,13 @@ func executeCollection(ctx context.Context, dataDir string, w *repairWork, jr *r
 		if err := repairPoint("salvage-written:" + w.name); err != nil {
 			return err
 		}
-		for _, q := range sr.Quarantined {
-			if err := os.Remove(filepath.Join(w.dir, q)); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			act("quarantine-segment", q, "removed from the directory; preserved in the backup")
+		if err := quarantineSegments(w.dir, filepath.Base(jr.BackupDir), sr, opts.Now); err != nil {
+			return err
 		}
-		if err := fsyncDir(w.dir); err != nil {
+		for _, q := range sr.Quarantined {
+			act("quarantine-segment", q, "moved byte-for-byte to "+filepath.ToSlash(filepath.Join(sr.QuarantineDir, q))+"; no longer replayed by open, verify or rebuild; also preserved in the backup")
+		}
+		if err := repairPoint("quarantined:" + w.name); err != nil {
 			return err
 		}
 	}
@@ -1122,4 +1126,188 @@ func copyFileVerified(src, dst string) error {
 		return fmt.Errorf("copy of %s does not match the source", filepath.Base(src))
 	}
 	return nil
+}
+
+// ---- backup containment ---------------------------------------------------
+
+// realPathLenient resolves every existing symlink along path, including
+// symlinked components of a not-yet-existing target: components that do not
+// exist are appended lexically to the real path of the nearest existing
+// parent. ".." is applied to the already-resolved prefix, never lexically to
+// an unresolved symlink. A dangling symlink or a loop is an error, because
+// where it would point cannot be established.
+func realPathLenient(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(wd, path)
+	}
+	vol := filepath.VolumeName(path)
+	cur := vol + string(filepath.Separator)
+	exists := true
+	for _, comp := range strings.Split(path[len(vol):], string(filepath.Separator)) {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, comp)
+		if exists {
+			if _, err := os.Lstat(next); err == nil {
+				real, err := filepath.EvalSymlinks(next)
+				if err != nil {
+					return "", fmt.Errorf("resolve %q: %w", next, err)
+				}
+				cur = real
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
+			exists = false
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
+// checkBackupOutside rejects a backup location that resolves to or inside the
+// data directory once symlinks (including those on the path to a directory
+// that does not exist yet) are followed.
+func checkBackupOutside(dataDir, backupDir string) error {
+	realData, err := realPathLenient(dataDir)
+	if err != nil {
+		return fmt.Errorf("repair: %w", err)
+	}
+	realBk, err := realPathLenient(backupDir)
+	if err != nil {
+		return fmt.Errorf("repair: backup dir %q cannot be resolved: %w", backupDir, err)
+	}
+	if rel, err := filepath.Rel(realData, realBk); err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		return fmt.Errorf("repair: backup dir %q must be outside the data directory (it resolves to %q)", backupDir, realBk)
+	}
+	return nil
+}
+
+// ---- quarantine -----------------------------------------------------------
+
+const (
+	quarantineDirname      = "quarantine"
+	quarantineManifestName = "MANIFEST.json"
+)
+
+type quarantineFile struct {
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// quarantineManifest records what was set aside and why, so the originals can
+// be audited or restored by hand. It is written before the first move.
+type quarantineManifest struct {
+	Version    int              `json:"version"`
+	CreatedAt  time.Time        `json:"created_at"`
+	Reason     string           `json:"reason"`
+	NewSegment string           `json:"new_segment"`
+	Files      []quarantineFile `json:"files"`
+}
+
+func hashFile(path string) (int64, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	return n, hex.EncodeToString(h.Sum(nil)), err
+}
+
+// quarantineSegments moves the damaged originals out of the collection's
+// replay set without ever deleting them. They land in
+// quarantine/<run>/ — a subdirectory, which open (it globs seg_*.ndjson in the
+// collection directory), verify and the index rebuild never descend into.
+// Each step is a same-filesystem rename, so a crash leaves every original in
+// exactly one of the two places; rerunning finishes the moves. The manifest
+// (sizes and hashes of the originals) is written first and, if it already
+// exists from an interrupted run, is reused and checked rather than
+// recomputed.
+func quarantineSegments(colDir, run string, sr *SalvageReport, now time.Time) error {
+	rel := filepath.Join(quarantineDirname, run)
+	qdir := filepath.Join(colDir, rel)
+	if err := os.MkdirAll(qdir, 0o755); err != nil {
+		return fmt.Errorf("quarantine: %w", err)
+	}
+	sr.QuarantineDir = filepath.ToSlash(rel)
+
+	mpath := filepath.Join(qdir, quarantineManifestName)
+	var man quarantineManifest
+	if b, err := os.ReadFile(mpath); err == nil {
+		if err := json.Unmarshal(b, &man); err != nil {
+			return fmt.Errorf("quarantine: manifest %q is unreadable: %w", mpath, err)
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		man = quarantineManifest{Version: 1, CreatedAt: now.UTC(), NewSegment: sr.NewSegment,
+			Reason: "damaged segment bytes; valid records were copied to " + sr.NewSegment}
+		for _, name := range sr.Quarantined {
+			n, sum, err := hashFile(filepath.Join(colDir, name))
+			if err != nil {
+				return fmt.Errorf("quarantine: hash %s: %w", name, err)
+			}
+			man.Files = append(man.Files, quarantineFile{Name: name, Size: n, SHA256: sum})
+		}
+		b, _ := json.MarshalIndent(man, "", "  ")
+		if err := writeFileAtomic(mpath, b, 0o644); err != nil {
+			return err
+		}
+	} else {
+		return err
+	}
+	if err := fsyncDir(qdir); err != nil {
+		return err
+	}
+	if err := repairPoint("quarantine-manifest"); err != nil {
+		return err
+	}
+
+	want := map[string]quarantineFile{}
+	for _, f := range man.Files {
+		want[f.Name] = f
+	}
+	for _, name := range sr.Quarantined {
+		wf, ok := want[name]
+		if !ok {
+			return fmt.Errorf("quarantine: %s is not in the manifest", name)
+		}
+		src, dst := filepath.Join(colDir, name), filepath.Join(qdir, name)
+		_, srcErr := os.Lstat(src)
+		_, dstErr := os.Lstat(dst)
+		switch {
+		case srcErr == nil && dstErr == nil:
+			return fmt.Errorf("quarantine: %s exists both in the collection and in %s; refusing to overwrite either", name, rel)
+		case srcErr == nil:
+			if n, sum, err := hashFile(src); err != nil || n != wf.Size || sum != wf.SHA256 {
+				return fmt.Errorf("quarantine: %s no longer matches the manifest; refusing to move it", name)
+			}
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("quarantine: %w", err)
+			}
+		case dstErr == nil:
+			if n, sum, err := hashFile(dst); err != nil || n != wf.Size || sum != wf.SHA256 {
+				return fmt.Errorf("quarantine: %s in %s does not match the manifest", name, rel)
+			}
+		default:
+			return fmt.Errorf("quarantine: %s is in neither the collection nor %s", name, rel)
+		}
+		if err := repairPoint("quarantine-moved:" + name); err != nil {
+			return err
+		}
+	}
+	if err := fsyncDir(qdir); err != nil {
+		return err
+	}
+	return fsyncDir(colDir)
 }

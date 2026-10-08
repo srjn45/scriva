@@ -234,7 +234,7 @@ func TestRepairDamagedNeedsSalvage(t *testing.T) {
 	}
 
 	code, out, _ = run(t, "repair", "--data", dir, "--salvage", "--backup-dir", bk)
-	if code != 0 || !strings.Contains(out, "salvage:") || !strings.Contains(out, "backup: ") {
+	if code != 0 || !strings.Contains(out, "salvage:") || !strings.Contains(out, "quarantine/") || !strings.Contains(out, "backup: ") {
 		t.Fatalf("salvage code=%d out=%s", code, out)
 	}
 	if code, out, _ := run(t, "verify", "--data", dir); code != 0 {
@@ -257,5 +257,24 @@ func TestRepairLockedRefused(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(bk, "*")); len(m) != 0 {
 		t.Fatalf("backup taken despite lock: %v", m)
+	}
+}
+
+func TestRepairDryRunLockedRefused(t *testing.T) {
+	dir := makeDB(t)
+	damageIndex(t, dir)
+	db, err := engine.Open(dir, engine.CollectionConfig{})
+	if err != nil {
+		t.Skipf("cannot hold directory open: %v", err)
+	}
+	defer db.Close()
+	for _, args := range [][]string{
+		{"repair", "--data", dir, "--dry-run"},
+		{"repair", "--data", dir, "--dry-run", "--json"},
+	} {
+		code, out, errOut := run(t, args...)
+		if code != 3 || !strings.Contains(errOut, "stop the server") || strings.Contains(out, "result:") {
+			t.Fatalf("%v: code=%d stdout=%s stderr=%s", args, code, out, errOut)
+		}
 	}
 }
