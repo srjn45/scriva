@@ -204,6 +204,9 @@ type CollectionConfig struct {
 	// test hook invoked after the post-swap primary index persist, before the
 	// secondary indexes are rebuilt from the new segment layout
 	preSidxRebuildHook func()
+	// test hook invoked by a point read after it resolved the record's location
+	// from the primary index and before it reads the segment (no lock held)
+	postLocateHook func()
 
 	// test seams (nil in production): decorate segment files and intercept the
 	// compactor's renames. See faultfs_test.go.
@@ -304,6 +307,10 @@ type Collection struct {
 	// swapFailed records a compaction swap that failed after mutating segment
 	// files. Guarded by compactMu; cleared only by reopening.
 	swapFailed bool
+	// layoutGen counts compaction swaps. It is bumped under mu (write) before
+	// the first segment file is replaced, so a lock-free point read can tell
+	// that the location it resolved may predate a swap (see getStored).
+	layoutGen atomic.Uint64
 	// indexRebuilds counts full primary-index rebuilds performed by load()
 	// (test-visible: asserts a clean reopen reuses the persisted index).
 	indexRebuilds atomic.Int64
@@ -1121,37 +1128,72 @@ type Record struct {
 // but without decrypting. Get decrypts on top of this, and the scan paths use it
 // directly so the single decrypt happens once at the yield boundary.
 func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
-	c.mu.RLock()
-	loc, ok := c.index.Get(id)
-	c.mu.RUnlock()
+	// A compaction swap replaces sealed segment files and rewrites every index
+	// location under c.mu. The segment read below runs without the lock, so a
+	// swap landing between the index lookup and the read would have it follow a
+	// pre-swap location into the post-swap layout: a segment that no longer
+	// exists, or a reused file name holding different bytes at that offset.
+	// Reads are therefore optimistic: one that overlapped a swap is discarded
+	// and retried. After a few overlaps the read is done under the lock, which
+	// excludes the swap, so it always terminates.
+	const optimisticReads = 3
+	for attempt := 0; ; attempt++ {
+		locked := attempt >= optimisticReads
 
-	if !ok {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
+		c.mu.RLock()
+		gen := c.layoutGen.Load()
+		loc, ok := c.index.Get(id)
+		var seg *Segment
+		if ok {
+			seg = c.segmentByPathLocked(loc.SegmentPath)
+		}
+		if !locked {
+			c.mu.RUnlock()
+		}
+
+		e, err := c.readLocated(id, loc, ok, seg)
+		if locked {
+			c.mu.RUnlock()
+			return e, loc, err
+		}
+		if c.layoutGen.Load() == gen {
+			return e, loc, err
+		}
+	}
+}
+
+// readLocated reads the record a primary-index lookup resolved to (loc, found,
+// seg), applying the not-found and TTL-expiry rules. The result is only
+// meaningful if no compaction swap ran since the lookup; getStored checks that.
+func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment) (store.Entry, error) {
+	if !found {
+		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	// Defensively hide records whose TTL has passed but which the reaper has not
 	// yet reclaimed, so an expired record is never observable.
 	if c.isExpired(loc) {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
+		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
-
-	seg := c.segmentByPath(loc.SegmentPath)
 	if seg == nil {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: segment not found for id %d", id)
+		return store.Entry{}, fmt.Errorf("collection: get: segment not found for id %d", id)
+	}
+	if c.cfg.postLocateHook != nil {
+		c.cfg.postLocateHook()
 	}
 
 	e, err := seg.ReadAt(loc.Offset)
 	if err != nil {
-		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: %w", err)
+		return store.Entry{}, fmt.Errorf("collection: get: %w", err)
 	}
 	if e.ID != id {
-		return store.Entry{}, IndexEntry{}, &IntegrityError{
+		return store.Entry{}, &IntegrityError{
 			ID:          id,
 			FoundID:     e.ID,
 			SegmentPath: loc.SegmentPath,
 			Offset:      loc.Offset,
 		}
 	}
-	return e, loc, nil
+	return e, nil
 }
 
 // Get returns the fully-resolved record for id, including its current revision.

@@ -795,6 +795,28 @@ While compaction runs (steps 3-5), concurrent writes might fill the active segme
 - **Naming:** Compaction reuses the file names of the segments it read, and draws any additional names from a globally monotonic sequence (`segSeq`). This guarantees its output files never overwrite segments that were newly sealed during the pass.
 - **Swap:** At step 7, compaction only replaces the segments it explicitly snapshotted. Any segments sealed during the pass (which were appended to `c.sealed` outside the snapshot) are preserved and appended after the new segments.
 
+### Compaction and concurrent point reads
+
+A point read (`Get`, `GetByKey`, `FindByID`, an index-driven scan candidate)
+resolves the record's location from the primary index under the read lock and
+then reads the segment file *without* the lock, so reads never hold up writers
+during disk I/O. The swap (steps 6–10) moves every sealed record: a location
+resolved before it names a file that may no longer exist, or a reused file name
+whose offset now holds different bytes.
+
+Point reads are therefore optimistic. The collection keeps a layout generation
+that the swap bumps under the write lock, before the first rename. A read
+samples it together with the index lookup and re-checks it after the segment
+read; if a swap began in between, the result (value or error) is discarded and
+the read is retried against the new layout. After three overlapping swaps the
+read is performed under the read lock, which excludes the swap, so it always
+terminates. Rotation needs no such handling: sealing a segment changes neither
+its path nor its offsets.
+
+Full scans (`ScanStream` without a usable index) do not have this protection
+yet: they walk a snapshot of the segment list and can fail or miss records if a
+swap lands mid-scan.
+
 ### Crash consistency
 
 The swap (steps 6–12) is crash-atomic. The manifest written in step 5 is an

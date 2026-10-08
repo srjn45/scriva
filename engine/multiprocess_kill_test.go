@@ -14,6 +14,7 @@ package engine
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -406,12 +407,55 @@ func TestKill9_LockReleasedOnKill(t *testing.T) {
 	db.Close()
 }
 
-// TestKill9_RecoveredDirVerifies asserts that Verify() reports a clean
-// directory (quick and full) after a SIGKILL recovery.
+// TestKill9_RecoveredDirVerifies asserts that a directory recovered from a
+// SIGKILL verifies clean, quick and full: online on the reopened handle, and
+// offline (VerifyDir) once that handle is closed.
 func TestKill9_RecoveredDirVerifies(t *testing.T) {
-	// Verify is delivered by task p2-integrity-check, which is not merged yet.
-	// Once DB.Verify exists, run one runKillIteration here and assert both
-	// quick and full reports are clean. The kill/recovery half is covered by
-	// the other TestKill9_* tests.
-	t.Skip("blocked on p2-integrity-check: DB.Verify not available yet")
+	maybeRunKillChild()
+	_, seeds := killIterations()
+	if len(seeds) > 20 {
+		seeds = seeds[:20] // soak: the recovery tests above carry the volume
+	}
+	for _, mode := range []string{"writer", "rotate", "compact"} {
+		t.Run(mode, func(t *testing.T) {
+			// The parent only verifies: keep its own compactor out of the way.
+			// Recovery of a swap the child was killed in still runs at Open.
+			cfg := killChildCfg(mode)
+			cfg.CompactInterval = 24 * time.Hour
+
+			dir := t.TempDir()
+			for _, seed := range seeds {
+				t.Logf("seed %d (reproduce: %s=%d)", seed, envKillSeed, seed)
+				runKillIteration(t, dir, mode, seed, &killModel{vals: map[uint64]int{}})
+
+				db, err := Open(dir, cfg)
+				if err != nil {
+					t.Fatalf("seed %d: reopen after SIGKILL: %v", seed, err)
+				}
+				for _, vm := range []VerifyMode{VerifyQuick, VerifyFull} {
+					rep, err := db.Verify(context.Background(), VerifyOptions{Mode: vm})
+					if err != nil {
+						db.Close()
+						t.Fatalf("seed %d: online Verify(%s): %v", seed, vm, err)
+					}
+					if !rep.Clean() {
+						db.Close()
+						t.Fatalf("seed %d: online Verify(%s) not clean: %+v", seed, vm, rep.AllFindings())
+					}
+				}
+				if err := db.Close(); err != nil {
+					t.Fatalf("seed %d: close: %v", seed, err)
+				}
+				for _, vm := range []VerifyMode{VerifyQuick, VerifyFull} {
+					rep, err := VerifyDir(context.Background(), dir, VerifyOptions{Mode: vm})
+					if err != nil {
+						t.Fatalf("seed %d: VerifyDir(%s): %v", seed, vm, err)
+					}
+					if !rep.Clean() {
+						t.Fatalf("seed %d: VerifyDir(%s) not clean: %+v", seed, vm, rep.AllFindings())
+					}
+				}
+			}
+		})
+	}
 }
