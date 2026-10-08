@@ -15,6 +15,7 @@ import (
 	"github.com/srjn45/scriva/engine"
 	"github.com/srjn45/scriva/internal/metrics"
 	"github.com/srjn45/scriva/server"
+	"github.com/srjn45/scriva/store"
 )
 
 func scrape(t *testing.T, reg *prometheus.Registry) string {
@@ -37,43 +38,23 @@ func engineCfgWithMetrics(m *metrics.Metrics) engine.CollectionConfig {
 	return cfg
 }
 
-func copyDir(t *testing.T, src, dst string) {
-	t.Helper()
-	err := filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		if info.IsDir() {
-			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
-		}
-		if info.Name() == "LOCK" {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 // crashedCopy returns a data dir that looks like a SIGKILLed server: the index
-// was persisted mid-run and more records were appended afterwards.
+// was persisted mid-run and more acknowledged records were appended afterwards.
+//
+// Do not copy a live directory here. Index persistence writes index.json.tmp and
+// atomically renames it, so a directory walk can race a disappearing temporary
+// file. Instead, close after the first persisted point, then append valid tail
+// entries directly. This is the precise durable on-disk state a crash leaves:
+// an older index plus a newer segment tail.
 func crashedCopy(t *testing.T) string {
 	t.Helper()
-	live := t.TempDir()
+	dir := t.TempDir()
 	cfg := server.DefaultConfig().EngineConfig()
 	cfg.CompactInterval = time.Hour
-	cfg.IndexPersistInterval = 10 * time.Millisecond
-	db, err := engine.Open(live, cfg)
+	db, err := engine.Open(dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
 	col, err := db.CreateCollection("c")
 	if err != nil {
 		t.Fatal(err)
@@ -83,24 +64,28 @@ func crashedCopy(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	idx := filepath.Join(live, "c", "index.json")
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if _, err := os.Stat(idx); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("index never persisted")
-		}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond) // let the persist pass finish before the tail writes
+
+	seg := filepath.Join(dir, "c", "seg_000001.ndjson")
+	f, err := os.OpenFile(seg, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 3; i < 6; i++ {
-		if _, _, err := col.Insert(map[string]any{"i": i}); err != nil {
+		b, err := store.Encode(store.NewInsert(uint64(i+1), map[string]any{"i": i}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write(b); err != nil {
 			t.Fatal(err)
 		}
 	}
-	crashed := t.TempDir()
-	copyDir(t, live, crashed)
-	return crashed
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestRecoveryMetricsAfterCrash(t *testing.T) {
