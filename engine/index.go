@@ -73,26 +73,26 @@ const indexFormatV2 = 2
 
 // SegmentCoverage records how much of one segment a persisted index describes:
 // the segment's base name, the number of bytes covered, and the SHA-256 of
-// exactly those bytes. A later task uses it to decide whether the index is
-// current, needs a tail replay, or must be rebuilt.
+// exactly those bytes. Recovery decides from it whether the index is current,
+// needs a tail replay, or must be rebuilt.
 //
-// Checksum (full SHA-256) is recorded for the segment that was active at
-// capture time; sealed, immutable segments record only Tail — the SHA-256 of
-// the last coverageTailBytes covered bytes — so persisting and re-validating a
-// large data set costs O(segments), not O(bytes). Index files written before
-// Tail existed carry Checksum only and are verified by the full hash. Either
-// way a mismatch forces a rebuild, and the bounded identity spot-check still
-// runs.
+// Checksum is the full SHA-256 of the whole covered prefix for every segment,
+// sealed or active, and recovery re-hashes that prefix before trusting any
+// primary or secondary index state. A bounded fingerprint (for example only
+// the last N bytes) is deliberately not accepted: a same-size edit of an
+// earlier record, with its id and offset unchanged, would pass an identity
+// spot-check and leave a secondary index silently stale. Index files written
+// by older releases may carry only Tail (a fingerprint of the last 64 KiB);
+// that is not proof of the whole prefix, so such coverage never matches and
+// the index is rebuilt once, then rewritten with full checksums.
 type SegmentCoverage struct {
 	Segment  string `json:"segment"`
 	Size     int64  `json:"size"`
 	Checksum string `json:"checksum"`
-	Tail     string `json:"tail,omitempty"`
+	// Tail is read for compatibility with older files only; it is never
+	// written and never sufficient on its own.
+	Tail string `json:"tail,omitempty"`
 }
-
-// coverageTailBytes is how many trailing covered bytes the tail fingerprint
-// hashes.
-const coverageTailBytes = 64 << 10
 
 // indexPayload is the canonical (checksummed) body of a v2 index file. Encoding
 // is deterministic: struct fields marshal in declaration order and map keys are
@@ -219,7 +219,7 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 				continue
 			}
 		}
-		c, err := captureCoverage(seg, !sealed[seg])
+		c, err := captureCoverage(seg)
 		if err != nil {
 			return nil, err
 		}
@@ -238,44 +238,32 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 	return &IndexSnapshot{entries: snap, coverage: cov}, nil
 }
 
-// captureCoverage records the first Size() bytes of seg: always the tail
-// fingerprint, plus the full SHA-256 when full is set (the active segment).
-func captureCoverage(seg *Segment, full bool) (SegmentCoverage, error) {
+// captureCoverage records the first Size() bytes of seg: its size and the full
+// SHA-256 of those bytes.
+func captureCoverage(seg *Segment) (SegmentCoverage, error) {
 	size := seg.Size()
 	f, err := os.Open(seg.Path())
 	if err != nil {
 		return SegmentCoverage{}, fmt.Errorf("index: coverage open %q: %w", seg.Path(), err)
 	}
 	defer func() { _ = f.Close() }()
-	cv := SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: size}
-	if full {
-		h := sha256.New()
-		if _, err := io.CopyN(h, f, size); err != nil {
-			return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
-		}
-		cv.Checksum = hex.EncodeToString(h.Sum(nil))
-	}
-	tail, err := tailFingerprint(f, size)
+	sum, err := prefixChecksum(f, size)
 	if err != nil {
-		return SegmentCoverage{}, fmt.Errorf("index: coverage tail %q: %w", seg.Path(), err)
+		return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
 	}
-	cv.Tail = tail
-	return cv, nil
+	return SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: size, Checksum: sum}, nil
 }
 
-// tailFingerprint hashes the last coverageTailBytes of the first size bytes of f.
-func tailFingerprint(f *os.File, size int64) (string, error) {
-	off := size - coverageTailBytes
-	if off < 0 {
-		off = 0
-	}
+// prefixChecksum is the hex SHA-256 of the first size bytes of f; a file
+// shorter than size is an error.
+func prefixChecksum(f *os.File, size int64) (string, error) {
 	h := sha256.New()
-	n, err := io.Copy(h, io.NewSectionReader(f, off, size-off))
+	n, err := io.Copy(h, io.NewSectionReader(f, 0, size))
 	if err != nil {
 		return "", err
 	}
-	if n != size-off {
-		return "", io.ErrUnexpectedEOF // file shorter than the covered size
+	if n != size {
+		return "", io.ErrUnexpectedEOF
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
