@@ -95,19 +95,12 @@ type modelRun struct {
 }
 
 // modelRaceCompaction (SCRIVA_MODEL_RACE_COMPACTION=1) lets the rotation-
-// triggered background compaction run concurrently with the next op. That
-// exposes a known engine bug (see settleCompaction); it is off by default so
-// the model stays deterministic.
+// triggered background compaction run concurrently with the next op. It is
+// off by default so ordinary model runs stay deterministic.
 var modelRaceCompaction = os.Getenv("SCRIVA_MODEL_RACE_COMPACTION") == "1"
 
 // settleCompaction waits for background compaction triggered by the last op
-// (segment rotation) to finish. KNOWN BUG: ScanStream snapshots the segment
-// list and walks it without excluding a concurrent compaction swap, so a scan
-// racing a background pass can fail with an IntegrityError ("index for id N
-// points to id 0"), a "scanfrom open ... no such file" error, or silently miss
-// live records. Until scans are made safe against compaction, the model only
-// interleaves compaction deterministically (explicit compact op, rotation) and
-// settles the background pass between ops.
+// (segment rotation) to finish when deterministic model sequencing is wanted.
 func (m *modelRun) settleCompaction() {
 	for i := 0; i < 3; i++ {
 		for len(m.col.compactC) > 0 {

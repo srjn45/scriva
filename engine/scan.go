@@ -350,27 +350,58 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 	return nil
 }
 
+// scanHookPoint identifies where a full scan invokes CollectionConfig.scanHook.
+type scanHookPoint int
+
+const (
+	// scanAtSegment: about to open a segment; arg is its position in the layout.
+	scanAtSegment scanHookPoint = iota
+	// scanAtEntry: an entry was read, before the primary index is consulted;
+	// arg is the entry's id.
+	scanAtEntry
+	// scanAtLocated: the primary index was consulted for the entry, before the
+	// answer is acted on; arg is the entry's id.
+	scanAtLocated
+)
+
 // streamLive reads every segment in insertion order and invokes visit for each
 // live, matching record. An entry is live only when the primary index still
 // points at exactly its segment and offset; stale versions and tombstones are
 // skipped. No per-id map of the whole collection is built.
 func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *ScanStats, visit func(ScanResult) error) error {
+	// Keep the layout stable from taking this snapshot through opening and
+	// walking every segment. A compaction swap atomically replaces some paths
+	// and removes others; without this lease a scan could open a mix of the old
+	// and new layouts, or fail opening a segment that was just unlinked.
+	// layoutMu deliberately does not cover ordinary writes, so streaming a scan
+	// to a slow client does not block appenders.
+	c.layoutMu.RLock()
+	defer c.layoutMu.RUnlock()
 	c.mu.RLock()
 	segs := make([]*Segment, 0, len(c.sealed)+1)
 	segs = append(segs, c.sealed...)
 	segs = append(segs, c.active)
 	c.mu.RUnlock()
 
-	for _, seg := range segs {
+	for i, seg := range segs {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.cfg.scanHook != nil {
+			c.cfg.scanHook(scanAtSegment, uint64(i))
 		}
 		path := seg.Path()
 		err := seg.ScanFrom(func(offset int64, e store.Entry) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if c.cfg.scanHook != nil {
+				c.cfg.scanHook(scanAtEntry, e.ID)
+			}
 			loc, ok := c.index.Get(e.ID)
+			if c.cfg.scanHook != nil {
+				c.cfg.scanHook(scanAtLocated, e.ID)
+			}
 			if !ok {
 				return nil // record was deleted
 			}

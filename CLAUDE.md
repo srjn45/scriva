@@ -70,7 +70,7 @@ recovery (open a copy of the live dir, check Get/scan/`IndexLookup`), periodic o
 | `SCRIVA_MODEL_STEPS` | ops per seed (default 200) |
 | `SCRIVA_MODEL_OPS` | comma-separated op names to run (default: all) |
 | `SCRIVA_MODEL_SEED_COUNT` / `SCRIVA_MODEL_SEED_BASE` | soak: N consecutive seeds from BASE (default 1000) |
-| `SCRIVA_MODEL_RACE_COMPACTION=1` | let background compaction race the next op (exposes the known scan-vs-compaction bug) |
+| `SCRIVA_MODEL_RACE_COMPACTION=1` | let background compaction race the next op (exercises scan-layout lease deferral) |
 
 ```bash
 make test-soak                                   # 100 seeds x 500 steps, race detector

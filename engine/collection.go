@@ -201,12 +201,18 @@ type CollectionConfig struct {
 
 	// test hook invoked between compaction snapshot and swap
 	preSwapHook func()
+	// test hook invoked after compacted temps are written, before the swap lease
+	// is acquired.
+	postWriteCompactedHook func()
 	// test hook invoked after the post-swap primary index persist, before the
 	// secondary indexes are rebuilt from the new segment layout
 	preSidxRebuildHook func()
 	// test hook invoked by a point read after it resolved the record's location
 	// from the primary index and before it reads the segment (no lock held)
 	postLocateHook func()
+	// test hook invoked by a full scan (streamLive) at each scanHookPoint while
+	// the scan holds its shared layout lease.
+	scanHook func(point scanHookPoint, arg uint64)
 
 	// test seams (nil in production): decorate segment files and intercept the
 	// compactor's renames. See faultfs_test.go.
@@ -251,11 +257,16 @@ type Collection struct {
 	cfg       CollectionConfig
 	createdAt time.Time
 	mu        sync.RWMutex
-	sealed    []*Segment
-	active    *Segment
-	index     *Index
-	idSeq     atomic.Uint64 // monotonically increasing id counter
-	segSeq    atomic.Uint64 // monotonically increasing segment id counter
+	// layoutMu excludes a full segment scan from a compaction swap. Unlike mu it
+	// is not held by ordinary writers, so a slow client consuming ScanStream
+	// does not stall appends; it only keeps the scan's segment snapshot from
+	// being replaced or unlinked underneath it.
+	layoutMu sync.RWMutex
+	sealed   []*Segment
+	active   *Segment
+	index    *Index
+	idSeq    atomic.Uint64 // monotonically increasing id counter
+	segSeq   atomic.Uint64 // monotonically increasing segment id counter
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -298,6 +309,9 @@ type Collection struct {
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
 	compactMu sync.Mutex    // serializes compaction passes (background + on-demand)
+	// compactRetryPending coalesces retries deferred by active scans.
+	compactRetryPending atomic.Bool
+	compactRetryExp     atomic.Int64
 	// closeDone records that Close has persisted the final index. Guarded by
 	// compactMu: a pass that acquires the lock afterwards must not mutate the
 	// segment layout (see compact). Deliberately distinct from the closed

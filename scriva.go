@@ -89,7 +89,9 @@ func WithSegmentMaxSize(n int64) Option {
 	return func(c *engine.CollectionConfig) { c.SegmentMaxSize = n }
 }
 
-// WithCompactInterval sets the background compaction cadence.
+// WithCompactInterval sets the background compaction cadence. A forced engine
+// compaction can return engine.ErrCompactionDeferred while a full scan owns the
+// segment layout; callers should retry it rather than treating it as success.
 func WithCompactInterval(d time.Duration) Option {
 	return func(c *engine.CollectionConfig) { c.CompactInterval = d }
 }

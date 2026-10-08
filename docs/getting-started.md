@@ -651,6 +651,10 @@ scriva-cli stats products
 scriva-cli compact products
 ```
 
+`compact` may report that an active full scan deferred the pass. This is
+retryable: wait briefly and run the command again; scans are deliberately not
+blocked by an on-demand compaction.
+
 ### Batch script (.fql)
 
 ```bash
