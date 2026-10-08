@@ -42,6 +42,7 @@ embedding-specific contract.
 
 ### Added
 
+- **Index recovery runbook:** [`docs/runbook-index-recovery.md`](docs/runbook-index-recovery.md) — symptoms, a `scriva verify --mode full` decision tree, the safe stop/backup/repair/reverify sequence, embedder guidance, and sample alerts.
 - **Directory-level lock:** the engine now acquires an OS-level advisory lock (`flock` on Unix, `LockFileEx` on Windows) on the data directory upon `engine.Open`. A second writer (in the same or a different process) attempting to open the directory fails fast with `engine.ErrDatabaseLocked`, protecting the append-only files from silent corruption by concurrent writers.
 
 ## v1.3.0 — 2026-07-27
