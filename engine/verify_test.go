@@ -957,7 +957,7 @@ func TestVerifySecondaryIndexCoverage(t *testing.T) {
 		t.Helper()
 		var cov []SegmentCoverage
 		for _, seg := range segs {
-			cv, err := captureCoverage(seg)
+			cv, err := captureCoverage(seg, true)
 			if err != nil {
 				t.Fatal(err)
 			}

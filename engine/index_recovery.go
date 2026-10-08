@@ -215,19 +215,32 @@ func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries i
 	return plan, true
 }
 
-// coverageMatches reports whether the first cv.Size bytes of seg hash to the
-// recorded checksum.
+// coverageMatches reports whether the first cv.Size bytes of seg match the
+// recorded coverage: the tail fingerprint when present, and the full SHA-256
+// when one was recorded. Coverage with neither never matches.
 func coverageMatches(seg *Segment, cv SegmentCoverage) bool {
+	if cv.Checksum == "" && cv.Tail == "" {
+		return false
+	}
 	f, err := os.Open(seg.Path())
 	if err != nil {
 		return false
 	}
 	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if n, err := io.CopyN(h, f, cv.Size); err != nil || n != cv.Size {
-		return false
+	if cv.Tail != "" {
+		t, err := tailFingerprint(f, cv.Size)
+		if err != nil || t != cv.Tail {
+			return false
+		}
 	}
-	return hex.EncodeToString(h.Sum(nil)) == cv.Checksum
+	if cv.Checksum != "" {
+		h := sha256.New()
+		if n, err := io.CopyN(h, f, cv.Size); err != nil || n != cv.Size {
+			return false
+		}
+		return hex.EncodeToString(h.Sum(nil)) == cv.Checksum
+	}
+	return true
 }
 
 // spotCheck verifies a bounded sample of index entries — the newest by id plus
@@ -333,8 +346,8 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 // lock that excludes writes to segs.
 func persistSecondary(sidx *SecondaryIndex, p string, segs []*Segment) error {
 	cov := make([]SegmentCoverage, 0, len(segs))
-	for _, seg := range segs {
-		cv, err := captureCoverage(seg)
+	for i, seg := range segs {
+		cv, err := captureCoverage(seg, i == len(segs)-1)
 		if err != nil {
 			return err
 		}
