@@ -473,22 +473,27 @@ func (idx *Index) Rebuild(segments []*Segment) error {
 // delete removes the entry so it is not resurrected, last writer wins.
 func applyEntries(m map[uint64]IndexEntry, seg *Segment, from int64) error {
 	err := seg.ScanFromOffset(from, func(off int64, e store.Entry) error {
-		switch e.Op {
-		case store.OpInsert, store.OpUpdate:
-			rev := m[e.ID].Rev + 1
-			if e.Rev > rev {
-				rev = e.Rev
-			}
-			m[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: off, Rev: rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch}
-		case store.OpDelete:
-			delete(m, e.ID)
-		}
+		applyOne(m, seg.Path(), off, e)
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("index: replay %q from %d: %w", seg.Path(), from, err)
 	}
 	return nil
+}
+
+// applyOne folds a single record at (path, off) onto m; see applyEntries.
+func applyOne(m map[uint64]IndexEntry, path string, off int64, e store.Entry) {
+	switch e.Op {
+	case store.OpInsert, store.OpUpdate:
+		rev := m[e.ID].Rev + 1
+		if e.Rev > rev {
+			rev = e.Rev
+		}
+		m[e.ID] = IndexEntry{SegmentPath: path, Offset: off, Rev: rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch}
+	case store.OpDelete:
+		delete(m, e.ID)
+	}
 }
 
 // segmentNum parses N from a seg_N.ndjson path.

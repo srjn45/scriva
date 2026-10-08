@@ -106,6 +106,8 @@ func serveCmd() *cobra.Command {
 						merged.SyncInterval = cfg.SyncInterval
 					case "index-persist-interval":
 						merged.IndexPersistInterval = cfg.IndexPersistInterval
+					case "integrity-policy":
+						merged.IntegrityPolicy = cfg.IntegrityPolicy
 					case "tx-timeout":
 						merged.TxTimeout = cfg.TxTimeout
 					case "default-ttl":
@@ -169,6 +171,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.SyncMode, "sync", cfg.SyncMode, "Durability mode: none (OS flush), always (fsync per write), interval (fsync on a timer)")
 	f.DurationVar(&cfg.SyncInterval, "sync-interval", cfg.SyncInterval, "Flush cadence when --sync=interval")
 	f.DurationVar(&cfg.IndexPersistInterval, "index-persist-interval", cfg.IndexPersistInterval, "Background index persist cadence bounding crash-recovery replay (negative = disabled)")
+	f.StringVar(&cfg.IntegrityPolicy, "integrity-policy", cfg.IntegrityPolicy, "Open policy on segment corruption/conflicts: fail (default, refuse to open) | report (open and salvage) | rebuild-index-only")
 	f.DurationVar(&cfg.TxTimeout, "tx-timeout", cfg.TxTimeout, "Idle timeout before an open transaction is reaped (0 = disabled)")
 	f.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default expiry applied to inserted records (0 = never expire)")
 	f.IntVar(&cfg.WatchBufferSize, "watch-buffer", cfg.WatchBufferSize, "Per-subscriber Watch event buffer; a slow subscriber gets an overflow signal once full")
@@ -200,6 +203,10 @@ func serve(cfg server.Config, configFile string) error {
 	case engine.SyncModeNone, engine.SyncModeAlways, engine.SyncModeInterval:
 	default:
 		return fmt.Errorf("invalid --sync mode %q (want none|always|interval)", cfg.SyncMode)
+	}
+
+	if _, err := engine.ParseIntegrityPolicy(cfg.IntegrityPolicy); err != nil {
+		return fmt.Errorf("--integrity-policy: %w", err)
 	}
 
 	// Structured logger for the server layer. Built before anything else so a
@@ -268,6 +275,12 @@ func serve(cfg server.Config, configFile string) error {
 	// Open the database, attaching the compaction hook.
 	engineCfg := cfg.EngineConfig()
 	engineCfg.OnCompaction = m.ObserveCompaction
+	engineCfg.Logger = logger
+	engineCfg.OnIndexRecovery = m.ObserveRecovery
+	engineCfg.OnIntegrity = server.IntegrityMetricsHook(m)
+	engineCfg.OnAppend = server.AppendMetricsHook(m)
+	engineCfg.OnSegmentPoisoned = func(collection, _ string, _ error) { m.ObserveSegmentPoisoned(collection) }
+	engineCfg.OnLock = func(_, result string) { m.ObserveDirLock(result) }
 	if tracerProvider != nil {
 		// Compose the metrics compaction hook with a tracing span, and add the
 		// scan span hook. The engine stays dependency-free — it only calls these

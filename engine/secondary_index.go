@@ -362,14 +362,14 @@ func (s *SecondaryIndex) LookupRange(op query.Op, queryVal any) (ids []uint64, o
 
 // rebuild reconstructs the index by replaying entries from segs.
 // Must be called while the Collection write lock is held.
-func (s *SecondaryIndex) rebuild(segs []*Segment) error {
+func (s *SecondaryIndex) rebuild(segs []*Segment, tolerant bool) error {
 	type rec struct {
 		data    map[string]any
 		deleted bool
 	}
 	latest := make(map[uint64]rec)
 	for _, seg := range segs {
-		entries, err := seg.ScanAll()
+		entries, err := scanEntries(seg, tolerant)
 		if err != nil {
 			return fmt.Errorf("sidx rebuild: scan %q: %w", seg.Path(), err)
 		}
@@ -628,4 +628,22 @@ func filterValueTyped(filterValue string) any {
 // sidxFilePath returns the disk path for a secondary index on field.
 func sidxFilePath(dir, field string) string {
 	return fmt.Sprintf("%s/sidx_%s.json", dir, field)
+}
+
+// scanEntries reads every record of seg: strictly (a damaged region is an
+// error) or tolerantly (damaged regions are skipped), the latter used only
+// when the integrity policy opted in to opening a damaged collection.
+func scanEntries(seg *Segment, tolerant bool) ([]store.Entry, error) {
+	if !tolerant {
+		return seg.ScanAll()
+	}
+	rep, err := scanSegmentTolerantLimit(seg.Path(), seg.Size())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Entry, len(rep.Entries))
+	for i, se := range rep.Entries {
+		out[i] = se.Entry
+	}
+	return out, nil
 }

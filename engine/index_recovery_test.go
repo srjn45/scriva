@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -368,7 +368,7 @@ func TestRecoveryCoverageViolationsRebuild(t *testing.T) {
 			if err != nil {
 				// Altered bytes fail the entry checksum during the rebuild: the
 				// stale index must never be trusted over corrupt data.
-				if tc.name != "covered bytes altered (fingerprint)" || !strings.Contains(err.Error(), "rebuild index") {
+				if tc.name != "covered bytes altered (fingerprint)" || !errors.Is(err, ErrIntegrity) {
 					t.Fatal(err)
 				}
 				return
