@@ -180,6 +180,10 @@ func (c *Collection) compact(force bool) error {
 	}
 
 	c.mu.Lock()
+	// Invalidate lock-free point reads that resolved a location in the layout
+	// about to be replaced (see getStored). Bumped before the first rename so no
+	// read can observe a replaced file under the old generation.
+	c.layoutGen.Add(1)
 
 	// Rename the temp files over their final positions first — when a final
 	// name belongs to an old sealed segment the rename replaces it atomically —
