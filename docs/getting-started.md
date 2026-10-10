@@ -1098,6 +1098,206 @@ transactions indefinitely.
 
 ---
 
+## Cross-collection transactions
+
+`begin-tx` / `commit-tx` above work on one collection. A **cross-collection
+transaction** stages point writes against several collections of the same
+database and applies them atomically: after a commit every write is visible,
+after a conflict, a rollback or a crash before the commit decision none is.
+
+**What is guaranteed, exactly.** Isolation is optimistic point-read/write
+validation at commit. Every document the transaction read, and every document
+it staged an update or delete for, is re-checked when it commits; if any of
+them changed (or appeared, or disappeared) the commit fails with a conflict and
+writes nothing. There is **no phantom protection**: a transaction cannot scan,
+filter, aggregate or use an index, and such requests are rejected instead of
+running unprotected. Reads are not a snapshot either: two reads of different
+documents may reflect different moments, which is caught only at commit. Do not
+read this as general serializable isolation.
+
+A transaction is limited to one database, to the collections named when it
+begins (at most 16), and to 1 000 staged operations.
+
+### CLI
+
+```bash
+# Name every collection the transaction will touch. Prints the handle id.
+X=$(scriva-cli begin-xtx accounts ledger --key transfer-42)
+
+scriva-cli xtx-get    "$X" accounts 1                       # point read, re-checked at commit
+scriva-cli xtx-update "$X" accounts 1 '{"balance":60}'      # staged, invisible to others
+scriva-cli xtx-insert "$X" ledger '{"account":1,"delta":-40}'
+scriva-cli xtx-delete "$X" ledger 7
+
+scriva-cli commit-xtx "$X"
+# committed tx:0000018f2a6c1b00-0000000000000003
+#   update accounts id:1 rev:2
+#   insert ledger id:12 rev:1
+#   delete ledger id:7 rev:2
+
+scriva-cli rollback-xtx "$X"          # instead of commit: discard everything
+scriva-cli xtx-status transfer-42     # COMMITTED tx:… | ABORTED | PENDING | EXPIRED | UNKNOWN
+```
+
+`xtx-update` / `xtx-delete` take `--expected-rev N` to reject the stage unless
+the transaction sees the document at revision `N`. `begin-xtx` takes
+`--idle-timeout` and `--max-lifetime`; `commit-xtx` takes `--lock-timeout`.
+The same commands work in the REPL. A failed command prints the server's
+reason and whether a retry is safe, and exits non-zero:
+
+```text
+Error: engine: cross-collection transaction conflict: read conflict on collection "accounts" id 1: observed rev 1, now rev 2
+  code:       Aborted
+  reason:     XTX_CONFLICT
+  retry safe: true
+
+Nothing was applied. Begin a new transaction, re-read and try again.
+```
+
+### gRPC and REST
+
+| RPC | REST | Scope | Purpose |
+|---|---|---|---|
+| `BeginXTx` | `POST /v1/xtx` | write | open a handle over `collections`; optional `idempotency_key`, `idle_timeout_ms`, `max_lifetime_ms` |
+| `StageXTx` | `POST /v1/xtx/{xtx_id}/ops` | write | stage `XTX_OP_INSERT` / `XTX_OP_UPDATE` / `XTX_OP_DELETE` |
+| `GetXTx` | `GET /v1/xtx/{xtx_id}/records/{collection}/{id}` | write | point read with read-your-writes; joins the read set |
+| `CommitXTx` | `POST /v1/xtx/{xtx_id}/commit` | write | validate and apply; optional `lock_timeout_ms` |
+| `RollbackXTx` | `POST /v1/xtx/{xtx_id}/rollback` | write | discard; idempotent |
+| `XTxStatus` | `GET /v1/xtx/status?ref=…` | read | outcome by idempotency key, tx id or handle id |
+
+```bash
+H='x-api-key: dev-key'
+X=$(curl -s -H "$H" localhost:8080/v1/xtx \
+      -d '{"collections":["accounts","ledger"],"idempotency_key":"transfer-42"}' | jq -r .xtxId)
+
+curl -s -H "$H" localhost:8080/v1/xtx/$X/records/accounts/1
+curl -s -H "$H" localhost:8080/v1/xtx/$X/ops \
+  -d '{"collection":"accounts","op":"XTX_OP_UPDATE","id":"1","data":{"balance":60}}'
+curl -s -H "$H" localhost:8080/v1/xtx/$X/ops \
+  -d '{"collection":"ledger","op":"XTX_OP_INSERT","data":{"account":1,"delta":-40}}'
+
+curl -s -H "$H" -X POST localhost:8080/v1/xtx/$X/commit -d '{}'
+# {"txId":"…","ops":[{"collection":"accounts","id":"1","rev":"2","op":"XTX_OP_UPDATE"}, …]}
+
+curl -s -H "$H" 'localhost:8080/v1/xtx/status?ref=transfer-42'
+# {"status":"XTX_STATUS_COMMITTED","txId":"…"}
+```
+
+Notes on the API:
+
+- **Auth.** Every RPC requires an API key like any other. All but `XTxStatus`
+  need a read-write key — including `GetXTx`, which is classified (and audited)
+  as a write because it changes the transaction's read set and keeps the handle
+  alive; a read-only key therefore cannot drive a transaction. A key restricted
+  to a [collection allow-list](#per-collection-acls) may only begin a
+  transaction whose participants are all inside the list. `CommitXTx`,
+  `RollbackXTx` and `XTxStatus` take only the handle id or reference, so they
+  are not collection-checked: handle ids are random and unguessable, and should
+  be treated as secrets for the life of the transaction.
+- **Followers.** A read-only follower refuses the five handle RPCs with
+  `FAILED_PRECONDITION`; `XTxStatus` stays available.
+- **Ordinary RPCs are never transactional.** Sending the `x-xtx-id` header on
+  `Find`, `Aggregate` or `Watch` is rejected with `UNIMPLEMENTED` /
+  `XTX_SCAN_UNSUPPORTED`, and on a single-document RPC (`Insert`, `FindById`,
+  `Update`, …) with `INVALID_ARGUMENT` / `XTX_INVALID`; nothing is executed.
+  Use the RPCs above.
+- **Timeouts.** A handle that receives no request for `--tx-timeout` (default
+  `5m`, `0` disables) is discarded and answers `XTX_EXPIRED`; nothing it staged
+  was written. `idle_timeout_ms` and `max_lifetime_ms` set per-transaction
+  limits. `lock_timeout_ms` (or the request deadline) bounds only the wait for
+  collection locks: when it passes, nothing has been written and the handle is
+  still open. Once the commit starts writing it always runs to its real
+  outcome.
+
+### Errors
+
+Every transaction error carries a `google.rpc.ErrorInfo` detail with domain
+`scriva.xtx`, a stable `reason`, and `retry_safe` metadata (`"true"` when
+re-running the transaction as a new one can never apply it twice). Over REST
+it is in the `details` array of the error body.
+
+| Reason | gRPC code | Meaning | Retry as a new transaction? |
+|---|---|---|---|
+| `XTX_CONFLICT` | `ABORTED` | a document read or written changed; nothing applied. Metadata: `conflict_collection`, `conflict_id`, `conflict_kind`, `conflict_expected_rev`, `conflict_actual_rev` | yes, after re-reading |
+| `XTX_CANCELED_BEFORE_PREPARE` | `CANCELLED` / `DEADLINE_EXCEEDED` | gave up waiting for locks; nothing written, handle still open | yes (or commit the same handle again) |
+| `XTX_OUTCOME_UNKNOWN` | `UNKNOWN` | the commit may or may not be durable | **no — call `XTxStatus`** |
+| `XTX_IN_PROGRESS` | `UNAVAILABLE` | a commit with this idempotency key is running | no — call `XTxStatus` |
+| `XTX_DURABILITY` | `UNAVAILABLE` | a write failed before the decision; aborted | yes |
+| `XTX_NOT_PARTICIPANT` | `INVALID_ARGUMENT` | collection not named at begin | fix the request |
+| `XTX_INVALID` | `INVALID_ARGUMENT` | malformed request, reserved name, `x-xtx-id` on a single-document RPC | fix the request |
+| `XTX_TOO_LARGE` | `INVALID_ARGUMENT` | over a transaction or record size limit | fix the request |
+| `XTX_SCAN_UNSUPPORTED` | `UNIMPLEMENTED` | scan / filter / index lookup inside a transaction | not supported |
+| `XTX_NOT_FOUND` | `NOT_FOUND` | unknown handle id | — |
+| `XTX_DOC_NOT_FOUND` | `NOT_FOUND` | the document is absent in the transaction's view | — |
+| `XTX_COLLECTION_NOT_FOUND` | `NOT_FOUND` | a participant does not exist | — |
+| `XTX_EXPIRED` | `FAILED_PRECONDITION` | handle timed out; nothing written | yes |
+| `XTX_FINISHED` | `FAILED_PRECONDITION` | handle already committed, rolled back or failed | begin a new one |
+| `XTX_READ_ONLY` | `FAILED_PRECONDITION` | this node is a follower | on the leader |
+| `XTX_UNSUPPORTED` | `FAILED_PRECONDITION` | on-disk transaction state this binary cannot operate on | no |
+| `XTX_RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` | a collection quota would be exceeded; nothing applied | yes, once there is room |
+| `XTX_DUPLICATE_KEY` | `ALREADY_EXISTS` | a unique index would be violated; nothing applied | fix the data |
+| `XTX_DATA_LOSS` | `DATA_LOSS` | integrity failure | no |
+| `XTX_INTERNAL` | `INTERNAL` | anything else | no |
+
+**The unknown outcome.** `XTX_OUTCOME_UNKNOWN` — and equally a commit whose
+response never arrived (connection reset, client timeout, a bare `UNKNOWN` or
+`UNAVAILABLE` from a proxy) — means the writes may already be durable. Do not
+re-send the writes blindly. Ask `XTxStatus` with the `status_ref` metadata of
+the error (or your idempotency key, or the handle id):
+
+- `COMMITTED` — done; do nothing.
+- `ABORTED` / `EXPIRED` — nothing was applied; begin a new transaction.
+- `PENDING` — still running; ask again.
+- `UNKNOWN` — the server has no record under that reference.
+
+**Idempotent commits.** Begin with an `idempotency_key` whenever a client may
+retry. If a transaction with that key has already committed, committing another
+one with the same key applies nothing and returns the original outcome with
+`replayed: true`. The key and its tx id are durable, so this also holds after a
+server restart. One caveat: the per-operation results of the original commit
+are kept in memory only, so a replay after a restart returns the exact `tx_id`
+but each `rev` is a placeholder, not the committed revision — re-read the
+documents if you need their revisions.
+
+### Embedded (Go)
+
+```go
+db, _ := scriva.Open(dir) // scriva.WithXTxIdleTimeout(d) to change the 1m default
+ctx := context.Background()
+
+res, err := db.Transact(ctx, []string{"accounts", "ledger"},
+    engine.XTxOptions{Key: "transfer-42"},
+    func(tx *engine.XTx) error {
+        acct, err := tx.Get("accounts", 1) // recorded, re-checked at commit
+        if err != nil {
+            return err // rolls back
+        }
+        acct.Data["balance"] = 60
+        if err := tx.Update("accounts", 1, acct.Data); err != nil {
+            return err
+        }
+        _, err = tx.Insert("ledger", map[string]any{"account": 1, "delta": -40})
+        return err
+    })
+switch {
+case err == nil:
+    fmt.Println("committed", res.TxID)
+case errors.Is(err, engine.ErrXTxConflict):
+    // nothing applied; safe to run Transact again
+case errors.Is(err, engine.ErrXTxOutcomeUnknown):
+    st, txid := db.XTxStatus("transfer-42") // never retry blindly
+    _, _ = st, txid
+}
+```
+
+`db.BeginXTx(ctx, collections, opts)` returns the handle for manual control
+(`Get`, `Insert`, `Update`, `Delete`, `Commit`, `Rollback`), `db.XTx(id)` looks
+an open handle up, and `engine.XTxRetrySafe(err)` answers the retry question.
+`Transact` never retries on its own. The errors are the same typed engine
+errors the server maps onto the table above.
+
+---
+
 ## On-demand compaction
 
 Compaction normally runs on its own — triggered when a collection's sealed

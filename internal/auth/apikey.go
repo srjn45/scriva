@@ -56,6 +56,13 @@ type collectionScoped interface {
 	GetCollection() string
 }
 
+// multiCollectionScoped is implemented by request messages that name several
+// target collections at once — the generated GetCollections accessor of
+// BeginXTxRequest. Every named collection must be inside the allow-list.
+type multiCollectionScoped interface {
+	GetCollections() []string
+}
+
 // checkCollectionAccess enforces p's collection allow-list against a request
 // message. It is a no-op when the principal is unrestricted or when the request
 // is not collection-scoped (e.g. ListCollections), so those RPCs stay callable
@@ -64,6 +71,16 @@ type collectionScoped interface {
 func (p principal) checkCollectionAccess(req any) error {
 	if p.collections == nil {
 		return nil
+	}
+	// A request naming several collections (BeginXTx) must be allowed on all of
+	// them: a transaction may never reach outside the key's allow-list.
+	if ms, ok := req.(multiCollectionScoped); ok {
+		for _, name := range ms.GetCollections() {
+			if !p.allowsCollection(name) {
+				return status.Errorf(codes.PermissionDenied,
+					"principal %q is not permitted to access collection %q", p.name, name)
+			}
+		}
 	}
 	cs, ok := req.(collectionScoped)
 	if !ok {

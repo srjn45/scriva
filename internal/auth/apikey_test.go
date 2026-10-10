@@ -325,3 +325,64 @@ func TestParseScope(t *testing.T) {
 		t.Error("expected error for unknown scope")
 	}
 }
+
+// TestXTxMethodClassification pins the scope each cross-collection transaction
+// RPC requires. GetXTx is a write on purpose: it extends the handle's read set
+// and keeps the handle alive, so a read-only key cannot drive a transaction.
+func TestXTxMethodClassification(t *testing.T) {
+	for _, m := range []string{"BeginXTx", "StageXTx", "GetXTx", "CommitXTx", "RollbackXTx"} {
+		if !methodRequiresWrite("/scriva.v1.Scriva/" + m) {
+			t.Errorf("%s must require write scope", m)
+		}
+	}
+	if methodRequiresWrite("/scriva.v1.Scriva/XTxStatus") {
+		t.Error("XTxStatus must be callable with read scope")
+	}
+
+	a := mustNew(t, Key{Key: "ro", Name: "reader", Scope: ScopeRead})
+	for _, m := range []string{"BeginXTx", "StageXTx", "GetXTx", "CommitXTx", "RollbackXTx"} {
+		if code := call(t, a, ctxWithKey("ro"), "/scriva.v1.Scriva/"+m); code != codes.PermissionDenied {
+			t.Errorf("read key on %s: got %v, want PermissionDenied", m, code)
+		}
+		if code := call(t, a, context.Background(), "/scriva.v1.Scriva/"+m); code != codes.Unauthenticated {
+			t.Errorf("no key on %s: got %v, want Unauthenticated", m, code)
+		}
+	}
+	if code := call(t, a, ctxWithKey("ro"), "/scriva.v1.Scriva/XTxStatus"); code != codes.OK {
+		t.Errorf("read key on XTxStatus: got %v, want OK", code)
+	}
+	if code := call(t, a, context.Background(), "/scriva.v1.Scriva/XTxStatus"); code != codes.Unauthenticated {
+		t.Errorf("no key on XTxStatus: got %v, want Unauthenticated", code)
+	}
+}
+
+// fakeMultiCollReq mirrors BeginXTxRequest's generated GetCollections accessor.
+type fakeMultiCollReq struct{ colls []string }
+
+func (f *fakeMultiCollReq) GetCollections() []string { return f.colls }
+
+// TestAuthenticator_CollectionACL_MultiCollection: a transaction may not name
+// any participant outside the key's allow-list.
+func TestAuthenticator_CollectionACL_MultiCollection(t *testing.T) {
+	a := mustNew(t, Key{Key: "scoped", Name: "app", Scope: ScopeReadWrite, Collections: []string{"a", "c"}})
+	unary, _ := a.Interceptors()
+	begin := func(colls ...string) codes.Code {
+		ran := false
+		_, err := unary(ctxWithKey("scoped"), &fakeMultiCollReq{colls: colls},
+			&grpc.UnaryServerInfo{FullMethod: "/scriva.v1.Scriva/BeginXTx"},
+			func(context.Context, any) (any, error) { ran = true; return nil, nil })
+		if err != nil && ran {
+			t.Fatal("handler ran despite an auth error")
+		}
+		return status.Code(err)
+	}
+	if code := begin("a", "c"); code != codes.OK {
+		t.Errorf("all participants allowed: got %v, want OK", code)
+	}
+	if code := begin("a", "b"); code != codes.PermissionDenied {
+		t.Errorf("one foreign participant: got %v, want PermissionDenied", code)
+	}
+	if code := begin("b"); code != codes.PermissionDenied {
+		t.Errorf("only foreign participant: got %v, want PermissionDenied", code)
+	}
+}
