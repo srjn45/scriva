@@ -1,0 +1,3 @@
+{"magic":"SCRIVA-XTX","v":1,"epoch":"4f9c2a7e11b0d3a5","created":"2026-10-10T12:00:00Z","crc":3072216068}
+{"k":"commit","tx":"4f9c2a7e11b0d3a5-0000000000000012","key":"order-77","ts":"2026-10-10T12:00:00Z","parts":[{"c":"orders","n":2,"d":"a1caaafbac5e49423e7aa69df88d3fc64ccd31fd401017c5f8a3e733d2f80c59"},{"c":"stock","n":1,"d":"c061f2f4b6972ec0ed05514289294686f40a901e837c971ff8af44808b1d0386"}],"pd":"be7a2cd5c0c612362ca49ea4f7c90b00c088d9944b40f6b135d1491baa917784","crc":637500228}
+{"k":"commit","tx":"4f9c2a7e11b0d3a5-0000000000000012","key":"order-77","ts":"2026-10-10T12:00:00Z","parts":[{"c":"orders","n":2,"d":"a1caaafbac5e49423e7aa69df88d3fc64ccd31fd401017c5f8a3e733d
