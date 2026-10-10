@@ -44,6 +44,11 @@ type DB struct {
 
 	// lock guarantees exclusive access to the database directory.
 	lock *dirLock
+
+	// xtxJournal is the root coordinator journal (cross-collection
+	// transactions, docs/design-cross-collection-transactions.md §4). It is nil
+	// for a legacy root that never had xtx.format / xtx.journal.
+	xtxJournal *xtxJournal
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -68,7 +73,17 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		return nil, err
 	}
 
+	// Version gate and journal (design §11.2, §4.3): refuse a root whose
+	// xtx.format this binary cannot honour, or whose journal is corrupt, before
+	// touching any collection. A legacy root yields a nil journal.
+	xj, err := gateXTxRoot(dataDir, xtxOptions{wrapFile: cfg.wrapFile, renameFn: cfg.renameFn})
+	if err != nil {
+		_ = dl.release()
+		return nil, err
+	}
+
 	db := &DB{
+		xtxJournal:  xj,
 		dataDir:     dataDir,
 		defaultCfg:  cfg,
 		collections: make(map[string]*Collection),
@@ -85,6 +100,8 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	// Pre-open existing collections.
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
+		_ = xj.close()
+		_ = dl.release()
 		return nil, fmt.Errorf("db: read dir: %w", err)
 	}
 	for _, e := range entries {
@@ -98,6 +115,7 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 			for _, c := range db.collections {
 				_ = c.Close()
 			}
+			_ = xj.close()
 			_ = dl.release()
 			return nil, fmt.Errorf("db: open collection %q: %w", e.Name(), err)
 		}
@@ -246,6 +264,10 @@ func (db *DB) Close() error {
 		if err := db.persistReplState(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("db: persist replication state: %w", err)
 		}
+	}
+
+	if err := db.xtxJournal.close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("db: close xtx journal: %w", err)
 	}
 
 	if db.lock != nil {

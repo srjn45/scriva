@@ -366,6 +366,9 @@ type Collection struct {
 // It loads the persisted index (rebuilding from segments if stale),
 // and starts the background compactor goroutine.
 func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, error) {
+	if isReservedXTxName(name) {
+		return nil, fmt.Errorf("collection %q: %w", name, ErrReservedName)
+	}
 	dir := filepath.Join(dataDir, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("collection: mkdir %q: %w", dir, err)
