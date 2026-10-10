@@ -150,15 +150,3 @@ func gateXTxRoot(dir string, opt xtxOptions) (*xtxJournal, error) {
 	}
 	return openXTxJournal(dir, opt)
 }
-
-// checkXTxRootUntouched refuses an offline tool (Repair) on a root that holds
-// XTx state it cannot yet preserve (I6: tools never fabricate or lose a
-// decision). Legacy roots pass.
-func checkXTxRootUntouched(dir, tool string) error {
-	for _, n := range []string{xtxFormatFile, xtxJournalFile} {
-		if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
-			return xtxErr("", ErrXTxUnsupported, fmt.Errorf("%s does not support a data directory with %s", tool, n))
-		}
-	}
-	return nil
-}
