@@ -778,32 +778,31 @@ recovery first so that cannot persist.
 
 ### 12.3 Bootstrap / snapshot (`SnapshotTo`, inv §7)
 
-Snapshot is **not** made globally point-in-time; it is made XTx-*atomic*, using
-capture order instead of a global barrier:
+Snapshot is **not** made globally point-in-time for ordinary writes; it is made
+XTx-*atomic* with a DB-level coordinator barrier:
 
 1. read replication LSN (`Bootstrap` already does);
-2. take `DB.mu.RLock`; **capture `xtx.journal` first** (copy under
-   `journal.mu`, brief);
-3. then copy collections one at a time under their own `c.mu.RLock`, as today.
+2. take the exclusive XTx snapshot barrier and `DB.mu.RLock`; no
+   cross-collection commit can start or remain in flight;
+3. copy `xtx.format` and `xtx.journal` under `journal.mu`, then copy
+   collections one at a time under their own `c.mu.RLock`, as today.
 
-Why this is consistent: a participant's run is always fsynced **before** its
-`COMMIT` is appended (S2 < S3). A `COMMIT` captured at time *t_j* therefore has
-all participant data durable before *t_j* ≤ every later collection capture, so
-the copied segments contain the whole run. A tx committed *after* *t_j* has no
-decision in the copied journal ⇒ presumed abort in **every** participant ⇒
-all-or-nothing is preserved even though participants were copied at different
-instants. The restore needs no roll-forward: normal open + recovery is the sole
-authority (the hazard noted for `compact.manifest` in inv §7 does not arise,
-because stamps/journal contain no offsets or paths).
+Why this is consistent: an XTx holds the shared barrier from before it creates
+`xtx.format` / `xtx.journal` through S5. The archive consequently contains
+either all of its decision and participant runs or neither. The restore needs
+no roll-forward: normal open + recovery is the sole authority (the hazard noted
+for `compact.manifest` in inv §7 does not arise, because stamps/journal contain
+no offsets or paths).
 
 Consequences (documented as guarantees *and* non-guarantees):
 
-- ✔ A restored snapshot never contains half a tx, and never invents one.
+- ✔ A restored snapshot includes `xtx.format` and `xtx.journal`, never contains
+  half a tx, and never invents one.
 - ✘ It is not a cross-collection point-in-time cut of **non-tx** writes
-  (unchanged from today). A write made after *t_j* that depended on a tx the
-  snapshot dropped can appear without it. A "strict" snapshot that holds a
-  DB-wide write barrier for the whole copy is a possible future option; it
-  would cost write availability and is not part of this protocol.
+  (unchanged from today). A non-XTx write made after its collection has been
+  copied can appear without a related write in a collection copied later. A
+  fully global write barrier remains a possible future option; it would cost
+  write availability and is not part of this protocol.
 - Bootstrap watermark rule becomes safe: LSN read ≤ journal capture ≤
   collection copies, so every group whose `TX_COMMIT` LSN ≤ watermark has its
   `COMMIT` in the captured journal; groups beyond it are streamed (their

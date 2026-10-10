@@ -185,8 +185,8 @@ func TestXTxOpenWithJournal(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, xtxJournalTmpFile)); !os.IsNotExist(err) {
 		t.Error("stale tmp survived open")
 	}
-	// Snapshot refuses rather than silently dropping the journal.
-	if err := db.SnapshotTo(&bytes.Buffer{}); !errors.Is(err, ErrXTxUnsupported) {
+	// Snapshot preserves rather than silently dropping the journal.
+	if err := db.SnapshotTo(&bytes.Buffer{}); err != nil {
 		t.Errorf("SnapshotTo: %v", err)
 	}
 	if err := db.Close(); err != nil {
