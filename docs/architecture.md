@@ -1398,10 +1398,16 @@ ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/
 | `scriva_append_errors_total` | Counter | `collection`, `reason` |
 | `scriva_segment_poisoned_total` | Counter | `collection` |
 | `scriva_dir_lock_total` | Counter | `result` |
+| `scriva_xtx_total` | Counter | `outcome` |
+| `scriva_xtx_duration_seconds` | Histogram | `outcome` |
+| `scriva_xtx_conflicts_total` | Counter | `kind` |
+| `scriva_xtx_recovery_total` | Counter | `kind` |
 
 Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `scriva_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
 
-The recovery, integrity, append, poison and lock series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
+Cross-collection transaction metrics (`scriva_xtx_*`) are driven entirely by observer hooks (`OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) configured on the engine without importing metrics into the engine package. Lifecycle events (`begin`, `commit`, `abort`, `conflict`, `expired`, `unknown`), conflict classifications (`write`, `read`, `constraint`), and open-time journal recovery outcomes (`committed`, `aborted`, `unresolved`) are forwarded by the server layer to Prometheus instruments.
+
+The recovery, integrity, append, poison, lock, and transaction series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`, `OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
 
 ### Fail-closed open policy
 

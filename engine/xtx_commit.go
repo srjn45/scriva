@@ -48,7 +48,17 @@ type XTxResult struct {
 // the transaction handle returned by DB.BeginXTx, which commits through the
 // same coordinator.
 func (db *DB) CommitXTx(key string, ops []XTxOp) (*XTxResult, error) {
-	return db.commitXTx(context.Background(), key, ops, nil)
+	start := time.Now()
+	db.xtxEvent(XTxEventBegin, 0)
+	res, err := db.commitXTx(context.Background(), key, ops, nil)
+	event := db.xtxOutcomeEvent(err)
+	if event == XTxEventCanceled {
+		// The one-shot form has no handle to retry on: an in-progress key (or a
+		// cancelled wait) ends this attempt with nothing applied.
+		event = XTxEventAbort
+	}
+	db.xtxEvent(event, time.Since(start))
+	return res, err
 }
 
 // xtxReadCheck is one commit-time validation of a point observation made by a
@@ -106,7 +116,7 @@ func xtxCanceled(err error) error {
 // the rest. The caller holds DB.mu.RLock. Waiting honours ctx; on any error
 // every lock already taken is released. The returned func releases the locks
 // in reverse order.
-func (db *DB) lockXTxCollections(ctx context.Context, names []string, write map[string]bool) (map[string]*Collection, func(), error) {
+func (db *DB) lockXTxCollections(ctx context.Context, key string, names []string, write map[string]bool) (map[string]*Collection, func(), error) {
 	sort.Strings(names)
 	cols := make(map[string]*Collection, len(names))
 	for _, name := range names {
@@ -124,6 +134,7 @@ func (db *DB) lockXTxCollections(ctx context.Context, names []string, write map[
 	}
 	for _, name := range names {
 		c := cols[name]
+		db.xtxHookAt(xtxHookLockNext, key, name)
 		var err error
 		if write[name] {
 			err = lockCtx(ctx, c.mu.TryLock, c.mu.Lock, c.mu.Unlock)
@@ -269,6 +280,8 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 		return nil, err
 	}
 
+	db.xtxHookAt(xtxHookBeforeLocks, key, "")
+
 	// S0: Acquire DB.mu.RLock and validate under participant locks
 	if err := lockCtx(ctx, db.mu.TryRLock, db.mu.RLock, db.mu.RUnlock); err != nil {
 		return nil, xtxCanceled(err)
@@ -290,7 +303,7 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 			lockNames = append(lockNames, rc.Collection)
 		}
 	}
-	cols, unlock, err := db.lockXTxCollections(ctx, lockNames, distinctCols)
+	cols, unlock, err := db.lockXTxCollections(ctx, key, lockNames, distinctCols)
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +326,7 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 	if key != "" {
 		db.xtxHandles.rememberResult(key, res)
 	}
+	db.xtxHookAt(xtxHookApplied, key, res.TxID)
 	return res, nil
 }
 
@@ -320,6 +334,7 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 // DB.mu.RLock and every lock in cols; participants are the write participants
 // in canonical order. The returned func is the S6 post-lock maintenance.
 func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xtxReadCheck, cols map[string]*Collection, participants []*Collection) (*XTxResult, func(), error) {
+	db.xtxHookAt(xtxHookLocked, key, "")
 	if err := validateXTxReads(cols, reads); err != nil {
 		return nil, nil, err
 	}
@@ -514,6 +529,8 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 		}
 	}
 
+	db.xtxHookAt(xtxHookPrepared, key, txid)
+
 	// S3 + S4: Commit record in coordinator journal and fsync
 	if err := j.commitPrepared(txid, key, parts); err != nil {
 		if errors.Is(err, ErrXTxOutcomeUnknown) {
@@ -524,6 +541,8 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 		_ = j.abort(txid, key, "io")
 		return nil, nil, xtxErr(txid, ErrXTxDurability, err)
 	}
+
+	db.xtxHookAt(xtxHookDecided, key, txid)
 
 	// S5: Apply runs to in-memory primary and secondary indexes
 	var opResults []XTxOpResult
