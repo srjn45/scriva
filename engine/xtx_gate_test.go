@@ -192,9 +192,38 @@ func TestXTxOpenWithJournal(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Repair refuses a root whose XTx state it cannot yet preserve.
-	if _, err := Repair(context.Background(), dir, RepairOptions{}); !errors.Is(err, ErrXTxUnsupported) {
+	// Repair preserves coordinator evidence and may rebuild derived state.
+	if _, err := Repair(context.Background(), dir, RepairOptions{BackupDir: t.TempDir()}); err != nil {
 		t.Errorf("Repair: %v", err)
+	}
+	if _, err := Open(dir, CollectionConfig{}); err != nil {
+		t.Errorf("reopen after repair: %v", err)
+	}
+}
+
+func TestVerifyDirXTxGraphRefusesMissingCommittedParticipant(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(dir, CollectionConfig{})
+	_, _ = db.CreateCollection("orders")
+	_ = db.Close()
+	j, err := openOrCreateXTxJournal(dir, xtxOptions{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := j.commit("missing", testParts("orders"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = j.close()
+	rep, err := VerifyDir(context.Background(), dir, VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Has(CodeXTxParticipantMissing) {
+		t.Fatalf("missing participant finding: %+v", rep.AllFindings())
+	}
+	if _, err := Repair(context.Background(), dir, RepairOptions{BackupDir: t.TempDir()}); !errors.Is(err, ErrXTxIncomplete) {
+		t.Fatalf("Repair missing committed tx %s: %v", tx, err)
 	}
 }
 
