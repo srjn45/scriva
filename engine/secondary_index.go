@@ -362,14 +362,18 @@ func (s *SecondaryIndex) LookupRange(op query.Op, queryVal any) (ids []uint64, o
 
 // rebuild reconstructs the index by replaying entries from segs.
 // Must be called while the Collection write lock is held.
-func (s *SecondaryIndex) rebuild(segs []*Segment, tolerant bool) error {
+func (s *SecondaryIndex) rebuild(segs []*Segment, tolerant bool, decisions ...map[string]string) error {
+	var dec map[string]string
+	if len(decisions) > 0 {
+		dec = decisions[0]
+	}
 	type rec struct {
 		data    map[string]any
 		deleted bool
 	}
 	latest := make(map[uint64]rec)
 	for _, seg := range segs {
-		entries, err := scanEntries(seg, tolerant)
+		entries, err := scanEntries(seg, tolerant, dec)
 		if err != nil {
 			return fmt.Errorf("sidx rebuild: scan %q: %w", seg.Path(), err)
 		}
@@ -572,8 +576,15 @@ func (s *SecondaryIndex) Load(path string) error {
 // replay applies seg's records from byte offset from onto the index in log
 // order: inserts/updates move the id to its new value (or drop it when the
 // field is absent), deletes remove it. Last writer wins, matching rebuild.
-func (s *SecondaryIndex) replay(seg *Segment, from int64) error {
-	return seg.ScanFromOffset(from, func(_ int64, e store.Entry) error {
+func (s *SecondaryIndex) replay(seg *Segment, from int64, decisions ...map[string]string) error {
+	var dec map[string]string
+	if len(decisions) > 0 {
+		dec = decisions[0]
+	}
+	return seg.ScanStampedFromOffset(from, func(_ int64, e store.Entry, tx *TxStamp) error {
+		if !entryVisible(tx, dec) {
+			return nil
+		}
 		switch e.Op {
 		case store.OpInsert, store.OpUpdate:
 			if val, ok := e.Data[s.field]; ok {
@@ -633,17 +644,33 @@ func sidxFilePath(dir, field string) string {
 // scanEntries reads every record of seg: strictly (a damaged region is an
 // error) or tolerantly (damaged regions are skipped), the latter used only
 // when the integrity policy opted in to opening a damaged collection.
-func scanEntries(seg *Segment, tolerant bool) ([]store.Entry, error) {
+func scanEntries(seg *Segment, tolerant bool, decisions ...map[string]string) ([]store.Entry, error) {
+	var dec map[string]string
+	if len(decisions) > 0 {
+		dec = decisions[0]
+	}
 	if !tolerant {
-		return seg.ScanAll()
+		var out []store.Entry
+		err := seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
+			if entryVisible(tx, dec) {
+				out = append(out, e)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	rep, err := scanSegmentTolerantLimit(seg.Path(), seg.Size())
 	if err != nil {
 		return nil, err
 	}
-	out := make([]store.Entry, len(rep.Entries))
-	for i, se := range rep.Entries {
-		out[i] = se.Entry
+	out := make([]store.Entry, 0, len(rep.Entries))
+	for _, se := range rep.Entries {
+		if entryVisible(se.Tx, dec) {
+			out = append(out, se.Entry)
+		}
 	}
 	return out, nil
 }

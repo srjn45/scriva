@@ -98,6 +98,17 @@ const (
 	CodeSidxExtraEntry             FindingCode = "sidx-extra-entry"
 	CodeSidxWrongBucket            FindingCode = "sidx-wrong-bucket"
 	CodeSidxUniqueViolation        FindingCode = "sidx-unique-violation"
+
+	// Cross-collection transactions.
+	CodeXTxUndecidedRun       FindingCode = "xtx-undecided-run"
+	CodeXTxParticipantMissing FindingCode = "xtx-participant-missing"
+	CodeXTxDigestMismatch     FindingCode = "xtx-digest-mismatch"
+	CodeXTxMissingCollection  FindingCode = "xtx-missing-collection"
+	CodeXTxForeignRun         FindingCode = "xtx-foreign-run"
+	CodeXTxDecisionConflict   FindingCode = "xtx-decision-conflict"
+	CodeXTxJournalMissing     FindingCode = "xtx-journal-missing"
+	CodeXTxJournalCorrupt     FindingCode = "xtx-journal-corrupt"
+	CodeXTxIndexMismatch      FindingCode = "xtx-index-mismatch"
 )
 
 // VerifyMode selects how deep verification goes.
@@ -163,6 +174,7 @@ type Location struct {
 	Offset  int64  `json:"offset,omitempty"`
 	ID      uint64 `json:"id,omitempty"`
 	Field   string `json:"field,omitempty"`
+	Tx      string `json:"tx,omitempty"`
 }
 
 // Finding is one verification result.

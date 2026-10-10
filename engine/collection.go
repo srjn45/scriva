@@ -218,6 +218,11 @@ type CollectionConfig struct {
 	// compactor's renames. See faultfs_test.go.
 	wrapFile fileWrapper
 	renameFn renameFunc
+
+	// decisions carries the cross-collection transaction decision table from
+	// the DB-level recovery phase (design §7.1). Standalone opens in an XTx root
+	// leave this nil and fail with ErrXTxRecoveryRequired.
+	decisions map[string]string
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -267,6 +272,9 @@ type Collection struct {
 	index    *Index
 	idSeq    atomic.Uint64 // monotonically increasing id counter
 	segSeq   atomic.Uint64 // monotonically increasing segment id counter
+
+	// decisions is the cross-collection transaction decision table.
+	decisions map[string]string
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -417,16 +425,23 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		}
 	}
 
+	if cfg.decisions == nil {
+		if _, err := os.Stat(filepath.Join(dataDir, xtxFormatFile)); err == nil {
+			return nil, xtxErr("", ErrXTxRecoveryRequired, fmt.Errorf("collection %q in XTx-enabled database requires DB-level recovery; open via engine.Open", name))
+		}
+	}
+
 	c := &Collection{
-		name:     name,
-		dir:      dir,
-		cfg:      cfg,
-		index:    newIndex(),
-		sidxMap:  make(map[string]*SecondaryIndex),
-		watchers: make(map[uint64]*watcher),
-		compactC: make(chan struct{}, 1),
-		closed:   make(chan struct{}),
-		persistC: make(chan struct{}, 1),
+		name:      name,
+		dir:       dir,
+		cfg:       cfg,
+		decisions: cfg.decisions,
+		index:     newIndex(),
+		sidxMap:   make(map[string]*SecondaryIndex),
+		watchers:  make(map[uint64]*watcher),
+		compactC:  make(chan struct{}, 1),
+		closed:    make(chan struct{}),
+		persistC:  make(chan struct{}, 1),
 
 		sealedCov: make(map[string]SegmentCoverage),
 	}
@@ -789,16 +804,13 @@ func (c *Collection) load() error {
 // segment is empty, and the stale counter would otherwise reissue ids.
 func (c *Collection) tailMaxID(all []*Segment) uint64 {
 	for i := len(all) - 1; i >= 0; i-- {
-		entries, err := all[i].ScanAll()
-		if err != nil {
-			continue
-		}
 		var maxID uint64
-		for _, e := range entries {
-			if e.ID > maxID {
+		_ = all[i].ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
+			if entryVisible(tx, c.decisions) && e.ID > maxID {
 				maxID = e.ID
 			}
-		}
+			return nil
+		})
 		if maxID > 0 {
 			return maxID
 		}
@@ -1023,7 +1035,7 @@ func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, bef
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 	for _, sidx := range c.sidxMap {
-		if err := sidx.rebuild(segs, false); err != nil {
+		if err := sidx.rebuild(segs, false, c.decisions); err != nil {
 			return err
 		}
 	}
@@ -1835,7 +1847,7 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 
-	if err := sidx.rebuild(all, false); err != nil {
+	if err := sidx.rebuild(all, false, c.decisions); err != nil {
 		c.sidxMu.Lock()
 		delete(c.sidxMap, field)
 		c.sidxMu.Unlock()

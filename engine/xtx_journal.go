@@ -962,6 +962,23 @@ func (j *xtxJournal) decisions() []xtxDecision {
 	return out
 }
 
+func (j *xtxJournal) decisionsMap() map[string]string {
+	if j == nil {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	m := make(map[string]string, len(j.table.byTx))
+	for tx, d := range j.table.byTx {
+		if d.Retired {
+			m[tx] = "retire-" + d.Outcome
+		} else {
+			m[tx] = d.Outcome
+		}
+	}
+	return m
+}
+
 func statusOf(d *xtxDecision) XTxStatus {
 	if d.Outcome == xtxKindCommit {
 		return XTxCommitted

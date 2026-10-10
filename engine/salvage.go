@@ -41,6 +41,7 @@ type BadRegion struct {
 // tooling, but are not silently indistinguishable from ordinary entries.
 type SalvagedEntry struct {
 	Entry              store.Entry
+	Tx                 *TxStamp
 	Offset             int64
 	Length             int64
 	RecoveredFromGlued bool
@@ -140,10 +141,10 @@ func scanSalvageLine(report *SegmentReport, line []byte, offset, physicalLength 
 		return
 	}
 
-	e, err := store.Decode(line)
+	e, tx, err := decodeSegmentLine(line)
 	if err == nil {
 		if err = validSegmentOp(e.Op); err == nil {
-			report.Entries = append(report.Entries, SalvagedEntry{Entry: e, Offset: offset, Length: physicalLength})
+			report.Entries = append(report.Entries, SalvagedEntry{Entry: e, Tx: tx, Offset: offset, Length: physicalLength})
 			return
 		}
 		report.BadRegions = append(report.BadRegions, BadRegion{Offset: offset, Length: physicalLength, Reason: BadRegionWrongOp, Error: err.Error()})
@@ -154,7 +155,7 @@ func scanSalvageLine(report *SegmentReport, line []byte, offset, physicalLength 
 	// of one JSON object immediately before a complete one. Work backwards so
 	// the trailing (and therefore complete) object is preferred.
 	for start := bytes.LastIndexByte(line, '{'); start > 0; start = bytes.LastIndexByte(line[:start], '{') {
-		recovered, decodeErr := store.Decode(line[start:])
+		recovered, tx, decodeErr := decodeSegmentLine(line[start:])
 		if decodeErr != nil {
 			continue
 		}
@@ -164,6 +165,7 @@ func scanSalvageLine(report *SegmentReport, line []byte, offset, physicalLength 
 		report.BadRegions = append(report.BadRegions, BadRegion{Offset: offset, Length: int64(start), Reason: BadRegionGluedLines, Error: err.Error()})
 		report.Entries = append(report.Entries, SalvagedEntry{
 			Entry:              recovered,
+			Tx:                 tx,
 			Offset:             offset + int64(start),
 			Length:             physicalLength - int64(start),
 			RecoveredFromGlued: true,

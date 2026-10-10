@@ -185,7 +185,11 @@ func (c *Collection) reportIntegrity(policy IntegrityPolicy, outcome string, rep
 
 // rebuildTolerant is Rebuild over salvaged entries: damaged regions are
 // skipped, intact records are indexed with the same last-write-wins semantics.
-func (idx *Index) rebuildTolerant(segments []*Segment) error {
+func (idx *Index) rebuildTolerant(segments []*Segment, decisions ...map[string]string) error {
+	var dec map[string]string
+	if len(decisions) > 0 {
+		dec = decisions[0]
+	}
 	fresh := make(map[uint64]IndexEntry)
 	for _, seg := range sortSegments(segments) {
 		rep, err := scanSegmentTolerantLimit(seg.Path(), seg.Size())
@@ -193,6 +197,9 @@ func (idx *Index) rebuildTolerant(segments []*Segment) error {
 			return err
 		}
 		for _, se := range rep.Entries {
+			if !entryVisible(se.Tx, dec) {
+				continue
+			}
 			applyOne(fresh, seg.Path(), se.Offset, se.Entry)
 		}
 	}
