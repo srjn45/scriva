@@ -56,6 +56,10 @@ type DB struct {
 	// A collection-by-collection snapshot is otherwise allowed to copy one
 	// participant before an XTx commits and another afterwards.
 	xtxSnapshotMu sync.RWMutex
+
+	// xtxHandles tracks open and recently finished transaction handles
+	// (BeginXTx) and the per-key results of committed transactions.
+	xtxHandles xtxHandleRegistry
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -241,6 +245,11 @@ func (db *DB) ListCollections() []string {
 
 // Close gracefully shuts down all collections.
 func (db *DB) Close() error {
+	// Fail open transaction handles first. The reaper never takes DB.mu, and
+	// a commit in flight holds DB.mu.RLock, so it finishes before the lock
+	// below is granted.
+	db.xtxHandles.close()
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -318,16 +327,38 @@ func (db *DB) ensureXTxJournal() (*xtxJournal, error) {
 	return j, nil
 }
 
-// XTxStatus returns the status for a given txid or idempotency key (§8.2).
+// XTxStatus returns the status for a given txid, idempotency key or
+// transaction-handle id (§8.2), together with the txid when one is known.
+//
+// A durable journal decision always wins. Otherwise an open handle with that
+// id or key reports PENDING, and a handle that finished without committing
+// (rolled back, failed validation, reaped) reports ABORTED — nothing it staged
+// was ever applied, so a retry is safe.
 func (db *DB) XTxStatus(txOrKey string) (XTxStatus, string) {
 	db.xtxMu.Lock()
 	j := db.xtxJournal
 	db.xtxMu.Unlock()
-	if j == nil {
-		return XTxUnknown, ""
-	}
 	if _, _, err := parseTxID(txOrKey); err == nil {
+		if j == nil {
+			return XTxUnknown, ""
+		}
 		return j.status(txOrKey), txOrKey
 	}
-	return j.statusByKey(txOrKey)
+	st, tx := XTxUnknown, ""
+	if j != nil {
+		st, tx = j.statusByKey(txOrKey)
+	}
+	if st == XTxCommitted || st == XTxPending {
+		return st, tx
+	}
+	if hst, htx, ok := db.xtxHandles.status(txOrKey); ok {
+		if htx != "" && j != nil {
+			// The handle reached the coordinator: the journal is the truth.
+			return j.status(htx), htx
+		}
+		if st == XTxUnknown || hst == XTxPending || hst == XTxCommitted {
+			return hst, htx
+		}
+	}
+	return st, tx
 }

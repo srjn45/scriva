@@ -195,6 +195,14 @@ type CollectionConfig struct {
 	// exclusive data-directory lock: LockAcquired, LockContended (another
 	// handle/process holds it) or LockFailed. DB-wide.
 	OnLock func(dataDir, result string)
+	// XTxIdleTimeout bounds how long a transaction handle (DB.BeginXTx) may sit
+	// idle before it is reaped and everything it staged is discarded. Zero
+	// selects DefaultXTxIdleTimeout; a negative value disables reaping. DB-wide.
+	XTxIdleTimeout time.Duration
+	// OnXTx, when non-nil, is called once per transaction-handle lifecycle event
+	// (one of the XTxEvent* constants) with the time since the handle began.
+	// It runs without engine locks held. DB-wide.
+	OnXTx func(event string, sinceBegin time.Duration)
 	// Logger, when non-nil, receives structured recovery, integrity and poison
 	// events. nil keeps the engine silent.
 	Logger *slog.Logger
