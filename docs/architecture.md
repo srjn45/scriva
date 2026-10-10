@@ -865,6 +865,21 @@ aborts instead of mutating the layout afterwards.
 
 ## Transactions
 
+> **Planned format — not implemented.** Cross-collection transactions (XTx) —
+> atomic, durable writes spanning several collections of one data directory —
+> are designed but **not shipped**: no released binary writes or reads the
+> format it describes, and the harness in `internal/xtxspec` is not wired into
+> `Open`. The design (coordinator authority via a root-level `xtx.journal`
+> `COMMIT` record, redo-only stamped entries, presumed abort, fsync ordering
+> S2 < S3 < S4, DB-level recovery state machine, canonical lock order, conflict
+> and isolation semantics, error outcomes, and the old-binary compatibility
+> fence) is in
+> [design-cross-collection-transactions.md](design-cross-collection-transactions.md);
+> the per-boundary crash checklist and frozen wire fixtures are in
+> [design-xtx-fault-boundaries.md](design-xtx-fault-boundaries.md). Single-node,
+> single data directory only — distributed/XA transactions are out of scope.
+> Existing `CommitTx` (single collection) is unchanged.
+
 Transactions are optimistic and scoped to a single collection. Operations are staged in memory and applied atomically on commit:
 
 ```
