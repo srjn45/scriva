@@ -1057,5 +1057,16 @@ were still held, which self-deadlocked when a commit crossed the rotation
 threshold. S6 now runs after the participant locks are released, still under
 the DB-level read lock, matching §9.3.
 
-Not in this stage: proto/RPC shapes, server `TxManager` wiring, CLI and the
-embedded façade.
+### 17.7 Transport
+
+The handle is exposed unchanged over gRPC/REST (`BeginXTx`, `StageXTx`,
+`GetXTx`, `CommitXTx`, `RollbackXTx`, `XTxStatus`), the CLI and the embedded
+façade (`scriva.DB.BeginXTx` / `Transact` / `XTxStatus`). The transports add no
+guarantee and no state: the server resolves the handle by id on every call, and
+the single-collection `TxManager` is not involved. The §8.1 outcomes map onto
+gRPC codes with a machine-readable reason; `ErrXTxOutcomeUnknown` is `UNKNOWN`
+/ `XTX_OUTCOME_UNKNOWN` and carries the reference to pass to `XTxStatus`. Scans
+remain rejected at the transport as well: a data RPC tagged with the
+`x-xtx-id` header is refused instead of being run outside the transaction. See
+`docs/architecture.md` (Transport) and `docs/getting-started.md`
+(Cross-collection transactions) for the mapping tables.

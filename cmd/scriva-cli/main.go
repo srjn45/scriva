@@ -83,6 +83,14 @@ func rootCmd() *cobra.Command {
 		beginTxCmd(flags),
 		commitTxCmd(flags),
 		rollbackTxCmd(flags),
+		beginXTxCmd(flags),
+		xtxInsertCmd(flags),
+		xtxUpdateCmd(flags),
+		xtxDeleteCmd(flags),
+		xtxGetCmd(flags),
+		commitXTxCmd(flags),
+		rollbackXTxCmd(flags),
+		xtxStatusCmd(flags),
 		versionCmd(),
 	)
 	return root
