@@ -199,6 +199,23 @@ func (f *faultFS) rename(oldpath, newpath string) error {
 	return os.Rename(oldpath, newpath)
 }
 
+// compactWithRenameFault runs one forced compaction pass whose nth segment
+// rename (1-based, within that pass) fails with err.
+//
+// Arming and running happen under a single hold of compactMu. Rotation signals
+// the background compactor, so arming first and calling CompactNow afterwards
+// races it two ways: a background rename landing between fs.count and
+// failRenameAt makes the armed ordinal already past (the fault never fires),
+// and arming while a background pass is mid-swap puts the fault on a later
+// rename of that pass, which by design marks the swap incomplete and makes
+// every later pass refuse to run.
+func compactWithRenameFault(col *Collection, fs *faultFS, nth int, err error) error {
+	col.compactMu.Lock()
+	defer col.compactMu.Unlock()
+	fs.failRenameAt(fs.count("rename")+nth, err)
+	return col.compactLocked(true)
+}
+
 // releaseFDs closes the real descriptors of an abandoned handle (test hygiene;
 // performs no writes and no sync).
 func (f *faultFS) releaseFDs() {
