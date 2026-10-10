@@ -47,6 +47,14 @@ var (
 	// ErrXTxRecoveryRequired: a standalone collection open in an XTx-enabled
 	// root before the DB-level recovery phase produced a decision table (§7.1).
 	ErrXTxRecoveryRequired = errors.New("engine: cross-collection transaction recovery required")
+	ErrReadOnly            = errors.New("engine: cannot write to read-only follower")
+	ErrCollectionNotFound  = errors.New("engine: collection not found")
+	ErrXTxDuplicateOp      = errors.New("engine: duplicate operation on (collection, id) in transaction")
+
+	// Parser errors for stamped entries (§3.2).
+	ErrV1CRCOnStamp = errors.New("engine: stamped entry carries a v1 checksum")
+	ErrMissingCRC   = errors.New("engine: stamped entry has no crc")
+	ErrBadStamp     = errors.New("engine: invalid tx stamp")
 )
 
 // XTxError carries the txid (when known) and the underlying cause of a typed
@@ -93,6 +101,9 @@ const (
 	XTxExpired   XTxStatus = "EXPIRED"
 )
 
+// ErrQuotaExceeded is the §8.1 alias for ErrResourceExhausted on quota breaches.
+var ErrQuotaExceeded = ErrResourceExhausted
+
 // XTxRetrySafe reports whether re-running a failed commit as a fresh XTx can
 // never double-apply, per the "Retry safe?" column of §8.1. It is false for
 // ErrXTxOutcomeUnknown (only status/idempotency key may resolve it) and for
@@ -101,10 +112,11 @@ func XTxRetrySafe(err error) bool {
 	switch {
 	case err == nil:
 		return false
-	case errors.Is(err, ErrXTxOutcomeUnknown), errors.Is(err, ErrXTxInProgress):
+	case errors.Is(err, ErrXTxOutcomeUnknown), errors.Is(err, ErrXTxInProgress),
+		errors.Is(err, ErrXTxTooLarge):
 		return false
 	case errors.Is(err, ErrXTxConflict), errors.Is(err, ErrXTxDurability),
-		errors.Is(err, ErrResourceExhausted):
+		errors.Is(err, ErrResourceExhausted), errors.Is(err, ErrQuotaExceeded):
 		return true
 	}
 	return false

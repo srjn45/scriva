@@ -783,6 +783,59 @@ func (j *xtxJournal) newRecord(kind, tx, key string) xtxRecord {
 	return xtxRecord{K: kind, Tx: tx, Key: key, TS: j.opt.clock().Format(time.RFC3339Nano)}
 }
 
+// allocateTxID allocates the next monotonic txid under journal.mu and records it
+// in the in-memory pending map (§5.1, §6.2).
+func (j *xtxJournal) allocateTxID(key string) (string, error) {
+	if len(key) > xtxMaxKeyLen {
+		return "", xtxErr("", ErrXTxTooLarge, fmt.Errorf("idempotency key longer than %d bytes", xtxMaxKeyLen))
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err := j.usable(); err != nil {
+		return "", err
+	}
+	tx := formatTxID(j.hdr.Epoch, j.nextSeq)
+	j.nextSeq++
+	j.pending[tx] = key
+	return tx, nil
+}
+
+// commitPrepared appends a COMMIT record for an already-allocated txid and fsyncs (S3+S4).
+func (j *xtxJournal) commitPrepared(tx, key string, parts []xtxPart) error {
+	if len(key) > xtxMaxKeyLen {
+		return xtxErr(tx, ErrXTxTooLarge, fmt.Errorf("idempotency key longer than %d bytes", xtxMaxKeyLen))
+	}
+	if err := validateParts(parts); err != nil {
+		return fmt.Errorf("xtx journal: %w", err)
+	}
+	pd, err := partsDigest(parts)
+	if err != nil {
+		return fmt.Errorf("xtx journal: %w", err)
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err := j.usable(); err != nil {
+		return err
+	}
+	r := j.newRecord(xtxKindCommit, tx, key)
+	r.Parts = append([]xtxPart(nil), parts...)
+	r.PD = pd
+	line, err := encodeXTxRecord(r)
+	if err != nil {
+		return err
+	}
+	if err := j.appendLine(line); err != nil {
+		delete(j.pending, tx)
+		return xtxErr(tx, ErrXTxDurability, err)
+	}
+	if err := j.syncLocked(); err != nil {
+		// Not installed in the table: the outcome is whatever recovery finds.
+		return xtxErr(tx, ErrXTxOutcomeUnknown, err)
+	}
+	delete(j.pending, tx)
+	return j.installLocked(r)
+}
+
 // commit allocates the next txid, appends COMMIT{parts} and fsyncs (S3+S4).
 // parts must already be canonical (validateParts). Errors:
 //   - validation: plain error, nothing written, seq not consumed
@@ -792,41 +845,14 @@ func (j *xtxJournal) newRecord(kind, tx, key string) xtxRecord {
 //
 // A txid is returned in the error where one was allocated.
 func (j *xtxJournal) commit(key string, parts []xtxPart) (string, error) {
-	if len(key) > xtxMaxKeyLen {
-		return "", xtxErr("", ErrXTxTooLarge, fmt.Errorf("idempotency key longer than %d bytes", xtxMaxKeyLen))
-	}
-	if err := validateParts(parts); err != nil {
-		return "", fmt.Errorf("xtx journal: %w", err)
-	}
-	pd, err := partsDigest(parts)
-	if err != nil {
-		return "", fmt.Errorf("xtx journal: %w", err)
-	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if err := j.usable(); err != nil {
-		return "", err
-	}
-	tx := formatTxID(j.hdr.Epoch, j.nextSeq)
-	r := j.newRecord(xtxKindCommit, tx, key)
-	r.Parts = append([]xtxPart(nil), parts...)
-	r.PD = pd
-	line, err := encodeXTxRecord(r)
+	tx, err := j.allocateTxID(key)
 	if err != nil {
 		return "", err
 	}
-	j.nextSeq++ // consumed even if the write fails: a torn record may hold it
-	j.pending[tx] = key
-	if err := j.appendLine(line); err != nil {
-		delete(j.pending, tx)
-		return tx, xtxErr(tx, ErrXTxDurability, err)
+	if err := j.commitPrepared(tx, key, parts); err != nil {
+		return tx, err
 	}
-	if err := j.syncLocked(); err != nil {
-		// Not installed in the table: the outcome is whatever recovery finds.
-		return tx, xtxErr(tx, ErrXTxOutcomeUnknown, err)
-	}
-	delete(j.pending, tx)
-	return tx, j.installLocked(r)
+	return tx, nil
 }
 
 func (j *xtxJournal) installLocked(r xtxRecord) error {
