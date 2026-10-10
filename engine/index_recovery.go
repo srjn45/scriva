@@ -85,12 +85,14 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 		if err != nil {
 			return false, err
 		}
-		rebuildFn := c.index.Rebuild
 		if tolerant {
-			rebuildFn = c.index.rebuildTolerant
-		}
-		if err := rebuildFn(all); err != nil {
-			return false, fmt.Errorf("collection: rebuild index: %w", err)
+			if err := c.index.rebuildTolerant(all, c.decisions); err != nil {
+				return false, fmt.Errorf("collection: rebuild index: %w", err)
+			}
+		} else {
+			if err := c.index.Rebuild(all, c.decisions); err != nil {
+				return false, fmt.Errorf("collection: rebuild index: %w", err)
+			}
 		}
 		c.reportRecovery(IndexRecoveryRebuild, totalSize(all), start)
 		return true, nil
@@ -113,7 +115,7 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 	if len(plan) > 0 {
 		c.index.mu.Lock()
 		for _, st := range plan {
-			if err := applyEntries(c.index.entries, st.seg, st.from); err != nil {
+			if err := applyEntries(c.index.entries, st.seg, st.from, c.decisions); err != nil {
 				c.index.mu.Unlock()
 				return rebuild()
 			}
@@ -160,13 +162,13 @@ func (c *Collection) planReplay(all []*Segment) (plan []replayStep, ok bool) {
 	cov := append([]SegmentCoverage(nil), c.index.coverage...)
 	nEntries := len(c.index.entries)
 	c.index.mu.RUnlock()
-	return planReplayFor(all, known, cov, nEntries, c.covMemo)
+	return planReplayFor(all, known, cov, nEntries, c.covMemo, c.decisions)
 }
 
 // planReplayFor is planReplay over explicit coverage, shared by the primary and
 // secondary indexes: known=false (v1) means coverage is unknown, and nEntries>0
 // with empty coverage means entries nothing proves.
-func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int, memo *coverageMemo) (plan []replayStep, ok bool) {
+func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int, memo *coverageMemo, decisions map[string]string) (plan []replayStep, ok bool) {
 	if !known {
 		return nil, false // v1: coverage unknown -> stale
 	}
@@ -200,6 +202,13 @@ func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries i
 		}
 	}
 	for _, cv := range cov {
+		if len(cv.XTxApplied) > 0 {
+			for _, tx := range cv.XTxApplied {
+				if decisions != nil && (decisions[tx] != xtxKindCommit && decisions[tx] != "retire-commit") {
+					return nil, false
+				}
+			}
+		}
 		seg := byName[cv.Segment]
 		if seg.Size() > cv.Size && seg != lastCovered {
 			return nil, false // a non-newest segment grew
@@ -344,7 +353,7 @@ func totalSize(segs []*Segment) (n int64) {
 func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Segment, force bool) (changed bool, err error) {
 	rebuild := func() (bool, error) {
 		c.sidxRebuilds.Add(1)
-		if err := sidx.rebuild(all, c.tolerantOpen); err != nil {
+		if err := sidx.rebuild(all, c.tolerantOpen, c.decisions); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -358,12 +367,12 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 	sidx.mu.RLock()
 	known, cov, n := sidx.coverageKnown, append([]SegmentCoverage(nil), sidx.coverage...), len(sidx.buckets)
 	sidx.mu.RUnlock()
-	plan, ok := planReplayFor(all, known, cov, n, c.covMemo)
+	plan, ok := planReplayFor(all, known, cov, n, c.covMemo, c.decisions)
 	if !ok {
 		return rebuild()
 	}
 	for _, st := range plan {
-		if err := sidx.replay(st.seg, st.from); err != nil {
+		if err := sidx.replay(st.seg, st.from, c.decisions); err != nil {
 			return rebuild()
 		}
 	}

@@ -86,12 +86,12 @@ const indexFormatV2 = 2
 // that is not proof of the whole prefix, so such coverage never matches and
 // the index is rebuilt once, then rewritten with full checksums.
 type SegmentCoverage struct {
-	Segment  string `json:"segment"`
-	Size     int64  `json:"size"`
-	Checksum string `json:"checksum"`
-	// Tail is read for compatibility with older files only; it is never
-	// written and never sufficient on its own.
-	Tail string `json:"tail,omitempty"`
+	Segment    string   `json:"segment"`
+	Size       int64    `json:"size"`
+	Checksum   string   `json:"checksum"`
+	Tail       string   `json:"tail,omitempty"`
+	XTxApplied []string `json:"xtx_applied,omitempty"`
+	XTxEpoch   string   `json:"xtx_epoch,omitempty"`
 }
 
 // indexPayload is the canonical (checksummed) body of a v2 index file. Encoding
@@ -442,10 +442,14 @@ func (idx *Index) segmentsValid(sizes map[string]int64) bool {
 // compacted record (whose full write history was collapsed into a single line
 // that still carries its latest rev) keeps that rev instead of resetting to 1.
 // A delete clears the counter so a re-inserted id restarts at rev 1.
-func (idx *Index) Rebuild(segments []*Segment) error {
+func (idx *Index) Rebuild(segments []*Segment, decisions ...map[string]string) error {
+	var dec map[string]string
+	if len(decisions) > 0 {
+		dec = decisions[0]
+	}
 	fresh := make(map[uint64]IndexEntry)
 	for _, seg := range sortSegments(segments) {
-		if err := applyEntries(fresh, seg, 0); err != nil {
+		if err := applyEntries(fresh, seg, 0, dec); err != nil {
 			return err
 		}
 	}
@@ -459,8 +463,11 @@ func (idx *Index) Rebuild(segments []*Segment) error {
 // onto m, with the semantics Rebuild and tail replay share: each insert/update
 // bumps the per-id revision (never below the revision the line carries), a
 // delete removes the entry so it is not resurrected, last writer wins.
-func applyEntries(m map[uint64]IndexEntry, seg *Segment, from int64) error {
-	err := seg.ScanFromOffset(from, func(off int64, e store.Entry) error {
+func applyEntries(m map[uint64]IndexEntry, seg *Segment, from int64, decisions map[string]string) error {
+	err := seg.ScanStampedFromOffset(from, func(off int64, e store.Entry, tx *TxStamp) error {
+		if !entryVisible(tx, decisions) {
+			return nil
+		}
 		applyOne(m, seg.Path(), off, e)
 		return nil
 	})

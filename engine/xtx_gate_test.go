@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/srjn45/scriva/store"
 )
 
 func writeFormat(t *testing.T, dir string, f xtxFormat) {
@@ -159,6 +161,15 @@ func TestXTxOpenWithJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = j.close()
+
+	// Provide participant evidence for the committed tx so open recovery succeeds.
+	se, _ := encodeStamped(stampedEntry{
+		ID: 1, Op: store.OpInsert, Rev: 1,
+		Tx: TxStamp{T: tx, I: 0, N: 1},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "c", "seg_000001.ndjson"), se, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	// A stale tmp from a crashed checkpoint is removed at open.
 	if err := os.WriteFile(filepath.Join(dir, xtxJournalTmpFile), []byte("junk"), 0o644); err != nil {

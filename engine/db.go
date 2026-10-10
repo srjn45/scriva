@@ -75,17 +75,7 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		return nil, err
 	}
 
-	// Version gate and journal (design §11.2, §4.3): refuse a root whose
-	// xtx.format this binary cannot honour, or whose journal is corrupt, before
-	// touching any collection. A legacy root yields a nil journal.
-	xj, err := gateXTxRoot(dataDir, xtxOptions{wrapFile: cfg.wrapFile, renameFn: cfg.renameFn})
-	if err != nil {
-		_ = dl.release()
-		return nil, err
-	}
-
 	db := &DB{
-		xtxJournal:  xj,
 		dataDir:     dataDir,
 		defaultCfg:  cfg,
 		collections: make(map[string]*Collection),
@@ -99,30 +89,19 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	// Build the replication broker (if enabled) and restore the LSN watermarks
 	// before opening any collection, so collections open with a live broker.
 	db.initReplication(cfg.ReplicationRingSize)
-	// Pre-open existing collections.
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		_ = xj.close()
+
+	// Coordinator recovery (design §7): validate format gate, open journal,
+	// gather participant evidence, resolve truth table, truncate dead tail runs,
+	// replay committed entries, and open collections under the decision table.
+	if err := db.recoverCoordinator(cfg); err != nil {
+		for _, c := range db.collections {
+			_ = c.Close()
+		}
+		if db.xtxJournal != nil {
+			_ = db.xtxJournal.close()
+		}
 		_ = dl.release()
-		return nil, fmt.Errorf("db: read dir: %w", err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		col, err := OpenCollection(e.Name(), dataDir, cfg)
-		if err != nil {
-			// Release everything acquired so far so a refused open (for example
-			// ErrIntegrity) leaves the directory re-openable in this process.
-			for _, c := range db.collections {
-				_ = c.Close()
-			}
-			_ = xj.close()
-			_ = dl.release()
-			return nil, fmt.Errorf("db: open collection %q: %w", e.Name(), err)
-		}
-		col.broker = db.broker
-		db.collections[e.Name()] = col
+		return nil, err
 	}
 	return db, nil
 }
@@ -136,7 +115,11 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	if _, exists := db.collections[name]; exists {
 		return nil, fmt.Errorf("db: collection %q already exists", name)
 	}
-	col, err := OpenCollection(name, db.dataDir, db.defaultCfg)
+	colCfg := db.defaultCfg
+	if db.xtxJournal != nil {
+		colCfg.decisions = db.xtxJournal.decisionsMap()
+	}
+	col, err := OpenCollection(name, db.dataDir, colCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +167,9 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 			return nil, fmt.Errorf("db: reopen collection %q: %w", name, err)
 		}
 		delete(db.collections, name)
+	}
+	if db.xtxJournal != nil {
+		cfg.decisions = db.xtxJournal.decisionsMap()
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
 	if err != nil {

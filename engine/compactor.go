@@ -327,7 +327,7 @@ func (c *Collection) compact(force bool) error {
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
-	if err := c.index.Rebuild(all); err != nil {
+	if err := c.index.Rebuild(all, c.decisions); err != nil {
 		c.swapFailed = true
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: rebuild index: %w", err)
@@ -347,7 +347,7 @@ func (c *Collection) compact(force bool) error {
 	c.sidxMu.RLock()
 	sidxSnaps := make(map[string]*sidxSnapshot, len(c.sidxMap))
 	for field, sidx := range c.sidxMap {
-		if err := sidx.rebuild(all, false); err != nil {
+		if err := sidx.rebuild(all, false, c.decisions); err != nil {
 			c.sidxMu.RUnlock()
 			c.swapFailed = true
 			c.mu.Unlock()
