@@ -231,6 +231,48 @@ func (s *Segment) Append(e store.Entry) (offset int64, err error) {
 	return offset, nil
 }
 
+// AppendStamped encodes e as a stamped transaction entry and appends it to the active segment.
+// Returns the byte offset at which this entry starts.
+func (s *Segment) AppendStamped(e stampedEntry) (offset int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.onAppend != nil {
+		before := s.size
+		defer func() { s.onAppend(int(s.size-before), err) }()
+	}
+
+	if s.sealed {
+		return 0, fmt.Errorf("segment: append to sealed segment %q", s.path)
+	}
+
+	b, err := encodeStamped(e)
+	if err != nil {
+		return 0, err
+	}
+
+	if int64(len(b)) > maxScanTokenSize {
+		return 0, fmt.Errorf("%w: record id=%d encodes to %d bytes, limit is %d", ErrRecordTooLarge, e.ID, len(b), maxScanTokenSize)
+	}
+
+	if s.poisoned != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrSegmentPoisoned, s.path, s.poisoned)
+	}
+
+	offset = s.size
+	n, err := s.file.Write(b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		if terr := s.rollbackLocked(s.size); terr != nil {
+			return 0, fmt.Errorf("segment: write %q: %w (rollback: %w)", s.path, err, terr)
+		}
+		return 0, fmt.Errorf("segment: write %q: %w", s.path, err)
+	}
+	s.size += int64(len(b))
+	return offset, nil
+}
+
 // rollback truncates an active segment to a previously committed boundary.
 // It is used by multi-entry collection writes to discard an already-appended
 // prefix when a later append or fsync fails. A failed truncate poisons the
@@ -278,29 +320,35 @@ func (s *Segment) Sync() error {
 // ReadAt decodes the entry starting at the given byte offset.
 // Safe to call concurrently on any segment (active or sealed).
 func (s *Segment) ReadAt(offset int64) (store.Entry, error) {
+	e, _, err := s.ReadStampedAt(offset)
+	return e, err
+}
+
+// ReadStampedAt decodes the entry and its optional transaction stamp at the given byte offset.
+func (s *Segment) ReadStampedAt(offset int64) (store.Entry, *TxStamp, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
-		return store.Entry{}, fmt.Errorf("segment: open for read %q: %w", s.path, err)
+		return store.Entry{}, nil, fmt.Errorf("segment: open for read %q: %w", s.path, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return store.Entry{}, fmt.Errorf("segment: seek offset %d in %q: %w", offset, s.path, err)
+		return store.Entry{}, nil, fmt.Errorf("segment: seek offset %d in %q: %w", offset, s.path, err)
 	}
 
 	scanner := newSegmentScanner(f)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return store.Entry{}, fmt.Errorf("segment: scan %q at %d: %w", s.path, offset, err)
+			return store.Entry{}, nil, fmt.Errorf("segment: scan %q at %d: %w", s.path, offset, err)
 		}
-		return store.Entry{}, fmt.Errorf("segment: empty at offset %d in %q", offset, s.path)
+		return store.Entry{}, nil, fmt.Errorf("segment: empty at offset %d in %q", offset, s.path)
 	}
 
-	e, err := store.Decode(scanner.Bytes())
+	e, tx, err := decodeSegmentLine(scanner.Bytes())
 	if err != nil {
-		return store.Entry{}, fmt.Errorf("segment: decode %q at %d: %w", s.path, offset, err)
+		return store.Entry{}, nil, fmt.Errorf("segment: decode %q at %d: %w", s.path, offset, err)
 	}
-	return e, nil
+	return e, tx, nil
 }
 
 // ScanAll reads every entry in the segment in order.
@@ -321,7 +369,7 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 		if len(line) == 0 {
 			continue
 		}
-		e, err := store.Decode(line)
+		e, _, err := decodeSegmentLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("segment: decode line %d in %q: %w", lineNum, s.path, err)
 		}
@@ -345,6 +393,13 @@ func (s *Segment) ScanFrom(yield func(offset int64, e store.Entry) error) error 
 // ScanFromOffset is ScanFrom starting at byte offset from, which must be a
 // record boundary. Offsets passed to yield are absolute within the file.
 func (s *Segment) ScanFromOffset(from int64, yield func(offset int64, e store.Entry) error) error {
+	return s.ScanStampedFromOffset(from, func(offset int64, e store.Entry, _ *TxStamp) error {
+		return yield(offset, e)
+	})
+}
+
+// ScanStampedFromOffset is ScanFromOffset providing the transaction stamp to yield when present.
+func (s *Segment) ScanStampedFromOffset(from int64, yield func(offset int64, e store.Entry, tx *TxStamp) error) error {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return fmt.Errorf("segment: scanfrom open %q: %w", s.path, err)
@@ -368,11 +423,11 @@ func (s *Segment) ScanFromOffset(from int64, yield func(offset int64, e store.En
 		if len(line) == 0 {
 			continue
 		}
-		e, err := store.Decode(line)
+		e, tx, err := decodeSegmentLine(line)
 		if err != nil {
 			return fmt.Errorf("segment: decode line %d in %q: %w", lineNum, s.path, err)
 		}
-		if err := yield(start, e); err != nil {
+		if err := yield(start, e, tx); err != nil {
 			return err
 		}
 	}
