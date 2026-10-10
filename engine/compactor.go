@@ -167,8 +167,8 @@ func (c *Collection) compact(force bool) error {
 	c.layoutMu.Unlock()
 	c.compactRetryExp.Store(0)
 
-	// --- Step 3: Replay all entries, keep latest per id ---
-	resolved, err := resolveEntries(toCompact)
+	// --- Step 3: Replay all entries, keep latest committed/plain value per id ---
+	resolved, err := resolveCompactEntries(toCompact, c.decisions)
 	if err != nil {
 		return fmt.Errorf("compactor: resolve: %w", err)
 	}
@@ -190,7 +190,7 @@ func (c *Collection) compact(force bool) error {
 	if err := discardCompactTemps(c.dir); err != nil {
 		return fmt.Errorf("compactor: %w", err)
 	}
-	tempSegs, err := c.writeCompacted(resolved)
+	tempSegs, err := c.writeCompactEntries(resolved)
 	if err != nil {
 		_ = discardCompactTemps(c.dir)
 		return fmt.Errorf("compactor: write compacted: %w", err)
@@ -473,7 +473,7 @@ func (c *Collection) migrationPendingIn(segs []*Segment) bool {
 // conforms), so a steady-state compaction with no policy change re-encrypts
 // nothing. It is fail-closed: a decrypt failure is returned so the caller aborts
 // the pass rather than dropping or corrupting data.
-func (c *Collection) reencryptForMigration(entries []store.Entry) ([]store.Entry, error) {
+func (c *Collection) reencryptForMigration(entries []compactEntry) ([]compactEntry, error) {
 	enc := c.enc.Load()
 	if enc == nil {
 		return entries, nil
@@ -481,7 +481,10 @@ func (c *Collection) reencryptForMigration(entries []store.Entry) ([]store.Entry
 	epoch := enc.epoch
 	ctx := context.Background()
 	for i := range entries {
-		e := &entries[i]
+		if entries[i].tx != nil {
+			continue
+		}
+		e := &entries[i].entry
 		if e.Op == store.OpDelete || e.Epoch == epoch {
 			continue
 		}
@@ -530,40 +533,82 @@ func (c *Collection) isDirty(segs []*Segment) bool {
 	return float64(stale)/float64(total) > c.cfg.CompactDirtyPct
 }
 
-// resolveEntries replays all entries from the given segments and returns only
-// the latest surviving entry per id (deletes are dropped). Records whose TTL has
-// already passed are dropped too, so compaction reclaims expired data even if
-// the reaper has not yet tombstoned it.
-func resolveEntries(segs []*Segment) ([]store.Entry, error) {
+type compactEntry struct {
+	entry store.Entry
+	tx    *TxStamp
+}
+
+// resolveEntries replays all entries from the given segments and returns the
+// latest surviving plain entry per id (deletes are dropped), plus unresolved
+// or unretired committed transaction evidence in original log order. Stamped
+// committed evidence remains the materialized survivor until the coordinator
+// can be atomically checkpointed; aborted stamped entries are omitted.
+func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]compactEntry, error) {
 	latest := make(map[uint64]store.Entry)
+	var evidence []compactEntry
 
 	for _, seg := range segs {
-		entries, err := seg.ScanAll()
+		err := seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
+			switch {
+			case tx == nil || tx.T == "":
+				latest[e.ID] = e // last plain write wins
+			case entryVisible(tx, decisions):
+				stamp := *tx
+				evidence = append(evidence, compactEntry{entry: e, tx: &stamp})
+				delete(latest, e.ID)
+			case decisions == nil || decisions[tx.T] == "":
+				stamp := *tx
+				evidence = append(evidence, compactEntry{entry: e, tx: &stamp})
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
-		}
-		for _, e := range entries {
-			latest[e.ID] = e // last write wins
 		}
 	}
 
 	now := time.Now().UnixNano()
-	out := make([]store.Entry, 0, len(latest))
+	live := make([]store.Entry, 0, len(latest))
 	for _, e := range latest {
 		if e.Op == store.OpDelete || expired(e.ExpiresAt, now) {
 			continue
 		}
-		out = append(out, e)
+		live = append(live, e)
 	}
 	// Map iteration order is random; emit by id so the same input always yields
 	// byte-identical output segments (and a reproducible rebalance).
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(live, func(i, j int) bool { return live[i].ID < live[j].ID })
+	out := make([]compactEntry, 0, len(evidence)+len(live))
+	out = append(out, evidence...)
+	for _, e := range live {
+		out = append(out, compactEntry{entry: e})
+	}
+	return out, nil
+}
+
+func resolveEntries(segs []*Segment) ([]store.Entry, error) {
+	compact, err := resolveCompactEntries(segs, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Entry, 0, len(compact))
+	for _, ce := range compact {
+		out = append(out, ce.entry)
+	}
 	return out, nil
 }
 
 // writeCompacted writes resolved entries into new segment files under c.dir,
 // using temp paths that are renamed into place once complete.
 func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
+	compact := make([]compactEntry, 0, len(entries))
+	for _, e := range entries {
+		compact = append(compact, compactEntry{entry: e})
+	}
+	return c.writeCompactEntries(compact)
+}
+
+func (c *Collection) writeCompactEntries(entries []compactEntry) ([]*Segment, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -587,7 +632,7 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 		return nil, err
 	}
 
-	for _, e := range entries {
+	for _, ce := range entries {
 		if current.Size() >= c.cfg.SegmentMaxSize {
 			if sealErr := current.Seal(); sealErr != nil {
 				return nil, sealErr
@@ -598,7 +643,21 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 				return nil, err
 			}
 		}
-		if _, err := current.Append(e); err != nil {
+		if ce.tx != nil {
+			se := stampedEntry{
+				ID:        ce.entry.ID,
+				Op:        ce.entry.Op,
+				Ts:        ce.entry.Ts.Format(time.RFC3339Nano),
+				Rev:       ce.entry.Rev,
+				Data:      ce.entry.Data,
+				Epoch:     ce.entry.Epoch,
+				ExpiresAt: ce.entry.ExpiresAt,
+				Tx:        *ce.tx,
+			}
+			if _, err := current.AppendStamped(se); err != nil {
+				return nil, err
+			}
+		} else if _, err := current.Append(ce.entry); err != nil {
 			return nil, err
 		}
 	}
@@ -669,14 +728,26 @@ func mergeSegments(a, b *Segment, wrap fileWrapper) (*Segment, error) {
 	}
 
 	for _, src := range []*Segment{a, b} {
-		entries, err := src.ScanAll()
+		err := src.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
+			if tx != nil && tx.T != "" {
+				se := stampedEntry{
+					ID:        e.ID,
+					Op:        e.Op,
+					Ts:        e.Ts.Format(time.RFC3339Nano),
+					Rev:       e.Rev,
+					Data:      e.Data,
+					Epoch:     e.Epoch,
+					ExpiresAt: e.ExpiresAt,
+					Tx:        *tx,
+				}
+				_, err := merged.AppendStamped(se)
+				return err
+			}
+			_, err := merged.Append(e)
+			return err
+		})
 		if err != nil {
 			return nil, err
-		}
-		for _, e := range entries {
-			if _, err := merged.Append(e); err != nil {
-				return nil, err
-			}
 		}
 	}
 

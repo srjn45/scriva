@@ -380,14 +380,10 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		db.collections[name] = col
 	}
 
-	// Phase 7: Checkpointer / retirement pass (§4.4)
-	if xj != nil {
-		for _, d := range xj.decisions() {
-			if d.Outcome == xtxKindCommit && !d.Retired {
-				_ = xj.retire(d.Tx)
-			}
-		}
-	}
+	// Coordinator evidence remains live until a later atomic checkpoint can
+	// prove every participant's committed effects were safely materialized.
+	// Indexes and compaction are derived from the coordinator state, so open
+	// must not retire decisions merely because recovery succeeded.
 
 	return nil
 }
