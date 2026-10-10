@@ -3,7 +3,6 @@ package engine
 import (
 	"archive/tar"
 	"compress/gzip"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,22 +18,23 @@ import (
 //
 //	tar xzf backup.tar.gz -C ./data
 //
-// Consistency: the DB registry is held read-locked for the whole snapshot so no
-// collection is created, dropped, or reopened mid-archive, and each collection's
-// files are copied while its own read lock is held so no write, rotation, or
-// compaction can mutate them during the copy. Because segments are append-only
-// and the on-disk index is rebuilt from segments when stale, the extracted
-// directory always opens to a consistent state — even the active segment is
-// captured at a valid entry boundary.
+// Consistency: a DB-level XTx barrier prevents a snapshot from straddling a
+// cross-collection commit. The registry is held read-locked for the whole
+// snapshot so no collection is created, dropped, or reopened mid-archive, and
+// each collection's files are copied while its own read lock is held so no
+// write, rotation, or compaction can mutate them during the copy. Because
+// segments are append-only and the on-disk index is rebuilt from segments when
+// stale, the extracted directory always opens to a consistent state — even the
+// active segment is captured at a valid entry boundary.
 func (db *DB) SnapshotTo(w io.Writer) error {
-	// A snapshot of collection files alone would drop the coordinator journal
-	// (design §12.3); until the journal is captured, refuse rather than emit a
-	// backup that could resurrect or lose decided transactions.
-	if db.xtxJournal != nil {
-		return xtxErr("", ErrXTxUnsupported, errors.New("snapshot of a data directory with xtx.journal"))
-	}
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
+
+	// An XTx holds the shared side from before it creates coordinator metadata
+	// through applying all participant runs. Taking the exclusive side makes the
+	// journal and every collection in this archive one transaction-consistent cut.
+	db.xtxSnapshotMu.Lock()
+	defer db.xtxSnapshotMu.Unlock()
 
 	// Hold the registry read lock for the whole snapshot so the set of
 	// collections cannot change (create/drop/reopen all take the write lock).
@@ -47,6 +47,14 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 	}
 	sort.Strings(names) // deterministic archive ordering
 
+	// Coordinator metadata is authoritative for stamped entries. A legacy root
+	// has no coordinator files and remains byte-format compatible.
+	if db.xtxJournal != nil {
+		if err := db.writeXTxSnapshot(tw); err != nil {
+			return err
+		}
+	}
+
 	for _, name := range names {
 		if err := db.collections[name].writeSnapshot(tw); err != nil {
 			return fmt.Errorf("snapshot: collection %q: %w", name, err)
@@ -58,6 +66,21 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 	}
 	if err := gz.Close(); err != nil {
 		return fmt.Errorf("snapshot: close gzip: %w", err)
+	}
+	return nil
+}
+
+// writeXTxSnapshot copies the two durable root coordinator files. The journal
+// mutex excludes append/checkpoint while Stat and CopyN establish the tar entry
+// boundary. xtx.journal.tmp is an interrupted checkpoint artifact, not state.
+func (db *DB) writeXTxSnapshot(tw *tar.Writer) error {
+	db.xtxJournal.mu.Lock()
+	defer db.xtxJournal.mu.Unlock()
+
+	for _, base := range []string{xtxFormatFile, xtxJournalFile} {
+		if err := writeFileToTar(tw, db.dataDir, base, ""); err != nil {
+			return fmt.Errorf("snapshot: coordinator %q: %w", base, err)
+		}
 	}
 	return nil
 }
@@ -131,8 +154,12 @@ func writeFileToTar(tw *tar.Writer, dir, base, name string) error {
 		return fmt.Errorf("stat %q: %w", path, err)
 	}
 
+	archiveName := base
+	if name != "" {
+		archiveName = name + "/" + base
+	}
 	hdr := &tar.Header{
-		Name:    name + "/" + base,
+		Name:    archiveName,
 		Mode:    int64(info.Mode().Perm()),
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
