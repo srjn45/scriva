@@ -3,6 +3,7 @@ package engine
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,12 @@ import (
 // directory always opens to a consistent state — even the active segment is
 // captured at a valid entry boundary.
 func (db *DB) SnapshotTo(w io.Writer) error {
+	// A snapshot of collection files alone would drop the coordinator journal
+	// (design §12.3); until the journal is captured, refuse rather than emit a
+	// backup that could resurrect or lose decided transactions.
+	if db.xtxJournal != nil {
+		return xtxErr("", ErrXTxUnsupported, errors.New("snapshot of a data directory with xtx.journal"))
+	}
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 

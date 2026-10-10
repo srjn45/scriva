@@ -234,6 +234,9 @@ func Repair(ctx context.Context, dataDir string, opts RepairOptions) (*RepairRep
 	if st, err := os.Stat(dataDir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("repair: %q is not a directory", dataDir)
 	}
+	if err := checkXTxRootUntouched(dataDir, "repair"); err != nil {
+		return nil, err
+	}
 	absData, err := filepath.Abs(dataDir)
 	if err != nil {
 		return nil, err
