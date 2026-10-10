@@ -234,9 +234,6 @@ func Repair(ctx context.Context, dataDir string, opts RepairOptions) (*RepairRep
 	if st, err := os.Stat(dataDir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("repair: %q is not a directory", dataDir)
 	}
-	if err := checkXTxRootUntouched(dataDir, "repair"); err != nil {
-		return nil, err
-	}
 	absData, err := filepath.Abs(dataDir)
 	if err != nil {
 		return nil, err
@@ -271,10 +268,25 @@ func Repair(ctx context.Context, dataDir string, opts RepairOptions) (*RepairRep
 	if err != nil {
 		return nil, err
 	}
+	// Never mutate a transaction root unless the read-only graph pass proved
+	// that every committed participant can be replayed from coordinator
+	// evidence.  This happens before the backup/mutation plan, making an
+	// irreconcilable journal a deliberate fail-closed refusal.
+	for _, f := range pre.Findings {
+		if f.Code == CodeXTxUndecidedRun || f.Code == CodeXTxParticipantMissing ||
+			f.Code == CodeXTxDigestMismatch || f.Code == CodeXTxMissingCollection ||
+			f.Code == CodeXTxForeignRun || f.Code == CodeXTxJournalMissing || f.Code == CodeXTxJournalCorrupt {
+			return nil, xtxErr(f.Location.Tx, ErrXTxIncomplete, errors.New(f.Message))
+		}
+	}
+	decisions, err := readXTxDecisions(dataDir)
+	if err != nil {
+		return nil, xtxErr("", ErrXTxJournalCorrupt, err)
+	}
 	var work []*repairWork
 	for i := range pre.Collections {
 		cr := pre.Collections[i]
-		w := &repairWork{name: cr.Name, dir: filepath.Join(dataDir, cr.Name), before: &cr}
+		w := &repairWork{name: cr.Name, dir: filepath.Join(dataDir, cr.Name), before: &cr, decisions: decisions}
 		for _, f := range cr.Findings {
 			if f.Severity == SeverityConflict {
 				w.conflicts = append(w.conflicts, f)
@@ -472,6 +484,7 @@ type repairWork struct {
 	salvageRep *SalvageReport
 	metaReset  bool
 	sidxUnique map[string]bool
+	decisions  map[string]string
 }
 
 // collectionNeedsRepair is true when verification shows anything above
@@ -924,6 +937,9 @@ func rebuildDerived(ctx context.Context, w *repairWork, opts RepairOptions) erro
 			return fmt.Errorf("segment %s still has damaged bytes at offset %d (%s)", s.name, br.Offset, br.Reason)
 		}
 		for _, se := range rep.Entries {
+			if !entryVisible(se.Tx, w.decisions) {
+				continue
+			}
 			e := se.Entry
 			if e.ID > maxID {
 				maxID = e.ID
