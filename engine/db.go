@@ -44,6 +44,13 @@ type DB struct {
 
 	// lock guarantees exclusive access to the database directory.
 	lock *dirLock
+
+	// xtxJournal is the root coordinator journal (cross-collection
+	// transactions, docs/design-cross-collection-transactions.md §4). It is nil
+	// for a legacy root that never had xtx.format / xtx.journal.
+	xtxJournal  *xtxJournal
+	xtxMu       sync.Mutex
+	xtxInFlight map[string]struct{}
 }
 
 // Open opens (or creates) the database rooted at dataDir.
@@ -82,27 +89,19 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	// Build the replication broker (if enabled) and restore the LSN watermarks
 	// before opening any collection, so collections open with a live broker.
 	db.initReplication(cfg.ReplicationRingSize)
-	// Pre-open existing collections.
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return nil, fmt.Errorf("db: read dir: %w", err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+
+	// Coordinator recovery (design §7): validate format gate, open journal,
+	// gather participant evidence, resolve truth table, truncate dead tail runs,
+	// replay committed entries, and open collections under the decision table.
+	if err := db.recoverCoordinator(cfg); err != nil {
+		for _, c := range db.collections {
+			_ = c.Close()
 		}
-		col, err := OpenCollection(e.Name(), dataDir, cfg)
-		if err != nil {
-			// Release everything acquired so far so a refused open (for example
-			// ErrIntegrity) leaves the directory re-openable in this process.
-			for _, c := range db.collections {
-				_ = c.Close()
-			}
-			_ = dl.release()
-			return nil, fmt.Errorf("db: open collection %q: %w", e.Name(), err)
+		if db.xtxJournal != nil {
+			_ = db.xtxJournal.close()
 		}
-		col.broker = db.broker
-		db.collections[e.Name()] = col
+		_ = dl.release()
+		return nil, err
 	}
 	return db, nil
 }
@@ -116,7 +115,11 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	if _, exists := db.collections[name]; exists {
 		return nil, fmt.Errorf("db: collection %q already exists", name)
 	}
-	col, err := OpenCollection(name, db.dataDir, db.defaultCfg)
+	colCfg := db.defaultCfg
+	if db.xtxJournal != nil {
+		colCfg.decisions = db.xtxJournal.decisionsMap()
+	}
+	col, err := OpenCollection(name, db.dataDir, colCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +167,9 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 			return nil, fmt.Errorf("db: reopen collection %q: %w", name, err)
 		}
 		delete(db.collections, name)
+	}
+	if db.xtxJournal != nil {
+		cfg.decisions = db.xtxJournal.decisionsMap()
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
 	if err != nil {
@@ -248,6 +254,10 @@ func (db *DB) Close() error {
 		}
 	}
 
+	if err := db.xtxJournal.close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("db: close xtx journal: %w", err)
+	}
+
 	if db.lock != nil {
 		if err := db.lock.release(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("db: release directory lock: %w", err)
@@ -263,3 +273,56 @@ const (
 	LockContended = "contended"
 	LockFailed    = "failed"
 )
+
+func (db *DB) beginXTxInFlight(key string) error {
+	if key == "" {
+		return nil
+	}
+	db.xtxMu.Lock()
+	defer db.xtxMu.Unlock()
+	if db.xtxInFlight == nil {
+		db.xtxInFlight = make(map[string]struct{})
+	}
+	if _, ok := db.xtxInFlight[key]; ok {
+		return xtxErr("", ErrXTxInProgress, fmt.Errorf("transaction with key %q is in progress", key))
+	}
+	db.xtxInFlight[key] = struct{}{}
+	return nil
+}
+
+func (db *DB) endXTxInFlight(key string) {
+	if key == "" {
+		return
+	}
+	db.xtxMu.Lock()
+	delete(db.xtxInFlight, key)
+	db.xtxMu.Unlock()
+}
+
+func (db *DB) ensureXTxJournal() (*xtxJournal, error) {
+	db.xtxMu.Lock()
+	defer db.xtxMu.Unlock()
+	if db.xtxJournal != nil {
+		return db.xtxJournal, nil
+	}
+	j, err := openOrCreateXTxJournal(db.dataDir, xtxOptions{wrapFile: db.defaultCfg.wrapFile, renameFn: db.defaultCfg.renameFn}, "v1.4.0")
+	if err != nil {
+		return nil, err
+	}
+	db.xtxJournal = j
+	return j, nil
+}
+
+// XTxStatus returns the status for a given txid or idempotency key (§8.2).
+func (db *DB) XTxStatus(txOrKey string) (XTxStatus, string) {
+	db.xtxMu.Lock()
+	j := db.xtxJournal
+	db.xtxMu.Unlock()
+	if j == nil {
+		return XTxUnknown, ""
+	}
+	if _, _, err := parseTxID(txOrKey); err == nil {
+		return j.status(txOrKey), txOrKey
+	}
+	return j.statusByKey(txOrKey)
+}

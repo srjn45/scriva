@@ -996,6 +996,28 @@ encode no longer runs every ~25k inserts.
 
 ---
 
+## Cross-collection transaction journal (internal, not yet user-visible)
+
+The protocol is specified in [design-cross-collection-transactions.md](design-cross-collection-transactions.md). Only its root-level *coordinator journal* and *version gate* exist so far (`engine/xtx_journal.go`, `engine/xtx_format.go`, `engine/xtx_errors.go`); no code path writes them yet, so a database that never runs an XTx is byte-identical to before.
+
+**Files (root of the data directory, reserved `xtx.` prefix).**
+
+| File | Role |
+|---|---|
+| `xtx.format` | one JSON line `{format, min_reader, features, created_by, crc}`; durable (file + dir fsync) before the journal |
+| `xtx.journal` | NDJSON: header `{magic, v, epoch, gen?, created, crc}` then `commit` / `abort` / `retire` records, each with a CRC32C over its canonical JSON |
+| `xtx.journal.tmp` | checkpoint rewrite, deleted at open |
+
+**Open.** `DB.Open` runs the gate before any collection: leftover `xtx.journal.tmp` is removed; `xtx.format` with `min_reader` above this binary's level fails with `ErrFormatTooNew`, an unknown feature / journal version / journal without format fails with `ErrXTxUnsupported`; a corrupt format fails with `ErrXTxFormatCorrupt`. The journal is then parsed front to back:
+
+- an unterminated or zero-filled *final* line is a torn tail and is truncated + fsynced (a never-acknowledged record);
+- any complete record that fails its CRC, does not parse, has an unknown kind/field, a txid of another epoch, a non-canonical participant list or digest, **anywhere**, is `ErrXTxJournalCorrupt` (also matches `ErrIntegrity`) and open refuses — a lost `COMMIT` is never read as an abort;
+- `COMMIT` and `ABORT` (or differing contents) for one txid is `ErrXTxDecisionConflict`.
+
+A root with neither file is a legacy root and opens exactly as before. `OpenCollection` / `CreateCollection` reject names with the `xtx.` prefix (`ErrReservedName`), and a root *directory* with that prefix refuses the open. `SnapshotTo` and `Repair` refuse a root that has XTx state until they learn to preserve it (`ErrXTxUnsupported`).
+
+**Internal API for later stages.** `commit(key, parts)` allocates the txid (`<epoch 16 hex>-<seq 16 hex>`, seq under the journal mutex), appends `COMMIT` with one `write` and fsyncs; `abort` / `retire` append advisory/recovery records; `decision`, `decisions`, `status`, `statusByKey` read the in-memory decision table (`COMMITTED`, `ABORTED`, `PENDING`, `UNKNOWN`, `EXPIRED`); `observeSeq` restores the counter from stamped entries; `checkpoint` is the atomic GC rewrite (tmp + fsync + rename + dir fsync, `gen`+1, same epoch; only retired transactions, never the highest-seq record). A failed append is rolled back by truncation; a failed rollback or fsync poisons the journal (`ErrXTxDurability`), and an fsync failure on commit reports `ErrXTxOutcomeUnknown` without claiming an outcome.
+
 ## Backup / snapshot
 
 `DB.SnapshotTo(io.Writer)` (the `Snapshot` RPC and `scriva-cli backup`) writes a
