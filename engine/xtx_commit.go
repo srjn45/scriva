@@ -40,6 +40,11 @@ type XTxResult struct {
 // participants (PREPARED), records a durable COMMIT in the coordinator journal (COMMITTED),
 // applies all runs to in-memory indexes, and returns idempotently (§6, §8).
 func (db *DB) CommitXTx(key string, ops []XTxOp) (*XTxResult, error) {
+	// Cover creation of coordinator metadata through materialization so an
+	// online snapshot cannot straddle a cross-collection commit.
+	db.xtxSnapshotMu.RLock()
+	defer db.xtxSnapshotMu.RUnlock()
+
 	if len(ops) == 0 {
 		return nil, errors.New("engine: cannot commit empty transaction")
 	}

@@ -1176,6 +1176,12 @@ a point in time (writes are briefly held only while that collection's files are
 copied), and because segments are append-only a backup taken under concurrent
 writes always restores to a consistent state.
 
+Databases that use cross-collection transactions also archive their root
+`xtx.format` and `xtx.journal` coordinator files. The backup briefly takes a
+database-level transaction barrier, so it cannot contain only some participants
+of a committed cross-collection transaction. Do not omit these root files when
+copying or restoring a backup by hand.
+
 Restore is a plain extract into a data directory — no special import step:
 
 ```bash

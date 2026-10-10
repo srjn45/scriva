@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/srjn45/scriva/store"
 )
@@ -236,6 +237,104 @@ func TestXTxRecovery_CommittedTransactionReplayed(t *testing.T) {
 	if st, _ := db2.XTxStatus(txid); st != XTxCommitted {
 		t.Fatalf("expected XTxCommitted, got %s", st)
 	}
+}
+
+func TestXTxCompactionMaterializesCommittedStampedEntriesAndKeepsCoordinatorEvidence(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, CollectionConfig{CompactInterval: time.Hour})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	orders, _ := db.CreateCollection("orders")
+	orderID := orders.ReserveID()
+	_ = db.Close()
+
+	j, err := openOrCreateXTxJournal(dir, xtxOptions{}, "test")
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	txid, err := j.allocateTxID("tx-compact-commit")
+	if err != nil {
+		t.Fatalf("allocate txid: %v", err)
+	}
+	part := xtxPart{C: "orders", N: 1, D: partDigest([]xtxOpRef{{ID: orderID, Op: "insert", Rev: 1}})}
+	if err := j.commitPrepared(txid, "tx-compact-commit", []xtxPart{part}); err != nil {
+		t.Fatalf("commitPrepared: %v", err)
+	}
+	_ = j.close()
+
+	line, _ := encodeStamped(stampedEntry{
+		ID:   orderID,
+		Op:   store.OpInsert,
+		Rev:  1,
+		Data: map[string]any{"sku": "widget"},
+		Tx:   TxStamp{T: txid, I: 0, N: 1},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "orders", "seg_000001.ndjson"), line, 0o644); err != nil {
+		t.Fatalf("write stamped entry: %v", err)
+	}
+
+	db2, err := Open(dir, CollectionConfig{CompactInterval: time.Hour})
+	if err != nil {
+		t.Fatalf("Open after prepare+commit: %v", err)
+	}
+	orders2, _ := db2.Collection("orders")
+	if _, err := orders2.Get(orderID); err != nil {
+		t.Fatalf("committed entry not indexed before compaction: %v", err)
+	}
+	if err := orders2.rotateSegment(); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if err := orders2.CompactNow(); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	dec, ok := db2.xtxJournal.decision(txid)
+	if !ok || dec.Retired {
+		t.Fatalf("coordinator evidence retired before checkpoint safety proof: %+v ok=%v", dec, ok)
+	}
+	_ = db2.Close()
+
+	db3, err := Open(dir, CollectionConfig{CompactInterval: time.Hour})
+	if err != nil {
+		t.Fatalf("reopen after compaction: %v", err)
+	}
+	defer func() { _ = db3.Close() }()
+	orders3, _ := db3.Collection("orders")
+	rec, err := orders3.Get(orderID)
+	if err != nil {
+		t.Fatalf("Get after compaction: %v", err)
+	}
+	if rec.Data["sku"] != "widget" {
+		t.Fatalf("materialized record = %+v", rec)
+	}
+	stamped, plain, err := countStampedAndPlain(filepath.Join(dir, "orders", "seg_000001.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stamped != 1 || plain != 0 {
+		t.Fatalf("compacted committed tx should keep stamped evidence as the survivor; stamped=%d plain=%d", stamped, plain)
+	}
+	dec, ok = db3.xtxJournal.decision(txid)
+	if !ok || dec.Retired {
+		t.Fatalf("coordinator evidence lost after reopen: %+v ok=%v", dec, ok)
+	}
+}
+
+func countStampedAndPlain(path string) (stamped, plain int, err error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	seg := openSealedSegment(path, st.Size())
+	err = seg.ScanStampedFromOffset(0, func(_ int64, _ store.Entry, tx *TxStamp) error {
+		if tx != nil && tx.T != "" {
+			stamped++
+		} else {
+			plain++
+		}
+		return nil
+	})
+	return stamped, plain, err
 }
 
 func TestXTxRecovery_TruthTableFailClosed(t *testing.T) {

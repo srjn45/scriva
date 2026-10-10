@@ -51,6 +51,11 @@ type DB struct {
 	xtxJournal  *xtxJournal
 	xtxMu       sync.Mutex
 	xtxInFlight map[string]struct{}
+
+	// xtxSnapshotMu makes an XTx and an online snapshot mutually exclusive.
+	// A collection-by-collection snapshot is otherwise allowed to copy one
+	// participant before an XTx commits and another afterwards.
+	xtxSnapshotMu sync.RWMutex
 }
 
 // Open opens (or creates) the database rooted at dataDir.

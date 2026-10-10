@@ -335,6 +335,10 @@ func (db *DB) Verify(ctx context.Context, opts VerifyOptions) (*IntegrityReport,
 		}
 		rep.Collections = append(rep.Collections, *cr)
 	}
+	// The coordinator is authoritative for stamped entries.  Check the whole
+	// graph even when callers selected a collection subset: validating one
+	// participant in isolation would falsely bless a partial transaction.
+	verifyXTxGraph(db.dataDir, rep, opts.MaxFindingsPerCode)
 	return rep, nil
 }
 
@@ -376,6 +380,7 @@ func VerifyDir(ctx context.Context, dataDir string, opts VerifyOptions) (*Integr
 		}
 		rep.Collections = append(rep.Collections, *cr)
 	}
+	verifyXTxGraph(dataDir, rep, opts.MaxFindingsPerCode)
 	return rep, nil
 }
 
