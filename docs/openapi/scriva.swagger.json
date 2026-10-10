@@ -155,6 +155,232 @@
         ]
       }
     },
+    "/v1/xtx": {
+      "post": {
+        "summary": "BeginXTx opens a transaction over an explicit list of participant\ncollections, which must already exist. Nothing is locked or written. The\nreturned xtx_id is a process-local, unguessable handle id that addresses\nevery later call; it does not survive a server restart.",
+        "operationId": "Scriva_BeginXTx",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1BeginXTxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1BeginXTxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
+    "/v1/xtx/status": {
+      "get": {
+        "summary": "XTxStatus reports the outcome of a transaction by coordinator tx_id,\nidempotency key or xtx_id. It is the only safe way to resolve an\nXTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.",
+        "operationId": "Scriva_XTxStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1XTxStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "ref",
+            "description": "A coordinator tx_id, an idempotency key, or an xtx_id.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
+    "/v1/xtx/{xtxId}/commit": {
+      "post": {
+        "summary": "CommitXTx validates the transaction and applies it atomically. It is\nidempotent: repeating it on a committed transaction returns the original\nresult, and a transaction whose idempotency key already committed returns\nthat outcome with replayed=true and applies nothing.",
+        "operationId": "Scriva_CommitXTx",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CommitXTxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "xtxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ScrivaCommitXTxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
+    "/v1/xtx/{xtxId}/ops": {
+      "post": {
+        "summary": "StageXTx buffers one insert, update or delete on a participant collection.\nNothing is written and no other reader can see it before CommitXTx.",
+        "operationId": "Scriva_StageXTx",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1StageXTxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "xtxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ScrivaStageXTxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
+    "/v1/xtx/{xtxId}/records/{collection}/{id}": {
+      "get": {
+        "summary": "GetXTx is a point read through the transaction. It returns the\ntransaction's own staged write when there is one (read-your-writes),\notherwise the committed document, which is added to the read set that\nCommitXTx validates. Because it changes the transaction's state it is\nclassified as a write RPC: it needs a read-write key and is refused on a\nread-only follower.",
+        "operationId": "Scriva_GetXTx",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetXTxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "xtxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "collection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "uint64"
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
+    "/v1/xtx/{xtxId}/rollback": {
+      "post": {
+        "summary": "RollbackXTx discards everything the transaction staged. It is idempotent.\nIt cannot undo a decision: a committed transaction yields\nFAILED_PRECONDITION (XTX_FINISHED).",
+        "operationId": "Scriva_RollbackXTx",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RollbackXTxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "xtxId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ScrivaRollbackXTxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Scriva"
+        ]
+      }
+    },
     "/v1/{collection}/aggregate": {
       "post": {
         "summary": "Aggregate computes count and numeric aggregations (sum/avg/min/max) over the\nlive records matching the same Filter as Find, optionally grouped by a field.\nIt server-streams one message per group; a plain (ungrouped) aggregation\nstreams a single message. Aggregation runs entirely in the engine — the\ncollection is never materialised on the client.",
@@ -907,6 +1133,16 @@
         }
       }
     },
+    "ScrivaCommitXTxBody": {
+      "type": "object",
+      "properties": {
+        "lockTimeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional bound, in milliseconds, on how long the commit may wait for the\nparticipant locks. When it elapses before anything is written the commit\nfails with DEADLINE_EXCEEDED (XTX_CANCELED_BEFORE_PREPARE), nothing is\napplied and the transaction stays open. 0 means only the RPC deadline\napplies. Must not be negative."
+        }
+      }
+    },
     "ScrivaCompactBody": {
       "type": "object"
     },
@@ -991,6 +1227,34 @@
           "type": "string",
           "format": "int64",
           "description": "Optional per-record TTL, in seconds, applied to every record in the batch.\nSame semantics as InsertRequest.ttl_seconds."
+        }
+      }
+    },
+    "ScrivaRollbackXTxBody": {
+      "type": "object"
+    },
+    "ScrivaStageXTxBody": {
+      "type": "object",
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/definitions/v1XTxOpKind"
+        },
+        "id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Target document id. Must be 0 for an insert (the server reserves one);\nrequired for an update or delete."
+        },
+        "data": {
+          "type": "object",
+          "description": "Document body for an insert or update (a full replacement)."
+        },
+        "expectedRev": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Optional optimistic check for an update or delete: when non-zero and\ndifferent from the revision the transaction observes, the stage is\nrejected with ABORTED (XTX_CONFLICT) and the transaction stays open."
         }
       }
     },
@@ -1143,6 +1407,51 @@
         }
       }
     },
+    "v1BeginXTxRequest": {
+      "type": "object",
+      "properties": {
+        "collections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The participant collections. Every later operation must name one of them;\nanything else is INVALID_ARGUMENT (XTX_NOT_PARTICIPANT). All must exist."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "description": "Optional caller-chosen idempotency key (at most 128 bytes). A commit whose\nkey already committed returns the original outcome and applies nothing,\nand XTxStatus resolves the outcome by key, also after a server restart."
+        },
+        "idleTimeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Idle timeout of the handle in milliseconds: a transaction left untouched\nthis long is discarded (nothing it staged was written). 0 inherits the\nserver default"
+        },
+        "maxLifetimeMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Optional hard lifetime in milliseconds, counted from BeginXTx regardless of\nactivity. 0 means no lifetime limit. Must not be negative."
+        }
+      }
+    },
+    "v1BeginXTxResponse": {
+      "type": "object",
+      "properties": {
+        "xtxId": {
+          "type": "string",
+          "description": "Handle id addressing StageXTx / GetXTx / CommitXTx / RollbackXTx. It is not\nthe coordinator tx_id (assigned at commit) and does not survive a restart."
+        },
+        "collections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The participants in canonical (lock) order."
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      }
+    },
     "v1CollectionStatsResponse": {
       "type": "object",
       "properties": {
@@ -1164,6 +1473,27 @@
         "sizeBytes": {
           "type": "string",
           "format": "uint64"
+        }
+      }
+    },
+    "v1CommitXTxResponse": {
+      "type": "object",
+      "properties": {
+        "txId": {
+          "type": "string",
+          "description": "Coordinator transaction id of the durable commit decision. Empty for a\ntransaction that staged no writes (it only validated its reads)."
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1XTxOpResult"
+          },
+          "description": "One result per applied operation.\n\nCaveat: when replayed is true and the original commit happened before a\nserver restart, the per-operation results are rebuilt from the replayed\nrequest, because the original results are not retained: tx_id is exact,\nbut each rev is a placeholder, not the committed revision. Re-read the\ndocuments if the revisions are needed."
+        },
+        "replayed": {
+          "type": "boolean",
+          "description": "True when the idempotency key had already committed: this call applied\nnothing and returns the original outcome."
         }
       }
     },
@@ -1311,6 +1641,15 @@
         "connectedAt": {
           "type": "string",
           "format": "date-time"
+        }
+      }
+    },
+    "v1GetXTxResponse": {
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "#/definitions/v1Record",
+          "description": "The document as the transaction sees it. For a staged insert or update\nthis is the staged data, and rev is the committed revision the write is\nbased on (0 for a staged insert): the new revision is assigned at commit."
         }
       }
     },
@@ -1472,6 +1811,24 @@
         }
       }
     },
+    "v1RollbackXTxResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1StageXTxResponse": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The document id the operation applies to. For an insert it is reserved\nnow and is provisional until the transaction commits."
+        }
+      }
+    },
     "v1UpdateIfRevResponse": {
       "type": "object",
       "properties": {
@@ -1543,6 +1900,62 @@
       ],
       "default": "WATCH_OP_UNSPECIFIED",
       "description": " - OVERFLOW: OVERFLOW signals that the server dropped events because this subscriber\nfell behind. The client missed writes and should resync. No record is set."
+    },
+    "v1XTxOpKind": {
+      "type": "string",
+      "enum": [
+        "XTX_OP_UNSPECIFIED",
+        "XTX_OP_INSERT",
+        "XTX_OP_UPDATE",
+        "XTX_OP_DELETE"
+      ],
+      "default": "XTX_OP_UNSPECIFIED",
+      "description": "The kind of a staged operation."
+    },
+    "v1XTxOpResult": {
+      "type": "object",
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "rev": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The committed revision of the document (the tombstone's for a delete)."
+        },
+        "op": {
+          "$ref": "#/definitions/v1XTxOpKind"
+        }
+      }
+    },
+    "v1XTxState": {
+      "type": "string",
+      "enum": [
+        "XTX_STATUS_UNSPECIFIED",
+        "XTX_STATUS_COMMITTED",
+        "XTX_STATUS_ABORTED",
+        "XTX_STATUS_PENDING",
+        "XTX_STATUS_UNKNOWN",
+        "XTX_STATUS_EXPIRED"
+      ],
+      "default": "XTX_STATUS_UNSPECIFIED",
+      "description": "The outcome of a transaction as known to the server.\n\n - XTX_STATUS_COMMITTED: The commit decision is durable; every staged write is (or will be after\nrecovery) visible.\n - XTX_STATUS_ABORTED: Nothing was applied and nothing will be: rolled back, failed validation,\nor aborted by the coordinator. Retrying as a new transaction is safe.\n - XTX_STATUS_PENDING: The transaction is open or its commit is still executing.\n - XTX_STATUS_UNKNOWN: The server has no record of this reference.\n - XTX_STATUS_EXPIRED: The handle was discarded after its idle timeout or lifetime; nothing it\nstaged was written."
+    },
+    "v1XTxStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/v1XTxState"
+        },
+        "txId": {
+          "type": "string",
+          "description": "The coordinator tx_id, when one is known for ref."
+        }
+      }
     }
   }
 }

@@ -996,9 +996,9 @@ encode no longer runs every ~25k inserts.
 
 ---
 
-## Cross-collection transaction journal (internal, not yet user-visible)
+## Cross-collection transactions
 
-The protocol is specified in [design-cross-collection-transactions.md](design-cross-collection-transactions.md). Only its root-level *coordinator journal* and *version gate* exist so far (`engine/xtx_journal.go`, `engine/xtx_format.go`, `engine/xtx_errors.go`); no code path writes them yet, so a database that never runs an XTx is byte-identical to before.
+The protocol is specified in [design-cross-collection-transactions.md](design-cross-collection-transactions.md). Its root-level *coordinator journal* and *version gate* live in `engine/xtx_journal.go`, `engine/xtx_format.go` and `engine/xtx_errors.go`; the commit path is `engine/xtx_commit.go`, the engine API is the transaction handle described below, and [Transport](#transport-grpc-rest-cli-façade) covers how it reaches clients. A database that never runs an XTx is byte-identical to before.
 
 **Files (root of the data directory, reserved `xtx.` prefix).**
 
@@ -1017,6 +1017,40 @@ The protocol is specified in [design-cross-collection-transactions.md](design-cr
 A root with neither file is a legacy root and opens exactly as before. `OpenCollection` / `CreateCollection` reject names with the `xtx.` prefix (`ErrReservedName`), and a root *directory* with that prefix refuses the open. Primary and secondary index recovery are transaction-aware: they replay only plain entries plus stamped entries whose coordinator decision is committed, and they exclude aborted or incomplete prepares. Compaction follows the same decision table and preserves unresolved and unretired committed stamped entries as coordinator evidence and as the materialized survivor, so derived indexes rebuild from the same committed effects without losing proof. Open-time recovery does not retire committed journal decisions by itself; coordinator evidence must not be garbage-collected until a later atomic checkpoint can prove it safe. `SnapshotTo` archives `xtx.format` and `xtx.journal` under its XTx consistency barrier. Offline `VerifyDir` checks the coordinator graph; `Repair` takes its verified backup first, rebuilds derived state using committed decisions only, and refuses irreconcilable coordinator metadata rather than fabricating or deleting evidence.
 
 **Internal API for later stages.** `commit(key, parts)` allocates the txid (`<epoch 16 hex>-<seq 16 hex>`, seq under the journal mutex), appends `COMMIT` with one `write` and fsyncs; `abort` / `retire` append advisory/recovery records; `decision`, `decisions`, `status`, `statusByKey` read the in-memory decision table (`COMMITTED`, `ABORTED`, `PENDING`, `UNKNOWN`, `EXPIRED`); `observeSeq` restores the counter from stamped entries; `checkpoint` is the atomic GC rewrite (tmp + fsync + rename + dir fsync, `gen`+1, same epoch; only retired transactions, never the highest-seq record). A failed append is rolled back by truncation; a failed rollback or fsync poisons the journal (`ErrXTxDurability`), and an fsync failure on commit reports `ErrXTxOutcomeUnknown` without claiming an outcome.
+
+### Transaction handle (`DB.BeginXTx`)
+
+`engine/xtx_handle.go` is the engine-level API over the coordinator, and the only thing the transports call. A handle is in-memory only: `BeginXTx(ctx, participants, opts)` declares the collections up front (an undeclared one is `ErrXTxNotParticipant`), `Insert`/`Update`/`Delete` buffer mutations that no other reader can see, and `Get` is a point read with read-your-writes. `Scan` and `IndexLookup` always fail with `ErrXTxScanUnsupported`.
+
+**Isolation — exactly this, no more.** Each first point read records the document's state (absent, or present at a revision); each staged update/delete records its target's revision as the write base. `Commit` takes the locks of every touched collection in canonical name order (write lock for written collections, read lock for read-only ones), re-checks every recorded observation, and either applies all writes through the coordinator or returns `ErrXTxConflict` (cause `*XTxConflictError`) having written nothing. So: point-read revision validation plus write conflict detection at commit, first committer wins. There is no predicate/phantom protection (hence no scans), no snapshot across reads, and no multi-collection read gate; reads before commit are per-collection read committed.
+
+**Context.** `Commit(ctx)` honours cancellation only while waiting for locks: it returns `ErrXTxCanceled`, nothing is written and the handle stays usable. After prepare starts the context is ignored and the real outcome is returned; `ErrXTxOutcomeUnknown` is the single ambiguous result and is resolved with `DB.XTxStatus(txid | key | handle id)`.
+
+**Lifecycle.** `Rollback` is idempotent and safe after a failed commit. Handles idle past `CollectionConfig.XTxIdleTimeout` (default 1 min) are reaped by a DB-level sweeper and then return `ErrXTxExpired`. A handle carrying an idempotency key that already committed returns the original outcome (`XTxResult.Replayed`) without re-applying; the original revisions are served from a bounded in-memory cache and are not retained across a restart. `CollectionConfig.OnXTx` is the metrics hook. Full contract: design doc §17.
+
+### Transport (gRPC, REST, CLI, façade)
+
+Every surface is a thin mapping onto the handle; none adds transaction logic or its own state.
+
+| Layer | Where | What it does |
+|---|---|---|
+| proto | `proto/scriva.proto` | `BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`, `RollbackXTx`, `XTxStatus` with REST bindings under `/v1/xtx` |
+| gRPC | `server/xtx.go` | resolves the handle by id (`DB.XTxHandle`) on each call, forwards, maps errors |
+| wire constants | `internal/xtxapi` | `ErrorInfo` domain, reasons and metadata keys shared by server and CLI |
+| CLI | `cmd/scriva-cli/commands.go` | `begin-xtx`, `xtx-insert/update/delete/get`, `commit-xtx`, `rollback-xtx`, `xtx-status`; decodes `ErrorInfo` |
+| façade | `scriva.go` | `DB.BeginXTx`, `DB.XTx`, `DB.XTxStatus`, `DB.Transact`, `WithXTxIdleTimeout` — returns the engine handle and the engine's typed errors unchanged |
+
+**No server-side session.** The single-collection `TxManager` keeps staged ops in the server; a cross-collection handle lives in the engine, so the server holds nothing and the handle id is the whole client state. The engine's sweeper reaps idle handles: `Config.EngineConfig()` passes `--tx-timeout` as `XTxIdleTimeout`, translating the flag's `0 = never` into the engine's negative value (the engine reads zero as "use the default").
+
+**Error mapping.** `xtxStatusErr` turns each engine sentinel into one gRPC code plus a `google.rpc.ErrorInfo{domain: "scriva.xtx", reason, metadata}`; `retry_safe` comes from `engine.XTxRetrySafe`. Three ordering rules matter: `ErrXTxOutcomeUnknown` is tested first and maps to `UNKNOWN` — the code a client also observes when the response is simply lost, and both demand the same reaction (look up `XTxStatus`, never blind-retry), so the error carries `status_ref`; the handle's own state (`ErrXTxFinished`, `ErrXTxExpired`) is tested before `ErrXTxConflict`, because a handle finished by a failed commit wraps the original cause; and `ErrXTxCanceled` becomes `DEADLINE_EXCEEDED` only when the cause is a deadline, `CANCELLED` otherwise. The full table is in [getting-started](getting-started.md#errors).
+
+**Deadlines.** `CommitXTx` passes the RPC context (optionally shortened by `lock_timeout_ms`) to `XTx.Commit`. The engine honours it only while waiting for locks, so a client deadline can abandon a commit that has not started writing but can never tear one that has.
+
+**Scans stay outside.** Only the six RPCs are transactional. A data RPC carrying the `x-xtx-id` metadata header (forwarded by the REST gateway) is refused before it runs — `Find` / `Aggregate` / `Watch` through `XTx.Scan`, i.e. `ErrXTxScanUnsupported`, the single-document RPCs as `XTX_INVALID` — so a client cannot believe a scan was validated when it was not.
+
+**Auth and roles.** The API-key interceptor covers the new RPCs like any other; none is exempt. `internal/auth/scope.go` and `server/readonly.go` classify `BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx` and `RollbackXTx` as writes and `XTxStatus` as a read. `GetXTx` is a write deliberately: it grows the handle's read set and refreshes its idle timer, and it is meaningless to a principal that may not begin or commit; the cost is that it is audited as a write and refused on a follower. For keys with a collection allow-list, `checkCollectionAccess` checks every name in `BeginXTxRequest.collections` and the single `collection` of `StageXTx` / `GetXTx`. `CommitXTx` / `RollbackXTx` carry only the handle id — a UUID-shaped capability drawn from `crypto/rand` — and are not collection-checked; the participants were already checked at begin.
+
+**Replay after a restart.** The key → txid mapping is in the journal, the per-operation results are not. A commit replayed after a restart therefore returns the exact `tx_id` with placeholder revisions; the proto and user docs say so rather than inventing values.
 
 ## Backup / snapshot
 
@@ -1364,10 +1398,16 @@ ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/
 | `scriva_append_errors_total` | Counter | `collection`, `reason` |
 | `scriva_segment_poisoned_total` | Counter | `collection` |
 | `scriva_dir_lock_total` | Counter | `result` |
+| `scriva_xtx_total` | Counter | `outcome` |
+| `scriva_xtx_duration_seconds` | Histogram | `outcome` |
+| `scriva_xtx_conflicts_total` | Counter | `kind` |
+| `scriva_xtx_recovery_total` | Counter | `kind` |
 
 Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor. `scriva_scan_rows_scanned` records the rows examined by each `Find`, fed from the engine's `ScanStats` through a server-layer scan-observer hook (never from inside the engine) — see [Slow-query log & scan stats](#slow-query-log--scan-stats).
 
-The recovery, integrity, append, poison and lock series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
+Cross-collection transaction metrics (`scriva_xtx_*`) are driven entirely by observer hooks (`OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) configured on the engine without importing metrics into the engine package. Lifecycle events (`begin`, `commit`, `abort`, `conflict`, `expired`, `unknown`), conflict classifications (`write`, `read`, `constraint`), and open-time journal recovery outcomes (`committed`, `aborted`, `unresolved`) are forwarded by the server layer to Prometheus instruments.
+
+The recovery, integrity, append, poison, lock, and transaction series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`, `OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
 
 ### Fail-closed open policy
 

@@ -180,10 +180,7 @@ func TestCompactionMidSwapFailureRecoversOnReopen(t *testing.T) {
 				}
 				want[id] = "b"
 			}
-			col.compactMu.Lock()   // barrier: wait out any in-flight background compaction
-			col.compactMu.Unlock() //nolint:staticcheck // SA2001: empty section is the barrier
-			fs.failRenameAt(fs.count("rename")+failAt, syscall.EXDEV)
-			err := col.CompactNow()
+			err := compactWithRenameFault(col, fs, failAt, syscall.EXDEV)
 			if fs.faults() == 0 {
 				t.Skip("fault not reached (fewer output segments)")
 			}

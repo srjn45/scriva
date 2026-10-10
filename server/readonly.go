@@ -43,6 +43,16 @@ var writeMethods = map[string]struct{}{
 	pb.Scriva_CommitTx_FullMethodName:         {},
 	pb.Scriva_RollbackTx_FullMethodName:       {},
 	pb.Scriva_Compact_FullMethodName:          {},
+	// Cross-collection transactions. A follower cannot host a transaction, so
+	// the whole handle lifecycle is refused, including the transactional point
+	// read GetXTx (it mutates the handle's read set and has no meaning without
+	// BeginXTx). XTxStatus is absent: outcome lookup is a read and stays
+	// available on a follower.
+	pb.Scriva_BeginXTx_FullMethodName:    {},
+	pb.Scriva_StageXTx_FullMethodName:    {},
+	pb.Scriva_GetXTx_FullMethodName:      {},
+	pb.Scriva_CommitXTx_FullMethodName:   {},
+	pb.Scriva_RollbackXTx_FullMethodName: {},
 }
 
 // isWriteMethod reports whether fullMethod mutates durable state and must be

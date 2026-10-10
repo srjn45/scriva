@@ -60,6 +60,15 @@ var writeMethods = map[string]bool{
 	"CommitTx":         true,
 	"RollbackTx":       true,
 	"Compact":          true,
+	// Cross-collection transactions. GetXTx is a write on purpose: a
+	// transactional read adds to the handle's read set and keeps the handle
+	// alive, so it changes the outcome of a commit and only makes sense for a
+	// principal that may run the transaction at all.
+	"BeginXTx":    true,
+	"StageXTx":    true,
+	"GetXTx":      true,
+	"CommitXTx":   true,
+	"RollbackXTx": true,
 	// Promote (R3) is an admin/failover operation; it requires a read-write key.
 	// Finer-grained admin ACLs (an admin scope) are deferred to S3 — until then a
 	// read-write key is the admin boundary.
@@ -79,6 +88,8 @@ var readMethods = map[string]bool{
 	"Snapshot":          true,
 	"Replicate":         true,
 	"ReplicationStatus": true,
+	// XTxStatus only reports the outcome of a cross-collection transaction.
+	"XTxStatus": true,
 }
 
 // methodRequiresWrite reports whether the given gRPC full method name

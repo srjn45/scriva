@@ -156,6 +156,88 @@ service Scriva {
   rpc CommitTx(CommitTxRequest) returns (CommitTxResponse);
   rpc RollbackTx(RollbackTxRequest) returns (RollbackTxResponse);
 
+  // --- Cross-collection transactions (XTx) ---
+  //
+  // A cross-collection transaction stages inserts, updates and deletes on
+  // several collections of one database and applies them atomically at commit.
+  //
+  // Isolation is optimistic validation of point reads and writes: every GetXTx
+  // and every staged update/delete records the revision (or absence) of the
+  // document it touched, and CommitXTx re-checks those observations under the
+  // participant locks. A changed observation aborts the commit with ABORTED
+  // (reason XTX_CONFLICT) and nothing is applied. There are no predicate reads
+  // and therefore no phantom protection: scans, range filters, aggregations and
+  // index lookups are not available inside a transaction and are rejected.
+  //
+  // Every failure carries a google.rpc.ErrorInfo detail (domain "scriva.xtx")
+  // whose reason is machine-readable and whose metadata["retry_safe"] says
+  // whether re-running the transaction can never double-apply. The one
+  // ambiguous result is reason XTX_OUTCOME_UNKNOWN (code UNKNOWN): the commit
+  // may or may not have been applied, so the client must call XTxStatus with
+  // metadata["status_ref"] instead of retrying.
+
+  // BeginXTx opens a transaction over an explicit list of participant
+  // collections, which must already exist. Nothing is locked or written. The
+  // returned xtx_id is a process-local, unguessable handle id that addresses
+  // every later call; it does not survive a server restart.
+  rpc BeginXTx(BeginXTxRequest) returns (BeginXTxResponse) {
+    option (google.api.http) = {
+      post: "/v1/xtx"
+      body: "*"
+    };
+  }
+
+  // StageXTx buffers one insert, update or delete on a participant collection.
+  // Nothing is written and no other reader can see it before CommitXTx.
+  rpc StageXTx(StageXTxRequest) returns (StageXTxResponse) {
+    option (google.api.http) = {
+      post: "/v1/xtx/{xtx_id}/ops"
+      body: "*"
+    };
+  }
+
+  // GetXTx is a point read through the transaction. It returns the
+  // transaction's own staged write when there is one (read-your-writes),
+  // otherwise the committed document, which is added to the read set that
+  // CommitXTx validates. Because it changes the transaction's state it is
+  // classified as a write RPC: it needs a read-write key and is refused on a
+  // read-only follower.
+  rpc GetXTx(GetXTxRequest) returns (GetXTxResponse) {
+    option (google.api.http) = {
+      get: "/v1/xtx/{xtx_id}/records/{collection}/{id}"
+    };
+  }
+
+  // CommitXTx validates the transaction and applies it atomically. It is
+  // idempotent: repeating it on a committed transaction returns the original
+  // result, and a transaction whose idempotency key already committed returns
+  // that outcome with replayed=true and applies nothing.
+  rpc CommitXTx(CommitXTxRequest) returns (CommitXTxResponse) {
+    option (google.api.http) = {
+      post: "/v1/xtx/{xtx_id}/commit"
+      body: "*"
+    };
+  }
+
+  // RollbackXTx discards everything the transaction staged. It is idempotent.
+  // It cannot undo a decision: a committed transaction yields
+  // FAILED_PRECONDITION (XTX_FINISHED).
+  rpc RollbackXTx(RollbackXTxRequest) returns (RollbackXTxResponse) {
+    option (google.api.http) = {
+      post: "/v1/xtx/{xtx_id}/rollback"
+      body: "*"
+    };
+  }
+
+  // XTxStatus reports the outcome of a transaction by coordinator tx_id,
+  // idempotency key or xtx_id. It is the only safe way to resolve an
+  // XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+  rpc XTxStatus(XTxStatusRequest) returns (XTxStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/xtx/status"
+    };
+  }
+
   // --- Watch (server-streaming change feed) ---
 
   rpc Watch(WatchRequest) returns (stream WatchEvent) {
@@ -498,6 +580,139 @@ message CommitTxResponse  { bool   ok    = 1; }
 
 message RollbackTxRequest  { string tx_id = 1; }
 message RollbackTxResponse { bool   ok    = 1; }
+
+// ---------------------------------------------------------------------------
+// Cross-collection transactions (XTx)
+// ---------------------------------------------------------------------------
+
+message BeginXTxRequest {
+  // The participant collections. Every later operation must name one of them;
+  // anything else is INVALID_ARGUMENT (XTX_NOT_PARTICIPANT). All must exist.
+  repeated string collections = 1;
+  // Optional caller-chosen idempotency key (at most 128 bytes). A commit whose
+  // key already committed returns the original outcome and applies nothing,
+  // and XTxStatus resolves the outcome by key, also after a server restart.
+  string idempotency_key = 2;
+  // Idle timeout of the handle in milliseconds: a transaction left untouched
+  // this long is discarded (nothing it staged was written). 0 inherits the
+  // server default (--tx-timeout). Must not be negative.
+  int64 idle_timeout_ms = 3;
+  // Optional hard lifetime in milliseconds, counted from BeginXTx regardless of
+  // activity. 0 means no lifetime limit. Must not be negative.
+  int64 max_lifetime_ms = 4;
+}
+message BeginXTxResponse {
+  // Handle id addressing StageXTx / GetXTx / CommitXTx / RollbackXTx. It is not
+  // the coordinator tx_id (assigned at commit) and does not survive a restart.
+  string          xtx_id          = 1;
+  // The participants in canonical (lock) order.
+  repeated string collections     = 2;
+  string          idempotency_key = 3;
+}
+
+// The kind of a staged operation.
+enum XTxOpKind {
+  XTX_OP_UNSPECIFIED = 0;
+  XTX_OP_INSERT      = 1;
+  XTX_OP_UPDATE      = 2;
+  XTX_OP_DELETE      = 3;
+}
+
+message StageXTxRequest {
+  string    xtx_id     = 1;
+  string    collection = 2;
+  XTxOpKind op         = 3;
+  // Target document id. Must be 0 for an insert (the server reserves one);
+  // required for an update or delete.
+  uint64    id         = 4;
+  // Document body for an insert or update (a full replacement).
+  google.protobuf.Struct data = 5;
+  // Optional optimistic check for an update or delete: when non-zero and
+  // different from the revision the transaction observes, the stage is
+  // rejected with ABORTED (XTX_CONFLICT) and the transaction stays open.
+  uint64    expected_rev = 6;
+}
+message StageXTxResponse {
+  // The document id the operation applies to. For an insert it is reserved
+  // now and is provisional until the transaction commits.
+  uint64 id = 1;
+}
+
+message GetXTxRequest {
+  string xtx_id     = 1;
+  string collection = 2;
+  uint64 id         = 3;
+}
+message GetXTxResponse {
+  // The document as the transaction sees it. For a staged insert or update
+  // this is the staged data, and rev is the committed revision the write is
+  // based on (0 for a staged insert): the new revision is assigned at commit.
+  Record record = 1;
+}
+
+message CommitXTxRequest {
+  string xtx_id = 1;
+  // Optional bound, in milliseconds, on how long the commit may wait for the
+  // participant locks. When it elapses before anything is written the commit
+  // fails with DEADLINE_EXCEEDED (XTX_CANCELED_BEFORE_PREPARE), nothing is
+  // applied and the transaction stays open. 0 means only the RPC deadline
+  // applies. Must not be negative.
+  int64 lock_timeout_ms = 2;
+}
+message XTxOpResult {
+  string    collection = 1;
+  uint64    id         = 2;
+  // The committed revision of the document (the tombstone's for a delete).
+  uint64    rev        = 3;
+  XTxOpKind op         = 4;
+}
+message CommitXTxResponse {
+  // Coordinator transaction id of the durable commit decision. Empty for a
+  // transaction that staged no writes (it only validated its reads).
+  string tx_id = 1;
+  // One result per applied operation.
+  //
+  // Caveat: when replayed is true and the original commit happened before a
+  // server restart, the per-operation results are rebuilt from the replayed
+  // request, because the original results are not retained: tx_id is exact,
+  // but each rev is a placeholder, not the committed revision. Re-read the
+  // documents if the revisions are needed.
+  repeated XTxOpResult ops = 2;
+  // True when the idempotency key had already committed: this call applied
+  // nothing and returns the original outcome.
+  bool replayed = 3;
+}
+
+message RollbackXTxRequest  { string xtx_id = 1; }
+message RollbackXTxResponse { bool   ok     = 1; }
+
+// The outcome of a transaction as known to the server.
+enum XTxState {
+  XTX_STATUS_UNSPECIFIED = 0;
+  // The commit decision is durable; every staged write is (or will be after
+  // recovery) visible.
+  XTX_STATUS_COMMITTED   = 1;
+  // Nothing was applied and nothing will be: rolled back, failed validation,
+  // or aborted by the coordinator. Retrying as a new transaction is safe.
+  XTX_STATUS_ABORTED     = 2;
+  // The transaction is open or its commit is still executing.
+  XTX_STATUS_PENDING     = 3;
+  // The server has no record of this reference.
+  XTX_STATUS_UNKNOWN     = 4;
+  // The handle was discarded after its idle timeout or lifetime; nothing it
+  // staged was written.
+  XTX_STATUS_EXPIRED     = 5;
+}
+
+message XTxStatusRequest {
+  // A coordinator tx_id, an idempotency key, or an xtx_id.
+  string ref = 1;
+}
+message XTxStatusResponse {
+  XTxState status = 1;
+  // The coordinator tx_id, when one is known for ref.
+  string   tx_id  = 2;
+}
 
 // ---------------------------------------------------------------------------
 // Watch

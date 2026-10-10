@@ -1,9 +1,7 @@
 # Cross-collection transactions (XTx) — protocol and on-disk design
 
-**Status:** design, ratification pending. **No code, format or API changes ship
-with this document.** **Baseline:** integration branch
-`autopilot/01-cross-collection-transactions-design-and-format` (on `main` @
-`7660844` + the inventory).
+**Status:** implemented (protocol, handle, transport, concurrency tests, Prometheus metrics).
+**Baseline:** integration branch `autopilot/04-cross-collection-transactions-api-isolation`.
 **Input:** [`cross-collection-tx-inventory.md`](cross-collection-tx-inventory.md)
 (section references `inv §N` below).
 
@@ -937,3 +935,136 @@ optional multi-collection read gate (§9.1).
 | 10 Durability | §6.3 |
 | 11 Server/API | §15 (shapes deferred) |
 | 12 Metrics | §14.12 |
+| 13 Handle API / isolation as implemented | §17 |
+
+---
+
+## 17. Transaction handle: API and isolation as implemented
+
+§6–§9 specify the commit protocol. This section records the engine API built on
+it (`engine/xtx_handle.go`) and states exactly what it guarantees. Nothing here
+changes a byte on disk: a handle is in-memory state in front of the same
+coordinator/journal path (`DB.commitXTx`, the body of `DB.CommitXTx`).
+
+### 17.1 API
+
+| Call | Behaviour |
+|---|---|
+| `DB.BeginXTx(ctx, participants, XTxOptions{Key, IdleTimeout, MaxLifetime})` | opens a handle over an explicit, de-duplicated participant list (1..16 existing collections of this root; reserved `xtx.` names rejected). Writes nothing |
+| `XTx.Insert / Update / Delete / Stage(XTxOp)` | buffers a mutation. Invisible to every other reader until commit. An insert reserves its id (provisional, §5.2) |
+| `XTx.Get(collection, id)` | point read with read-your-writes: a staged insert/update is returned, a staged delete is `ErrXTxDocNotFound`; otherwise the committed document is read and its state recorded |
+| `XTx.Scan`, `XTx.IndexLookup` | always `ErrXTxScanUnsupported` |
+| `XTx.Commit(ctx)` | validate + apply atomically (§17.2, §17.3) |
+| `XTx.Rollback()` | discard; idempotent (§17.4) |
+| `DB.XTxHandle(id)` | resolve an open or recently finished handle (`ErrXTxHandleNotFound` otherwise) |
+| `DB.XTxStatus(ref)` | `ref` is a txid, an idempotency key or a handle id (§17.5) |
+
+A collection that was not declared at begin is rejected by every call with
+`ErrXTxNotParticipant`; there is no implicit enlistment. Several staged
+operations on one `(collection, id)` fold into one net operation (insert then
+update → insert; insert then delete → nothing; update then delete → delete), so
+the coordinator's one-op-per-document rule (§9.2 item 4) holds at commit.
+
+### 17.2 What is guaranteed
+
+The handle implements **optimistic concurrency control over point reads and
+writes**, and nothing broader.
+
+1. **Read set.** The first `Get` of a document records its state: *absent*, or
+   *present at revision r*. Absence is an observation like any other. A later
+   `Get` of the same document inside the handle that finds a different state
+   fails immediately with `ErrXTxConflict` (repeatable point reads).
+2. **Write base.** Staging an update or delete records the target's revision at
+   stage time as the write's base. A target that is absent at stage time is
+   `ErrXTxDocNotFound`; a caller-supplied `ExpectedRev` that differs from the
+   observed revision is `ErrXTxConflict` at stage time. Inserts always take a
+   transaction-reserved id, so they have no base to validate.
+3. **Commit-time validation.** `Commit` locks every touched collection in
+   canonical name order (§6.1) — write lock where the handle writes, read lock
+   where it only read — and re-checks every recorded observation against the
+   live index. Any difference is `ErrXTxConflict` whose cause is an
+   `*XTxConflictError{Collection, ID, Write, Expected*, Actual*}`; first
+   committer wins. Validation and S0 run under the same locks as the apply, so
+   there is no window between check and write.
+4. **Atomic, no partial state.** A rejected commit has written nothing to any
+   segment, index or the journal. An accepted one follows §6 unchanged.
+
+For transactions that touch documents **only by id**, 1–4 make the committed
+history equivalent to a serial one in lock-acquisition order. That is the
+whole claim. Explicitly **not** provided:
+
+- **No predicate or phantom protection.** There is no scan, range or index read
+  inside a transaction, hence nothing to validate; such calls are rejected
+  rather than silently run unprotected.
+- **No snapshot.** Reads are per-collection read committed (§9.1) taken at the
+  time of each `Get`. Two `Get`s of different documents may reflect different
+  moments; the inconsistency is caught only at `Commit`, by validation. A
+  handle that never commits has no consistency guarantee across its reads.
+- **No multi-collection read gate** (§9.1 is unchanged).
+- Unique-index and quota checks remain S0 checks at commit, not at stage time.
+
+### 17.3 Context, cancellation and the unknown outcome
+
+- `ctx` is honoured while `Commit` waits for locks. A cancelled or timed-out
+  wait returns `ErrXTxCanceled` (which also matches the context error), every
+  lock already taken is released, nothing was written, and **the handle stays
+  open**: commit again or roll back. `XTxRetrySafe` is true.
+- The last cancellation check is after the final lock is acquired and before
+  S0/prepare. From prepare on `ctx` is ignored: the commit runs to its real
+  outcome, so a cancellation can never tear a transaction.
+- The only ambiguous result is `ErrXTxOutcomeUnknown` (§8.1). The handle is
+  finished, `Rollback` re-returns the error, and the caller resolves it with
+  `DB.XTxStatus`.
+
+### 17.4 Rollback and expiry
+
+`Rollback` returns nil on an open handle and after a failed commit, an expiry
+or an earlier rollback — in all of those nothing of the transaction is or will
+become visible. It returns `ErrXTxFinished` after a successful commit and
+`ErrXTxInProgress` while a commit is executing.
+
+A handle idle longer than `CollectionConfig.XTxIdleTimeout` (default 1 min,
+negative disables; per-handle override and `MaxLifetime` in `XTxOptions`) is
+reaped by a DB-level sweeper: its staged state is dropped and later calls
+return `ErrXTxExpired`. A handle in the middle of `Commit` is never reaped.
+Finished handles stay resolvable by id for one more idle period, then
+disappear. `DB.Close` finishes every open handle. `CollectionConfig.OnXTx`
+receives `begin / commit / conflict / abort / unknown / canceled / rollback /
+expired` with the time since begin, for the server to turn into metrics.
+
+### 17.5 Idempotency and status
+
+- A handle with a `Key` commits through the journal's key table (§8.2).
+  Committing a second handle with a key that already committed returns the
+  original outcome with `XTxResult.Replayed = true` and applies nothing;
+  `Commit` on an already-committed handle returns its stored result.
+- `DB.XTxStatus(ref)`: the journal decision wins; otherwise an open handle is
+  `PENDING` and a handle that finished without committing is `ABORTED`.
+- **Limit.** The original ops/revisions of a keyed commit are kept in a bounded
+  in-memory cache. After a restart (or eviction) a replay still reports
+  `COMMITTED` and the txid and applies nothing, but its `Ops` carry placeholder
+  revisions; callers needing the documents re-read them.
+
+### 17.6 Compatibility and a fix made on the way
+
+`DB.CommitXTx(key, ops)` and the single-collection `BeginTx` / `CommitTx` /
+`RollbackTx` path (`engine/txmanager.go`) are unchanged in signature and
+behaviour. One defect in the coordinator was corrected: the post-commit step S6
+(segment rotation, meta persist, watch emit) ran while the participant locks
+were still held, which self-deadlocked when a commit crossed the rotation
+threshold. S6 now runs after the participant locks are released, still under
+the DB-level read lock, matching §9.3.
+
+### 17.7 Transport
+
+The handle is exposed unchanged over gRPC/REST (`BeginXTx`, `StageXTx`,
+`GetXTx`, `CommitXTx`, `RollbackXTx`, `XTxStatus`), the CLI and the embedded
+façade (`scriva.DB.BeginXTx` / `Transact` / `XTxStatus`). The transports add no
+guarantee and no state: the server resolves the handle by id on every call, and
+the single-collection `TxManager` is not involved. The §8.1 outcomes map onto
+gRPC codes with a machine-readable reason; `ErrXTxOutcomeUnknown` is `UNKNOWN`
+/ `XTX_OUTCOME_UNKNOWN` and carries the reference to pass to `XTxStatus`. Scans
+remain rejected at the transport as well: a data RPC tagged with the
+`x-xtx-id` header is refused instead of being run outside the transaction. See
+`docs/architecture.md` (Transport) and `docs/getting-started.md`
+(Cross-collection transactions) for the mapping tables.
