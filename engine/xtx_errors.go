@@ -51,6 +51,32 @@ var (
 	ErrCollectionNotFound  = errors.New("engine: collection not found")
 	ErrXTxDuplicateOp      = errors.New("engine: duplicate operation on (collection, id) in transaction")
 
+	// Transaction handle (DB.BeginXTx) errors.
+
+	// ErrXTxCanceled: the caller's context was cancelled or timed out while the
+	// commit was still waiting for locks, before prepare. Nothing was written
+	// and the handle stays open; errors.Is also matches the context error.
+	ErrXTxCanceled = errors.New("engine: cross-collection transaction canceled before prepare")
+	// ErrXTxNotParticipant: an operation named a collection that was not
+	// declared when the transaction began.
+	ErrXTxNotParticipant = errors.New("engine: collection is not a declared participant of the transaction")
+	// ErrXTxScanUnsupported: scans, range predicates and index lookups are not
+	// available inside a transaction (no predicate/phantom validation exists).
+	ErrXTxScanUnsupported = errors.New("engine: scans and index lookups are not supported inside a transaction")
+	// ErrXTxFinished: the handle already reached a final state (committed,
+	// rolled back, failed, or the database closed).
+	ErrXTxFinished = errors.New("engine: cross-collection transaction is finished")
+	// ErrXTxExpired: the handle was reaped after its idle timeout or lifetime.
+	// Nothing it staged was ever written.
+	ErrXTxExpired = errors.New("engine: cross-collection transaction expired")
+	// ErrXTxHandleNotFound: no open or recently finished handle has this id.
+	ErrXTxHandleNotFound = errors.New("engine: cross-collection transaction handle not found")
+	// ErrXTxDocNotFound: a point read or a staged update/delete targets a
+	// document that is absent in the transaction's view.
+	ErrXTxDocNotFound = errors.New("engine: document not found in transaction")
+	// ErrXTxInvalid: a malformed request (no participants, unknown op, ...).
+	ErrXTxInvalid = errors.New("engine: invalid cross-collection transaction request")
+
 	// Parser errors for stamped entries (§3.2).
 	ErrV1CRCOnStamp = errors.New("engine: stamped entry carries a v1 checksum")
 	ErrMissingCRC   = errors.New("engine: stamped entry has no crc")
@@ -85,6 +111,36 @@ func (e *XTxError) Unwrap() []error {
 	return []error{e.Err, e.Cause}
 }
 
+// XTxConflictError is the cause of an ErrXTxConflict raised by transaction
+// handle validation: the document changed between the handle's observation
+// and the check. Reach it with errors.As.
+type XTxConflictError struct {
+	Collection string
+	ID         uint64
+	// Write is true when the observation was the base revision of a staged
+	// update/delete (write-write conflict), false for a point read.
+	Write           bool
+	ExpectedPresent bool
+	ExpectedRev     uint64
+	ActualPresent   bool
+	ActualRev       uint64
+}
+
+func (e *XTxConflictError) Error() string {
+	kind := "read"
+	if e.Write {
+		kind = "write"
+	}
+	state := func(present bool, rev uint64) string {
+		if !present {
+			return "absent"
+		}
+		return fmt.Sprintf("rev %d", rev)
+	}
+	return fmt.Sprintf("%s conflict on collection %q id %d: observed %s, now %s",
+		kind, e.Collection, e.ID, state(e.ExpectedPresent, e.ExpectedRev), state(e.ActualPresent, e.ActualRev))
+}
+
 func xtxErr(tx string, sentinel, cause error) error {
 	return &XTxError{Tx: tx, Err: sentinel, Cause: cause}
 }
@@ -115,7 +171,7 @@ func XTxRetrySafe(err error) bool {
 	case errors.Is(err, ErrXTxOutcomeUnknown), errors.Is(err, ErrXTxInProgress),
 		errors.Is(err, ErrXTxTooLarge):
 		return false
-	case errors.Is(err, ErrXTxConflict), errors.Is(err, ErrXTxDurability),
+	case errors.Is(err, ErrXTxConflict), errors.Is(err, ErrXTxDurability), errors.Is(err, ErrXTxCanceled),
 		errors.Is(err, ErrResourceExhausted), errors.Is(err, ErrQuotaExceeded):
 		return true
 	}
