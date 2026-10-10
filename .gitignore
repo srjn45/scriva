@@ -38,3 +38,7 @@ clients/clojure/.lein-repl-history
 
 # GoReleaser build output
 dist/
+
+# Local worktrees and scratch files
+.worktrees/
+scratch/
