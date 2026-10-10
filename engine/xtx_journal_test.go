@@ -517,8 +517,10 @@ func TestXTxOpenTornCreationRecreates(t *testing.T) {
 	if _, err := j.commit("", testParts("a")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openXTxJournal(dir, xtxOptions{}); err == nil {
-		// second handle is fine to parse; just ensure the file is valid
+	if reopened, err := openXTxJournal(dir, xtxOptions{}); err != nil {
+		t.Fatal(err)
+	} else if reopened != nil {
+		reopened.close()
 	}
 	b, _ := os.ReadFile(path)
 	if _, err := parseXTxJournal(b); err != nil {

@@ -125,7 +125,7 @@ func parseTxID(tx string) (epoch string, seq uint64, err error) {
 func isLowerHex(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -761,7 +761,7 @@ func (j *xtxJournal) appendLine(line []byte) error {
 	}
 	if err != nil {
 		if terr := j.f.Truncate(j.size); terr != nil {
-			j.poison(fmt.Errorf("append failed (%v) and rollback failed: %w", err, terr))
+			j.poison(fmt.Errorf("append failed (%w) and rollback failed: %w", err, terr))
 		}
 		return err
 	}

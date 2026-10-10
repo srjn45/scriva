@@ -219,19 +219,20 @@ func TestCommitXTx_CanonicalOrderingDeadlockFree(t *testing.T) {
 
 				var ops []XTxOp
 				// Deliberately shuffle staging order across workers
-				if workerID%3 == 0 {
+				switch workerID % 3 {
+				case 0:
 					ops = []XTxOp{
 						{Collection: "colC", Op: store.OpInsert, ID: idC, Data: map[string]any{"w": workerID}},
 						{Collection: "colB", Op: store.OpInsert, ID: idB, Data: map[string]any{"w": workerID}},
 						{Collection: "colA", Op: store.OpInsert, ID: idA, Data: map[string]any{"w": workerID}},
 					}
-				} else if workerID%3 == 1 {
+				case 1:
 					ops = []XTxOp{
 						{Collection: "colB", Op: store.OpInsert, ID: idB, Data: map[string]any{"w": workerID}},
 						{Collection: "colA", Op: store.OpInsert, ID: idA, Data: map[string]any{"w": workerID}},
 						{Collection: "colC", Op: store.OpInsert, ID: idC, Data: map[string]any{"w": workerID}},
 					}
-				} else {
+				default:
 					ops = []XTxOp{
 						{Collection: "colA", Op: store.OpInsert, ID: idA, Data: map[string]any{"w": workerID}},
 						{Collection: "colC", Op: store.OpInsert, ID: idC, Data: map[string]any{"w": workerID}},
