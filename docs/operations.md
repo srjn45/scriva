@@ -182,3 +182,30 @@ response reaches the client.
 - **What is not covered.** Successful reads are not audited (use the request log
   or tracing). The audit log records the *fact and target* of a mutation, not the
   record payload, so it does not leak stored data.
+
+---
+
+## Cross-collection transactions (XTx)
+
+Cross-collection transactions coordinate multi-collection atomic mutations via the root coordinator journal (`xtx.journal`).
+
+### Metrics & monitoring
+
+Four Prometheus metrics expose transaction activity and recovery:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `scriva_xtx_total` | Counter | `outcome` | Transaction attempts by outcome (`begin`, `commit`, `abort`, `conflict`, `expired`, `unknown`) |
+| `scriva_xtx_duration_seconds` | Histogram | `outcome` | Duration of transaction commit execution by outcome |
+| `scriva_xtx_conflicts_total` | Counter | `kind` | Conflicts by category (`write`, `read`, `constraint`) |
+| `scriva_xtx_recovery_total` | Counter | `kind` | Recovery outcomes at open (`committed`, `aborted`, `unresolved`) |
+
+### Operational guidance & alerts
+
+1. **Alert on `increase(scriva_xtx_total{outcome="unknown"}[15m]) > 0`:**
+   An `unknown` outcome indicates an fsync failure or network ambiguity on the coordinator journal decision record (S4). Clients encountering `XTX_OUTCOME_UNKNOWN` must query `XTxStatus` rather than retrying blindly.
+2. **Alert on `increase(scriva_xtx_recovery_total{kind="unresolved"}[15m]) > 0`:**
+   Unresolved transactions at open indicate journal corruption or missing participant segment runs. The server fails closed with `ErrXTxRecoveryRequired` or `OpenIntegrityError` to prevent partial application. Follow the [index recovery runbook](runbook-index-recovery.md) to inspect with `scriva verify` and recover with `scriva repair`.
+3. **Monitor `rate(scriva_xtx_conflicts_total[5m])`:**
+   Elevated conflict rates indicate concurrent contending transactions touching the same documents or unique keys. Ensure clients implement exponential backoff and jitter on retry.
+

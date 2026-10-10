@@ -1,9 +1,7 @@
 # Cross-collection transactions (XTx) — protocol and on-disk design
 
-**Status:** design, ratification pending. **No code, format or API changes ship
-with this document.** **Baseline:** integration branch
-`autopilot/01-cross-collection-transactions-design-and-format` (on `main` @
-`7660844` + the inventory).
+**Status:** implemented (protocol, handle, transport, concurrency tests, Prometheus metrics).
+**Baseline:** integration branch `autopilot/04-cross-collection-transactions-api-isolation`.
 **Input:** [`cross-collection-tx-inventory.md`](cross-collection-tx-inventory.md)
 (section references `inv §N` below).
 

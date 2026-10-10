@@ -48,6 +48,87 @@ const (
 	XTxEventExpired  = "expired"
 )
 
+// Conflict kinds reported through CollectionConfig.OnXTxConflict.
+const (
+	XTxConflictRead       = "read"       // a point read no longer holds
+	XTxConflictWrite      = "write"      // a staged write's base revision changed
+	XTxConflictConstraint = "constraint" // unique index, missing target, expected revision
+)
+
+// Outcomes reported through CollectionConfig.OnXTxRecovery.
+const (
+	// XTxRecoveryCommitted: a durable COMMIT decision whose participant runs
+	// were validated and made visible by this open. Decisions stay live until
+	// retired, so a transaction is counted by every open that resolves it.
+	XTxRecoveryCommitted = "recovered_committed"
+	// XTxRecoveryPresumedAbort: prepared runs with no decision (a crash before
+	// the commit record was durable) were discarded and an ABORT recorded.
+	XTxRecoveryPresumedAbort = "presumed_abort"
+)
+
+// xtxHookPoint names a phase of the commit path for CollectionConfig.xtxHook.
+// The hook runs on the committing goroutine, so from xtxHookLocked through
+// xtxHookDecided it must not take a participant lock (Get and Scan do).
+type xtxHookPoint int
+
+const (
+	// xtxHookBeforeLocks: the commit is admitted (in-flight key registered) and
+	// is about to wait for DB.mu and the participant locks. No lock is held.
+	xtxHookBeforeLocks xtxHookPoint = iota
+	// xtxHookLockNext: about to acquire one collection's lock; the txid
+	// argument carries the collection name. Locks of earlier names are held.
+	xtxHookLockNext
+	// xtxHookLocked: every participant lock is held; nothing validated yet.
+	xtxHookLocked
+	// xtxHookPrepared: stamped runs are appended and fsynced on every
+	// participant; no decision exists. Locks held.
+	xtxHookPrepared
+	// xtxHookDecided: the COMMIT record is durable; nothing applied to the
+	// in-memory indexes yet. Locks held.
+	xtxHookDecided
+	// xtxHookApplied: applied and every lock released; the caller has not been
+	// answered yet.
+	xtxHookApplied
+)
+
+func (db *DB) xtxHookAt(point xtxHookPoint, key, txid string) {
+	if h := db.defaultCfg.xtxHook; h != nil {
+		h(point, key, txid)
+	}
+}
+
+// xtxConflictKind classifies an ErrXTxConflict for OnXTxConflict.
+func xtxConflictKind(err error) string {
+	var ce *XTxConflictError
+	if !errors.As(err, &ce) {
+		return XTxConflictConstraint
+	}
+	if ce.Write {
+		return XTxConflictWrite
+	}
+	return XTxConflictRead
+}
+
+// xtxOutcomeEvent maps a commit error onto its lifecycle event and reports a
+// conflict's kind. It is the single place commit outcomes are classified.
+func (db *DB) xtxOutcomeEvent(err error) string {
+	switch {
+	case err == nil:
+		return XTxEventCommit
+	case errors.Is(err, ErrXTxCanceled), errors.Is(err, ErrXTxInProgress):
+		return XTxEventCanceled
+	case errors.Is(err, ErrXTxOutcomeUnknown):
+		return XTxEventUnknown
+	case errors.Is(err, ErrXTxConflict):
+		if h := db.defaultCfg.OnXTxConflict; h != nil {
+			h(xtxConflictKind(err))
+		}
+		return XTxEventConflict
+	default:
+		return XTxEventAbort
+	}
+}
+
 // XTxOptions configures one transaction handle.
 type XTxOptions struct {
 	// Key is the caller-chosen idempotency key (≤ 128 bytes, optional). A
@@ -224,6 +305,7 @@ func (x *XTx) Participants() []string {
 func (x *XTx) usable(now time.Time) error {
 	if x.state == xtxActive && x.expiredAt(now) {
 		x.finish(xtxExpired, now)
+		x.db.xtxEvent(XTxEventExpired, now.Sub(x.createdAt))
 	}
 	return x.stateErr()
 }
@@ -532,11 +614,7 @@ func (x *XTx) Commit(ctx context.Context) (*XTxResult, error) {
 		return res, nil
 	}
 	if err := x.usable(now); err != nil {
-		expired := x.state == xtxExpired && x.finishedAt.Equal(now)
 		x.mu.Unlock()
-		if expired {
-			x.db.xtxEvent(XTxEventExpired, now.Sub(x.createdAt))
-		}
 		return nil, err
 	}
 	x.state = xtxCommitting
@@ -569,7 +647,6 @@ func (x *XTx) Commit(ctx context.Context) (*XTxResult, error) {
 
 	x.mu.Lock()
 	now = time.Now()
-	event := XTxEventCommit
 	switch {
 	case err == nil:
 		x.result = res
@@ -580,7 +657,6 @@ func (x *XTx) Commit(ctx context.Context) (*XTxResult, error) {
 		// Nothing was written: the handle is still good.
 		x.state = xtxActive
 		x.lastUsed = now
-		event = XTxEventCanceled
 	default:
 		var xe *XTxError
 		if errors.As(err, &xe) {
@@ -590,17 +666,12 @@ func (x *XTx) Commit(ctx context.Context) (*XTxResult, error) {
 		switch {
 		case errors.Is(err, ErrXTxOutcomeUnknown):
 			x.finish(xtxOutcomeUnknown, now)
-			event = XTxEventUnknown
-		case errors.Is(err, ErrXTxConflict):
-			x.finish(xtxFailed, now)
-			event = XTxEventConflict
 		default:
 			x.finish(xtxFailed, now)
-			event = XTxEventAbort
 		}
 	}
 	x.mu.Unlock()
-	x.db.xtxEvent(event, now.Sub(x.createdAt))
+	x.db.xtxEvent(x.db.xtxOutcomeEvent(err), now.Sub(x.createdAt))
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +724,7 @@ func (db *DB) validateXTxReadSet(ctx context.Context, reads []xtxReadCheck) erro
 			names = append(names, rc.Collection)
 		}
 	}
-	cols, unlock, err := db.lockXTxCollections(ctx, names, nil)
+	cols, unlock, err := db.lockXTxCollections(ctx, "", names, nil)
 	if err != nil {
 		return err
 	}

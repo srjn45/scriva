@@ -256,6 +256,8 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 	}
 	sort.Strings(sortedTxIDs)
 
+	var recoveredCommitted, presumedAborted int
+
 	// Phase 4 & 5: Truth table resolution and dead-run truncation
 	for _, txid := range sortedTxIDs {
 		var d *xtxDecision
@@ -283,6 +285,7 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 			if xj != nil {
 				_ = xj.abort(txid, "", "recovery")
 			}
+			presumedAborted++
 			continue
 		}
 
@@ -332,6 +335,7 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 				}
 			}
 			// Row 3: COMMITTED
+			recoveredCommitted++
 
 		case xtxKindAbort:
 			if d.Retired {
@@ -378,6 +382,15 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		}
 		col.broker = db.broker
 		db.collections[name] = col
+	}
+
+	if h := cfg.OnXTxRecovery; h != nil {
+		if recoveredCommitted > 0 {
+			h(XTxRecoveryCommitted, recoveredCommitted)
+		}
+		if presumedAborted > 0 {
+			h(XTxRecoveryPresumedAbort, presumedAborted)
+		}
 	}
 
 	// Coordinator evidence remains live until a later atomic checkpoint can

@@ -2232,6 +2232,10 @@ Available metrics:
 | `scriva_append_errors_total` | Counter | `collection`, `reason` | Failed appends (`poisoned`, `too_large`, `io`) |
 | `scriva_segment_poisoned_total` | Counter | `collection` | Segments poisoned by an unrollbackable write |
 | `scriva_dir_lock_total` | Counter | `result` | Data-directory lock attempts (`acquired`, `contended`, `failed`) |
+| `scriva_xtx_total` | Counter | `outcome` | Cross-collection transaction attempts by lifecycle outcome (`begin`, `commit`, `abort`, `conflict`, `expired`, `unknown`) |
+| `scriva_xtx_duration_seconds` | Histogram | `outcome` | Duration of cross-collection transaction commits by outcome |
+| `scriva_xtx_conflicts_total` | Counter | `kind` | Cross-collection transaction conflicts by kind (`write`, `read`, `constraint`) |
+| `scriva_xtx_recovery_total` | Counter | `kind` | Open-time cross-collection transaction recovery outcomes (`committed`, `aborted`, `unresolved`) |
 
 Disable metrics by setting `--metrics-addr ""` (or `metrics_addr: ""` in the config file).
 
