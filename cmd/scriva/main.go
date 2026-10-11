@@ -585,6 +585,8 @@ func serve(cfg server.Config, configFile string) error {
 			}
 		}
 		fol := server.NewFollower(db, pb.NewScrivaClient(leaderConn), followerID, cfg.APIKey, logger)
+		fol.SetEnvelopeApplyObserver(m.ObserveReplTxApply)
+		m.RegisterReplicationGauges(db.AppliedLSN, db.ReplicationLag)
 		go func() {
 			if err := fol.Run(fctx); err != nil && fctx.Err() == nil {
 				logger.Error("follower replication stopped", "err", err)

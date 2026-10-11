@@ -1,8 +1,9 @@
 # Replicating cross-collection transactions — protocol v2
 
-Status: implemented (wire format, leader publish, follower decode/verify, atomic
-follower apply — §7 and §9). The crash/failover matrix, status and runbook are the
-integration stage.
+Status: implemented and tested end to end (wire format, leader publish, follower
+decode/verify, atomic follower apply, crash/failover matrix, status accounting,
+metrics — §7, §9, §10, §11). The operator runbook is in
+[operations.md](operations.md#replicating-cross-collection-transactions-protocol-v2).
 
 This document supersedes the per-entry-LSN wording of §12.1/§12.2 of
 [design-cross-collection-transactions.md](design-cross-collection-transactions.md):
@@ -85,6 +86,15 @@ anything is written, so a transaction that commits is always publishable.
 Startup recovery does **not** republish: the ring is in memory and empty after a
 restart. A follower behind the restart watermark gets `FAILED_PRECONDITION` and
 re-bootstraps from a snapshot, which already contains the recovered transaction.
+
+This relies on the restored LSN being **strictly above** every caught-up
+follower's resume point. Before the COMMIT becomes durable the coordinator
+therefore calls `broker.reserveNext()`, which persists the LSN watermark block
+covering the LSN the transaction will receive. Without it, a leader that was
+cleanly closed (watermark == last LSN), restarted, committed a transaction and
+crashed between the COMMIT and `publishTx` would restore the old LSN, serve a
+follower caught up at that LSN from an empty ring, and the follower would
+silently miss a transaction the leader had committed.
 
 ### LSN safety across crashes
 
@@ -211,10 +221,46 @@ advanced) joins the existing `XTxHookLocked/Prepared/Decided/Applied` points
 (`SetTestXTxHook`; the hook key is the envelope's idempotency key). Crash images
 are taken by copying the data directory from inside a hook.
 
-## 10. Not covered here
+## 10. Status accounting and metrics
+
+- `ReplicationStatus.applied_lsn`, `DB.AppliedLSN` and `DB.ReplicationLag` only
+  advance after the whole transaction is committed and visible (§7 step 6, §9.3);
+  a half-applied transaction is never reported applied, not even across a crash
+  (the applied LSN is re-derived from journal bindings, never from partial runs).
+- Lag is counted in LSNs; a transaction is one LSN regardless of its size.
+- Follower-side Prometheus metrics (fed through `Follower.SetEnvelopeApplyObserver`,
+  never from the engine):
+
+| metric | meaning |
+|---|---|
+| `scriva_replication_tx_apply_total{outcome}` | envelopes processed: `applied`, `duplicate` (idempotent redelivery / snapshot overlap), `diverged`, `promoted`, `failed` |
+| `scriva_replication_tx_apply_duration_seconds{outcome}` | apply latency |
+| `scriva_replication_tx_ops_total` | operations in applied envelopes |
+| `scriva_replication_applied_lsn` | follower's fully applied LSN |
+| `scriva_replication_lag_lsn` | last-known leader LSN − applied LSN |
+
+## 11. Verified failure matrix
+
+`server/replication_failover_test.go` (real leader/follower engines, in-process
+gRPC, race detector):
+
+| scenario | result |
+|---|---|
+| leader crash after COMMIT, before publish | recovery commits the tx; caught-up follower gets `FAILED_PRECONDITION` and re-bootstraps; never silently misses it |
+| leader crash before COMMIT | presumed abort; no node ever shows any part |
+| follower crash: before PREPARE / after PREPARE | none of the tx; envelope reapplied on resume |
+| follower crash: after COMMIT / before LSN persist | all of the tx; applied LSN restored to the bound LSN; no re-apply |
+| network disconnect mid-stream | reconnect resumes from applied LSN, no loss or duplication |
+| redelivery of an applied tx | no-op, LSN unchanged |
+| same LSN/txid, different content | `ErrReplicationDivergence` (wrapped in `ErrEnvelopeApplyFailed`); run stops, nothing applied |
+| ring overflow | `FAILED_PRECONDITION`; snapshot bootstrap is atomic; snapshot overlap redelivery is a no-op |
+| promote while caught up / in flight / after crash recovery | new leader continues at applied LSN + 1; in-flight apply completes before promotion; later replicated applies fail `ErrReplicationPromoted` |
+
+## 12. Not covered here
 
 - Single-collection `CommitTx` still publishes per entry (one LSN each) and is not
   atomic on followers.
-- Crash/failover test matrix, replication status for transactions and metrics
-  belong to the integration stage.
+- A legacy single-entry write that is durable but crashes before publish has the
+  same unpublished window on a leader that was just cleanly restarted; the
+  transaction path closes it, the legacy path is unchanged.
 - The client SDK proto copies under `clients/` are not regenerated.

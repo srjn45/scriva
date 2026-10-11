@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -40,6 +41,32 @@ var (
 	// engine cause, e.g. engine.ErrReplicationDivergence).
 	ErrEnvelopeApplyFailed = errors.New("replication: failed to apply transaction envelope")
 )
+
+// EnvelopeApplyObserver receives one event per replicated transaction envelope
+// a follower processes: outcome is applied, duplicate, diverged, promoted or
+// failed. It is how the server layer feeds metrics without the engine calling
+// them.
+type EnvelopeApplyObserver func(outcome string, ops int, dur time.Duration)
+
+// SetEnvelopeApplyObserver installs the observer (nil clears it). Call before Run.
+func (f *Follower) SetEnvelopeApplyObserver(o EnvelopeApplyObserver) { f.applyObserver = o }
+
+func (f *Follower) observeApply(outcome string, ops int, dur time.Duration) {
+	if f.applyObserver != nil {
+		f.applyObserver(outcome, ops, dur)
+	}
+}
+
+func envelopeOutcome(err error) string {
+	switch {
+	case errors.Is(err, engine.ErrReplicationDivergence):
+		return "diverged"
+	case errors.Is(err, engine.ErrReplicationPromoted):
+		return "promoted"
+	default:
+		return "failed"
+	}
+}
 
 // followerProtocolVersions is what a Follower advertises in ReplicateRequest.
 var followerProtocolVersions = []uint32{engine.ReplicationProtocolV1, engine.ReplicationProtocolV2}
@@ -165,9 +192,16 @@ func txEnvelopeFromProto(rec *pb.ReplicationRecord) (*engine.TxEnvelope, error) 
 // (idempotent redelivery). The applied LSN is advanced by the engine in the
 // same step; the caller's SetAppliedLSN is then a no-op.
 func (f *Follower) applyEnvelope(lsn uint64, env *engine.TxEnvelope) error {
+	start := time.Now()
 	applied, err := f.db.ApplyReplicatedTx(lsn, env)
 	if err != nil {
+		f.observeApply(envelopeOutcome(err), len(env.Ops), time.Since(start))
 		return fmt.Errorf("%w: %w", ErrEnvelopeApplyFailed, err)
+	}
+	if applied {
+		f.observeApply("applied", len(env.Ops), time.Since(start))
+	} else {
+		f.observeApply("duplicate", len(env.Ops), time.Since(start))
 	}
 	if !applied {
 		f.logger.Debug("replicated transaction already applied", "tx_id", env.TxID, "lsn", lsn)

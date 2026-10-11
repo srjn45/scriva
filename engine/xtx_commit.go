@@ -505,6 +505,10 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 	}
 	var env *TxEnvelope
 	if db.broker != nil {
+		// Persist the LSN watermark ahead of the COMMIT (see reserveNext): a
+		// crash after the COMMIT but before publish must force followers to
+		// re-bootstrap rather than silently miss the recovered transaction.
+		db.broker.reserveNext()
 		env, err = sealEnvelope(txid, key, envOps)
 		if err != nil {
 			_ = j.abort(txid, key, "client")
