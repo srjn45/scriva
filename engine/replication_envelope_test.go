@@ -80,7 +80,7 @@ func TestTxEnvelope_CorruptedDigest(t *testing.T) {
 func TestTxEnvelope_TamperedContents(t *testing.T) {
 	t.Parallel()
 	for name, mut := range map[string]func(e *TxEnvelope){
-		"data":  func(e *TxEnvelope) { e.Ops[0].Entry.Data = map[string]any{"n": float64(2), "s": "x"} },
+		"data":  func(e *TxEnvelope) { e.Ops[0].Entry.Data = map[string]any{"n": float64(3), "s": "x"} },
 		"rev":   func(e *TxEnvelope) { e.Ops[1].Entry.Rev++ },
 		"id":    func(e *TxEnvelope) { e.Ops[0].Entry.ID++ },
 		"txid":  func(e *TxEnvelope) { e.TxID = "tx-2" },

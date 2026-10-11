@@ -126,7 +126,7 @@ func sealEnvelope(txid, key string, prepared []TxEnvelopeOp) (*TxEnvelope, error
 	if err := env.validate(); err != nil {
 		return nil, err
 	}
-	env.Digest = env.computeDigest()
+	env.Digest = env.computeDigest(true)
 	return env, nil
 }
 
@@ -174,8 +174,10 @@ func (e *TxEnvelope) validate() error {
 //	        i64le(expires_at) i64le(ts.sec) u32le(ts.nsec) u64le(epoch)
 //	        byte(hasData) lp(canonical-json(data))
 //
-// where lp(x) is u32le(len) followed by the bytes.
-func (e *TxEnvelope) computeDigest() [sha256.Size]byte {
+// where lp(x) is u32le(len) followed by the bytes. useCache lets the sealing
+// path reuse the canonical JSON it already built; Verify never trusts it, so
+// in-memory tampering is detected.
+func (e *TxEnvelope) computeDigest(useCache bool) [sha256.Size]byte {
 	h := sha256.New()
 	var buf bytes.Buffer
 	lp := func(b []byte) {
@@ -216,7 +218,10 @@ func (e *TxEnvelope) computeDigest() [sha256.Size]byte {
 			lp(nil)
 		} else {
 			buf.WriteByte(1)
-			dj := op.dataJSON
+			var dj []byte
+			if useCache {
+				dj = op.dataJSON
+			}
 			if dj == nil {
 				dj, _ = json.Marshal(en.Data)
 			}
@@ -240,7 +245,7 @@ func (e *TxEnvelope) Verify() error {
 	if err := e.validate(); err != nil {
 		return err
 	}
-	want := e.computeDigest()
+	want := e.computeDigest(false)
 	if subtle.ConstantTimeCompare(want[:], e.Digest[:]) != 1 {
 		return fmt.Errorf("%w: tx %s", ErrEnvelopeDigest, e.TxID)
 	}
