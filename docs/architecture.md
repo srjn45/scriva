@@ -97,9 +97,12 @@ inserts) are checked; an in-place `Update`, a compare-and-swap, an `Upsert` that
 replaces, and a `Delete` are not — blocking them would trap a tenant that needs
 to edit or delete to get back under budget. Batch paths (`InsertMany`,
 `CommitTx`) evaluate the whole batch against the budget under a single lock hold,
-so a batch that would breach is rejected atomically with nothing written; this is
-what makes `InsertMany` a genuinely atomic engine operation rather than a
-server-side loop. When a byte budget is set, the per-entry encoded size is
+so a batch that would breach is rejected atomically with nothing written. This is
+atomicity against validation/quota rejection and in-process failures only: it
+makes `InsertMany` a single engine operation rather than a server-side loop, but
+it is **not crash-atomic** — a crash after some complete entries replays that
+prefix (see [Durability](#durability) and the
+[hardening specification](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery)). When a byte budget is set, the per-entry encoded size is
 measured for the check; an unlimited collection skips that work entirely, so the
 hot path pays nothing.
 
@@ -381,6 +384,17 @@ When retrieving a record via an indexed offset (`Get`/`getStored`, `GetByKey`, o
 
 During scans (`ScanStream` and `streamLive`), if an entry in a segment is encountered whose physical offset disagrees with the primary index, the engine does not blindly skip it as stale: it verifies whether the index's target location points to a legitimate newer version of that record. If the target entry does not exist, fails to decode, or has a mismatched ID, the engine surfaces the integrity error immediately instead of silently shortening scan results.
 
+> **Known gap (hardening H8, confirmed).** The check above covers entries *seen* in
+> the captured segment list. `streamLive` copies the segment list and then consults
+> the *live* index, so a record updated after the scan began into a segment created
+> by a later rotation has its old entry classified as a stale version and the new
+> one is never visited: the scan returns `err=nil` and omits the record. The
+> ratified fix is a repeatable start-of-scan view (captured index copy, per-segment
+> end offsets, layout lease) — see
+> [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics).
+> Until it lands, do not rely on `Scan`/`Find`/`Aggregate` completeness under
+> concurrent writes plus rotation.
+
 At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.DataLoss` rather than `NotFound` across `FindById`, `FindByKey`, `Find`, and `Aggregate`.
 
 ---
@@ -548,7 +562,15 @@ tombstone path — string keys are layered on top of the unique-index machinery:
 - `FindByKey`, `UpdateByKey`, and `DeleteByKey` resolve the key to its `uint64`
   id via `IndexLookup("_key", key)` — an O(1) index hit — and then reuse the
   existing id-based path. A key with no live record yields `ErrKeyNotFound`.
-  `UpdateByKey` re-stamps `_key`, so a record's key is fixed for its lifetime.
+  `UpdateByKey` re-stamps `_key`, so a record updated *by key* keeps its key.
+
+  > **Known gap (hardening H10, confirmed).** A plain `Update(id, data)` (and,
+  > by code trace, a staged XTx update) writes `data` without `_key`, so the
+  > unique-index entry is dropped and the key becomes reusable. The ratified
+  > contract — `_key` immutable once assigned and silently preserved by every
+  > id-addressed update — is in
+  > [hardening §3.7](design-database-integrity-hardening.md#37-immutable-keyed-record-metadata-_key)
+  > and is **not yet implemented**.
 
 Because `_key` is an ordinary field inside `data`, keyed records need no special
 handling anywhere else: they survive segment rotation, compaction, index
@@ -629,7 +651,13 @@ without materialising the collection:
     scan-identical;
   - any other filter streams live records through the same `forEachMatch` path
     `Scan` uses and increments a counter, so it never buffers a result slice or a
-    whole-collection data map. `Count(f)` always equals `len(Scan(f))`.
+    whole-collection data map. `Count(f)` is intended to equal `len(Scan(f))`.
+  - **Known gap (hardening H11).** `Count(nil)` returns the primary-index length,
+    which still includes expired-but-unreaped records that `Scan` filters
+    (confirmed); the single-`eq` secondary-index and range fast paths are an
+    unconfirmed risk of the same kind. The ratified contract is one visibility
+    predicate with one captured `now` per operation
+    ([hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics)).
 - `Exists(key)` is a single `IndexLookup("_key", key)` — an **O(1)** in-memory
   hit with no segment read, so it stays flat regardless of collection size. A
   collection that has never taken a keyed write has no `_key` index and reports
@@ -712,8 +740,12 @@ Two mechanisms make expiry effective:
 1. **Defensive read filtering** — `Get` (hence `FindByID`/`GetByKey` and indexed
    scan candidates) and the streaming scan liveness check both drop any record
    whose deadline has passed. This makes a record invisible **the instant** it
-   expires, before any background work runs, and independent of clock skew
-   between the reaper and the reader.
+   expires, before any background work runs. Each read currently takes its own
+   `time.Now()` (a long scan has a moving cutoff) and `Count`/unique checks do not
+   apply the same predicate (hardening H11); the ratified contract — one
+   predicate, one captured `now` per operation, a monotonic floor and a reclaim
+   grace — is in
+   [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics).
 2. **Reaping + reclamation** — a reaper runs on the compactor cadence
    (`reapExpired`), appends delete tombstones for expired ids, and removes them
    from the primary and secondary indexes. Compaction additionally drops expired
@@ -813,9 +845,11 @@ read is performed under the read lock, which excludes the swap, so it always
 terminates. Rotation needs no such handling: sealing a segment changes neither
 its path nor its offsets.
 
-Full scans (`ScanStream` without a usable index) do not have this protection
-yet: they walk a snapshot of the segment list and can fail or miss records if a
-swap lands mid-scan.
+Full scans (`ScanStream` without a usable index) hold the shared layout lease
+described above, which excludes the compaction swap, but they still walk a
+snapshot of the segment list while consulting the live index, so a concurrent
+write plus rotation can make them omit a record (hardening H8, confirmed; see
+[Identity verification & integrity protection](#identity-verification--integrity-protection)).
 
 ### Crash consistency
 
@@ -886,6 +920,8 @@ RollbackTx → discard staging buffer
 
 Staged operations bypass the normal single-operation write path; the write lock is held for the entire commit batch.
 
+**Atomicity scope.** "Applied atomically" means atomic against validation/quota rejection, concurrent readers and in-process append/sync failures (the batch is rolled back). It is **not** crash-atomic: the batch is written as independent ordinary entries, so a crash after some complete entries replays that prefix as committed data (hardening H4, reproduced). `InsertMany` has the same property. The ratified fix routes batches of two or more entries through the cross-collection coordinator as a one-participant transaction (forced data + decision fsync, `ErrXTxTooLarge` above the XTx limits, opt-in conversion for legacy roots) — see [hardening §3.1](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery). Until that stage lands, use a cross-collection transaction ([below](#cross-collection-transactions)) when crash atomicity is required.
+
 ### Idle transaction expiry
 
 Open transactions live only in server memory, so a client that calls `BeginTx`
@@ -929,6 +965,8 @@ What each mode means for the other durability-relevant events:
 
 A crash or power loss can drop the latest writes, and open rebuilds indexes from validated segments. Torn final lines are trimmed. **Single-record writes and multi-entry batches have different guarantees:** `CommitTx`/`InsertMany` roll back ordinary reported append/sync failures in-process, but their current independent-entry format does not provide all-or-nothing visibility after a crash between complete batch entries. Crash-atomic single-collection batches are specified as follow-up hardening in [database integrity and security hardening](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery); do not rely on them as crash-atomic until implemented.
 
+**Failed sync on a single-record write (hardening H5).** Today, under `SyncModeAlways`, `Insert` (confirmed) and — by code trace — `Update`, `Delete`, compare-and-swap, `Upsert` and the TTL reaper append, mutate the index and then return the sync error without rolling back or publishing: the caller sees an error while the same process still serves the record and watchers/followers never see it. The ratified contract is fail-stop: a sync error is an **outcome-unknown** result, `fsync` is never retried, the collection is fenced (reads and writes return `ErrCollectionFenced`) until reopen, and recovery decides from the bytes — a complete line recovers as committed. Seal/rotation failures after a committed write become success plus a post-commit warning. See [hardening §2.3](design-database-integrity-hardening.md#23-durable-write-outcomes). This is **not yet implemented**.
+
 > Pick the mode that matches your data's value. `none` is appropriate for caches
 > and rebuildable data; `always` for data you cannot afford to lose on power loss.
 
@@ -938,7 +976,7 @@ A crash or power loss can drop the latest writes, and open rebuilds indexes from
 - **Bit-rot detection**: each segment entry carries a CRC32C checksum verified on read. A single flipped byte in a sealed segment that still parses as JSON is caught (`store.ErrCorruptEntry`) rather than silently returning wrong data. See *Per-entry checksums* above.
 - **Index recovery**: on startup, both the primary index and each secondary index checksum are verified. A mismatch triggers a full rebuild by replaying all segment entries.
 - **Atomic segment swap**: compaction uses `os.Rename` which is atomic on POSIX filesystems. The old segments are only deleted after the new ones are in place.
-- **Durable metadata writes**: `index.json`, `sidx_*.json`, and `meta.json` are written with a write-temp → `fsync` → atomic `rename` → directory `fsync` sequence, so a crash can never leave a half-written or invisible file. Directory `fsync` after creating or rotating a segment (under `--sync=interval`/`always`) ensures the new segment file's directory entry survives a crash too. (Directory `fsync` is a no-op on Windows, which does not support it; the atomic rename still holds.)
+- **Durable metadata writes**: `index.json`, `sidx_*.json`, and `meta.json` are written with a write-temp → `fsync` → atomic `rename` → directory `fsync` sequence, so a crash can never leave a half-written or invisible file. (Caveat, hardening H7: `meta.json` uses a fixed `meta.json.tmp` name, so *concurrent in-process* persists can interleave and corrupt it, and a stale snapshot can overwrite a newer encryption policy; both are confirmed and the ratified `metaMu` + unique-temp + fail-closed-open fix is in [hardening §3.4](design-database-integrity-hardening.md#34-metadata-serialization-and-encryption-fail-closed-behavior).) Directory `fsync` after creating or rotating a segment (under `--sync=interval`/`always`) ensures the new segment file's directory entry survives a crash too. (Directory `fsync` is a no-op on Windows, which does not support it; the atomic rename still holds.)
 - **Id-counter recovery**: `meta.json` is persisted on segment rotation and on `Close`, not on every write. On startup the counter is reconciled against the highest id present in the active segment (which always holds the most recently assigned id), so a crash that lost an unsynced `meta.json` can never cause id reuse.
 
 Note that partial-line recovery protects against *torn* writes (an incomplete
@@ -1008,6 +1046,8 @@ The protocol is specified in [design-cross-collection-transactions.md](design-cr
 - an unterminated or zero-filled *final* line is a torn tail and is truncated + fsynced (a never-acknowledged record);
 - any complete record that fails its CRC, does not parse, has an unknown kind/field, a txid of another epoch, a non-canonical participant list or digest, **anywhere**, is `ErrXTxJournalCorrupt` (also matches `ErrIntegrity`) and open refuses — a lost `COMMIT` is never read as an abort;
 - `COMMIT` and `ABORT` (or differing contents) for one txid is `ErrXTxDecisionConflict`.
+
+**Dropping a participant (hardening H6, confirmed).** Today `DropCollection` removes the directory without consulting the journal, and reopen then fails with a missing-participant error for any committed transaction that named the collection; no decision is retired at runtime. The ratified contract: drop verifies and retires every committed decision naming the collection (`RETIRE` fsynced), refuses with `ErrParticipantRetained` and modifies nothing on any verification failure, and removes the directory by rename-then-delete; there is no force path ([hardening §3.3](design-database-integrity-hardening.md#33-collection-lifecycle-and-coordinator-evidence)). Until implemented, **do not drop a collection that has taken part in a cross-collection transaction**.
 
 A root with neither file is a legacy root and opens exactly as before. `OpenCollection` / `CreateCollection` reject names with the `xtx.` prefix (`ErrReservedName`), and a root *directory* with that prefix refuses the open. Primary and secondary index recovery are transaction-aware: they replay only plain entries plus stamped entries whose coordinator decision is committed, and they exclude aborted or incomplete prepares. Compaction follows the same decision table and preserves unresolved and unretired committed stamped entries as coordinator evidence and as the materialized survivor, so derived indexes rebuild from the same committed effects without losing proof. Open-time recovery does not retire committed journal decisions by itself; coordinator evidence must not be garbage-collected until a later atomic checkpoint can prove it safe. `SnapshotTo` archives `xtx.format` and `xtx.journal` under its XTx consistency barrier. Offline `VerifyDir` checks the coordinator graph; `Repair` takes its verified backup first, rebuilds derived state using committed decisions only, and refuses irreconcilable coordinator metadata rather than fabricating or deleting evidence.
 
@@ -1284,6 +1324,7 @@ admin ACLs land in S3.
 
 - **TCP gRPC listener** — optional TLS via `--tls-cert` / `--tls-key`. `server.ServerTLSConfig` builds the `*tls.Config`: when both flags are set, `credentials.NewTLS()` is used; otherwise `insecure.NewCredentials()`. When `--tls-client-ca` and a non-`off` `--tls-client-auth` are also set, it adds the client-CA pool and the `tls.ClientAuthType` (**mutual TLS**, S1) — see [Mutual TLS](#mutual-tls-s1).
 - **REST gateway** — dials the TCP gRPC server on the internal loopback. Uses `InsecureSkipVerify` for this internal hop (the cert may be self-signed). Under `--tls-client-auth require` the TCP server would reject this certless loopback dial, so the gateway is routed over the Unix socket (`NewRESTGatewayUnix`) instead.
+- **Default exposure (hardening H2/H12, confirmed code facts).** The default binds are all-interface (`:5433`, `:8080`, `:9090`), an empty API key disables auth, the metrics listener is unauthenticated, REST CORS is `*`, the HTTP servers set no timeouts, replication followers dial without TLS, and the default socket is `/tmp/scriva.sock`. Whether this is a vulnerability depends on deployment topology. The ratified staged policy (warn + opt-in, then loopback/secure defaults, then enforced TLS+auth for exposed listeners) is in [hardening §3.8](design-database-integrity-hardening.md#38-secure-deployment-and-archive-handling); the defaults described in this section remain current behavior until it lands.
 - **Unix socket** — always uses `insecure.NewCredentials()`. The CLI auto-detects this socket and prefers it for zero-overhead local connections.
 - **Metrics HTTP server** — serves Prometheus exposition format at `/metrics`. Disabled when `--metrics-addr` is empty.
 
@@ -1292,6 +1333,8 @@ admin ACLs land in S3.
 All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors backed by an `auth.Authenticator`. Each request's `x-api-key` metadata header is matched against the configured key set using `crypto/subtle.ConstantTimeCompare` — the lookup compares against *every* key without short-circuiting, so response timing never reveals which (or whether a) key matched.
 
 **Scoped keys.** A key resolves to a principal with a scope of either `read` or `read-write`. The interceptor classifies each RPC by its method name: mutating RPCs (`Insert`, `Update`, `Delete`, `CreateCollection`, `DropCollection`, `EnsureIndex`, `DropIndex`, `Compact`, and the transaction verbs) require `read-write`; the rest (`Find`, `FindById`, `ListCollections`, `ListIndexes`, `CollectionStats`, `Watch`, `Snapshot`) are reads. A read-scoped key presenting on a write RPC is rejected with `PermissionDenied` (distinct from the `Unauthenticated` returned for a missing/unknown key). Unknown method names are treated as writes, so a read-only key can never slip through a newly added RPC that predates its classification.
+
+> **Known gaps (hardening H3, confirmed at the interceptor).** The collection allow-list is enforced only for requests that expose `collection`/`collections`. `CreateCollection`/`DropCollection` (identified by `name`) and the collection-less `ListCollections`, `Snapshot`, `Replicate`, `ReplicationStatus` and `Promote` are therefore **not confined** for a scoped read-write key today, and collection names are not validated (H1). The ratified model — `read(C)`/`write(C)` plus database-level `db:read`/`db:admin` that an allow-list removes, a generated fail-closed RPC table, filtered `ListCollections`, and handle ownership for transactions — is in [hardening §2.2](design-database-integrity-hardening.md#22-authorization-and-network-exposure) and is **not yet implemented**.
 
 **Key sources.** Keys come from the config file's `keys:` list (`{key, name, scope}` entries). The legacy single `--api-key` / `SCRIVA_API_KEY` still works and is registered as an additional `read-write` key named `default`, so existing single-key and no-auth (empty) deployments are unchanged.
 
