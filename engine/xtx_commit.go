@@ -512,83 +512,28 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 		}
 	}
 
-	// S1: Append stamped runs to active segments
-	startSizes := make(map[string]int64)
-	offsets := make(map[string][]int64)
-	parts := make([]xtxPart, 0, len(participants))
-
-	rollbackRuns := func() {
-		for _, p := range participants {
-			if sz, ok := startSizes[p.name]; ok {
-				_ = p.active.rollback(sz)
-			}
-		}
-	}
-
-	for _, c := range participants {
-		startSizes[c.name] = c.active.Size()
+	// S1..S4: stamped runs, fsync, journal COMMIT.
+	runs := make([]xtxRun, len(participants))
+	for i, c := range participants {
 		colOps := opsByCol[c.name]
-		colRevs := computedRevs[c.name]
-		colExps := computedExps[c.name]
-		colSealed := sealedDatas[c.name]
-		txEpoch := epochs[c.name]
-		n := uint32(len(colOps))
-		opRefs := make([]xtxOpRef, n)
-		colOffsets := make([]int64, n)
-
-		for i, op := range colOps {
-			se := stampedEntry{
+		entries := make([]stampedEntry, len(colOps))
+		for k, op := range colOps {
+			entries[k] = stampedEntry{
 				ID:        op.ID,
 				Op:        op.Op,
 				Ts:        nowStr,
-				Rev:       colRevs[i],
-				Data:      colSealed[i],
-				Epoch:     txEpoch,
-				ExpiresAt: colExps[i],
-				Tx:        TxStamp{T: txid, I: uint32(i), N: n},
+				Rev:       computedRevs[c.name][k],
+				Data:      sealedDatas[c.name][k],
+				Epoch:     epochs[c.name],
+				ExpiresAt: computedExps[c.name][k],
 			}
-			offset, err := c.active.AppendStamped(se)
-			if err != nil {
-				rollbackRuns()
-				_ = j.abort(txid, key, "io")
-				return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-			}
-			colOffsets[i] = offset
-			opRefs[i] = xtxOpRef{ID: op.ID, Op: string(op.Op), Rev: colRevs[i]}
 		}
-		offsets[c.name] = colOffsets
-		parts = append(parts, xtxPart{C: c.name, N: n, D: partDigest(opRefs)})
+		runs[i] = xtxRun{col: c, entries: entries}
 	}
-
-	// S2: Fsync all participant active segments unconditionally
-	for _, c := range participants {
-		if err := c.active.Sync(); err != nil {
-			c.active.poisoned = err
-			rollbackRuns()
-			_ = j.abort(txid, key, "io")
-			return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-		}
+	offsets, err := db.xtxPrepareAndDecide(j, key, txid, runs, nil)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	db.xtxHookAt(xtxHookPrepared, key, txid)
-
-	// S3 + S4: Commit record in coordinator journal and fsync
-	if err := j.commitPrepared(txid, key, parts); err != nil {
-		if errors.Is(err, ErrXTxOutcomeUnknown) {
-			// S4 fsync failed: outcome is unknown to this process. Do NOT roll back runs.
-			// The transaction may yet be COMMIT after a restart without ever having been
-			// published, so force every follower through a snapshot (design-xtx-replication §5).
-			if db.broker != nil {
-				db.broker.resyncBarrier()
-			}
-			return nil, nil, xtxErr(txid, ErrXTxOutcomeUnknown, err)
-		}
-		rollbackRuns()
-		_ = j.abort(txid, key, "io")
-		return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-	}
-
-	db.xtxHookAt(xtxHookDecided, key, txid)
 
 	// S5: Apply runs to in-memory primary and secondary indexes
 	var opResults []XTxOpResult
