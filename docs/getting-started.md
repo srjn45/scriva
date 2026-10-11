@@ -207,13 +207,28 @@ scriva-cli insert users '{"name":"bob"}' --api-key billing-secret
 # Error: rpc error: code = PermissionDenied ...
 ```
 
-The allow-list is enforced per RPC using the collection named in the request, so
-it covers unary calls and collection-scoped streams (`watch`, `find`,
-`aggregate`) alike. RPCs that don't name a collection — such as `list`
-(`ListCollections`) — are not collection-scoped and remain callable by a
-restricted key. Like scopes, ACL changes are picked up on `SIGHUP` reload.
-Certificate-authenticated principals (see below) carry no allow-list and reach
-all collections.
+The allow-list is enforced per RPC using **every** collection the request names
+(`collection`, `collections`, `name`), so it covers unary calls, multi-collection
+calls (`BeginXTx` needs every participant in the list; one outside name denies
+the whole call) and collection-scoped streams (`watch`, `find`, `aggregate`).
+An allow-list also removes every *database-level* capability:
+
+| RPC | Restricted key (allow-list) |
+|---|---|
+| `create` (`CreateCollection`) | only for a name literally in the list; otherwise `PermissionDenied` and nothing is created |
+| `drop` (`DropCollection`) | always `PermissionDenied` — use an unrestricted read-write key |
+| `list` (`ListCollections`) | succeeds, but returns only `allow-list ∩ existing` names, sorted |
+| `Snapshot`, `Replicate`, `ReplicationStatus` | `PermissionDenied` (scoped partial export is not supported yet) |
+| `Promote` | `PermissionDenied` |
+
+A restricted key gets `PermissionDenied` for a collection outside its list
+whether or not that collection exists, so it cannot probe for other tenants'
+collection names. Transaction handles (`BeginTx`, `BeginXTx`) can be used only
+by the key that began them; another key presenting the handle gets
+`PermissionDenied`. Unrestricted keys are unchanged, and `FindByKey` and
+`Aggregate` are now plain reads, so a `read` key may call them. Like scopes,
+ACL changes are picked up on `SIGHUP` reload. Certificate-authenticated
+principals (see below) carry no allow-list and reach all collections.
 
 ### Mutual TLS (client-certificate auth)
 
@@ -1190,10 +1205,10 @@ Notes on the API:
   as a write because it changes the transaction's read set and keeps the handle
   alive; a read-only key therefore cannot drive a transaction. A key restricted
   to a [collection allow-list](#per-collection-acls) may only begin a
-  transaction whose participants are all inside the list. `CommitXTx`,
-  `RollbackXTx` and `XTxStatus` take only the handle id or reference, so they
-  are not collection-checked: handle ids are random and unguessable, and should
-  be treated as secrets for the life of the transaction.
+  transaction whose participants are all inside the list. `CommitXTx` and
+  `RollbackXTx` take only the handle id, so they are not collection-checked;
+  instead every handle is bound to the key that began it and any other key gets
+  `PermissionDenied`. `XTxStatus` returns only a state and a tx id.
 - **Followers.** A read-only follower refuses the five handle RPCs with
   `FAILED_PRECONDITION`; `XTxStatus` stays available.
 - **Ordinary RPCs are never transactional.** Sending the `x-xtx-id` header on
@@ -1531,7 +1546,8 @@ Notes and current scope (R1–R3):
 
 - The follower authenticates to the leader with its `--api-key`; replication is a
   read-level operation, so a read-scoped key suffices for tailing — but `Promote`
-  needs a read-write key.
+  needs an unrestricted read-write key. A key with a collection allow-list can do
+  neither (`Replicate`, `ReplicationStatus` and `Snapshot` expose every collection).
 - The replication link uses the plain gRPC transport; run it inside a trusted
   network (mutual TLS for the link is a later milestone).
 - A follower is **read-only** (R2) until promoted (R3). After a leader loss,

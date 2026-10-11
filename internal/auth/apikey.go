@@ -5,8 +5,11 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"google.golang.org/grpc"
@@ -33,10 +36,25 @@ type Key struct {
 type principal struct {
 	name  string
 	scope Scope
+	// id is a stable identity used to bind transaction handles to the
+	// principal that created them. Unlike name it is unique per credential.
+	id string
+	// open marks the synthetic principal of an auth-disabled server: it holds
+	// every capability.
+	open bool
 	// collections is the resolved collection allow-list as a set for O(1)
 	// lookup. A nil map means unrestricted (all collections); a non-nil map
 	// confines the principal to exactly its members.
 	collections map[string]struct{}
+}
+
+// public converts the resolved principal into its context-visible form.
+func (p principal) public() Principal {
+	out := Principal{Name: p.name, Scope: p.scope, ID: p.id}
+	if p.collections != nil {
+		out.allow = &allowList{names: p.collections}
+	}
+	return out
 }
 
 // allowsCollection reports whether p may act on the named collection. A nil
@@ -63,42 +81,49 @@ type multiCollectionScoped interface {
 	GetCollections() []string
 }
 
-// checkCollectionAccess enforces p's collection allow-list against a request
-// message. It is a no-op when the principal is unrestricted or when the request
-// is not collection-scoped (e.g. ListCollections), so those RPCs stay callable
-// by a restricted key. Otherwise it rejects a request whose target collection is
-// outside the allow-list with codes.PermissionDenied.
-func (p principal) checkCollectionAccess(req any) error {
-	if p.collections == nil {
-		return nil
-	}
-	// A request naming several collections (BeginXTx) must be allowed on all of
-	// them: a transaction may never reach outside the key's allow-list.
-	if ms, ok := req.(multiCollectionScoped); ok {
-		for _, name := range ms.GetCollections() {
-			if !p.allowsCollection(name) {
-				return status.Errorf(codes.PermissionDenied,
-					"principal %q is not permitted to access collection %q", p.name, name)
-			}
-		}
-	}
-	cs, ok := req.(collectionScoped)
-	if !ok {
-		return nil
-	}
-	if !p.allowsCollection(cs.GetCollection()) {
-		return status.Errorf(codes.PermissionDenied,
-			"principal %q is not permitted to access collection %q", p.name, cs.GetCollection())
-	}
-	return nil
-}
-
 // Principal is the authenticated identity resolved from a valid API key. It is
 // stored on the request context after a successful authorization so downstream
 // interceptors (logging, audit) can attribute the RPC to a principal.
 type Principal struct {
 	Name  string
 	Scope Scope
+	// ID identifies the credential behind the principal; it is stable across
+	// key reloads and unique per key, so handles can be bound to it.
+	ID string
+	// allow is the collection allow-list (nil = unrestricted).
+	allow *allowList
+}
+
+// allowList is an immutable collection allow-list.
+type allowList struct {
+	names map[string]struct{}
+}
+
+// Restricted reports whether the principal is confined to a collection
+// allow-list. A restricted principal holds no database-level capability.
+func (p Principal) Restricted() bool { return p.allow != nil }
+
+// AllowsCollection reports whether the principal may see the named
+// collection at all (always true for an unrestricted principal).
+func (p Principal) AllowsCollection(name string) bool {
+	if p.allow == nil {
+		return true
+	}
+	_, ok := p.allow.names[name]
+	return ok
+}
+
+// AllowedCollections returns the allow-list sorted, or nil when unrestricted.
+func (p Principal) AllowedCollections() []string {
+	if p.allow == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.allow.names))
+	for n := range p.allow.names {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // principalContextKey is the context key under which the resolved Principal is
@@ -161,6 +186,7 @@ type wrappedServerStream struct {
 	grpc.ServerStream
 	ctx       context.Context
 	principal principal
+	method    string
 	checked   bool
 }
 
@@ -178,7 +204,7 @@ func (w *wrappedServerStream) RecvMsg(m any) error {
 	}
 	if !w.checked {
 		w.checked = true
-		if err := w.principal.checkCollectionAccess(m); err != nil {
+		if err := w.principal.authorizeRequest(w.method, m); err != nil {
 			return err
 		}
 	}
@@ -243,7 +269,7 @@ func buildKeySet(keys []Key) (*keySet, error) {
 		}
 		entries = append(entries, keyEntry{
 			key:       []byte(k.Key),
-			principal: principal{name: name, scope: k.Scope, collections: collections},
+			principal: principal{name: name, scope: k.Scope, collections: collections, id: keyID(k.Key)},
 		})
 	}
 	return &keySet{entries: entries}, nil
@@ -309,7 +335,7 @@ func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.Stream
 		}
 		// Per-collection ACL enforcement (S3): the unary request carries its
 		// target collection, so the check runs here, before the handler.
-		if err := p.checkCollectionAccess(req); err != nil {
+		if err := p.authorizeRequest(info.FullMethod, req); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
@@ -321,7 +347,7 @@ func (a *Authenticator) Interceptors() (grpc.UnaryServerInterceptor, grpc.Stream
 		}
 		// The collection is not knowable until the client's first message, so the
 		// ACL check is deferred to the wrapped stream's RecvMsg (S3).
-		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx, principal: p})
+		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx, principal: p, method: info.FullMethod})
 	}
 	return unary, stream
 }
@@ -340,7 +366,7 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 	ks := a.keys.Load()
 	keyAuth := ks.enabled()
 	if !keyAuth && !a.certAuth {
-		return ctx, principal{}, nil // auth disabled (unrestricted principal)
+		return ctx, principal{open: true}, nil // auth disabled (unrestricted principal)
 	}
 
 	var resolved principal
@@ -362,7 +388,7 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 	// Fall back to a verified client certificate (mutual-TLS).
 	if !ok && a.certAuth {
 		if cp, certOK := principalFromPeerCert(ctx); certOK {
-			resolved, ok = principal{name: cp.Name, scope: cp.Scope}, true
+			resolved, ok = principal{name: cp.Name, scope: cp.Scope, id: cp.ID}, true
 		}
 	}
 
@@ -374,12 +400,17 @@ func (a *Authenticator) authorize(ctx context.Context, fullMethod string) (conte
 	// subsequent scope denial is still attributed to the real principal (the sink
 	// is informational — the request context only carries the principal on the
 	// success path below).
-	p := Principal{Name: resolved.name, Scope: resolved.scope}
+	p := resolved.public()
 	depositPrincipal(ctx, p)
 
-	if methodRequiresWrite(fullMethod) && resolved.scope != ScopeReadWrite {
-		return ctx, principal{}, status.Errorf(codes.PermissionDenied,
-			"principal %q has read-only scope; %s requires read-write", resolved.name, fullMethod)
+	if err := resolved.authorizeMethod(fullMethod); err != nil {
+		return ctx, principal{}, err
 	}
 	return withPrincipal(ctx, p), resolved, nil
+}
+
+// keyID derives a stable, non-reversible identity from a key secret.
+func keyID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "key:" + hex.EncodeToString(sum[:8])
 }

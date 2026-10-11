@@ -9,9 +9,9 @@ import (
 type Scope int
 
 const (
-	// ScopeRead permits only non-mutating RPCs (reads, lists, stats, watch,
-	// snapshot). ScopeRead is the zero value so an unspecified scope is the
-	// least-privileged one.
+	// ScopeRead permits only non-mutating RPCs (reads, lists, stats, watch).
+	// ScopeRead is the zero value so an unspecified scope is the
+	// least-privileged one. The per-RPC matrix lives in policy.go.
 	ScopeRead Scope = iota
 	// ScopeReadWrite permits every RPC, including mutations.
 	ScopeReadWrite
@@ -41,70 +41,4 @@ func ParseScope(s string) (Scope, error) {
 	default:
 		return ScopeRead, fmt.Errorf("unknown scope %q (want \"read\" or \"read-write\")", s)
 	}
-}
-
-// writeMethods is the set of RPCs (short method names) that mutate state and
-// therefore require ScopeReadWrite. Everything not listed here is treated as a
-// read. Unknown methods are treated as writes (fail-safe: a read-only key can
-// never reach an unclassified RPC).
-var writeMethods = map[string]bool{
-	"CreateCollection": true,
-	"DropCollection":   true,
-	"Insert":           true,
-	"InsertMany":       true,
-	"Update":           true,
-	"Delete":           true,
-	"EnsureIndex":      true,
-	"DropIndex":        true,
-	"BeginTx":          true,
-	"CommitTx":         true,
-	"RollbackTx":       true,
-	"Compact":          true,
-	// Cross-collection transactions. GetXTx is a write on purpose: a
-	// transactional read adds to the handle's read set and keeps the handle
-	// alive, so it changes the outcome of a commit and only makes sense for a
-	// principal that may run the transaction at all.
-	"BeginXTx":    true,
-	"StageXTx":    true,
-	"GetXTx":      true,
-	"CommitXTx":   true,
-	"RollbackXTx": true,
-	// Promote (R3) is an admin/failover operation; it requires a read-write key.
-	// Finer-grained admin ACLs (an admin scope) are deferred to S3 — until then a
-	// read-write key is the admin boundary.
-	"Promote": true,
-}
-
-// readMethods is the set of RPCs known to be non-mutating. It exists only so
-// that methodRequiresWrite can distinguish a known read from an unknown method
-// (which is denied to read-only keys as a precaution).
-var readMethods = map[string]bool{
-	"ListCollections":   true,
-	"FindById":          true,
-	"Find":              true,
-	"ListIndexes":       true,
-	"Watch":             true,
-	"CollectionStats":   true,
-	"Snapshot":          true,
-	"Replicate":         true,
-	"ReplicationStatus": true,
-	// XTxStatus only reports the outcome of a cross-collection transaction.
-	"XTxStatus": true,
-}
-
-// methodRequiresWrite reports whether the given gRPC full method name
-// ("/scriva.v1.Scriva/Insert") requires ScopeReadWrite. Unknown methods require
-// write access so a read-only key is never silently allowed through a new RPC.
-func methodRequiresWrite(fullMethod string) bool {
-	name := fullMethod
-	if i := strings.LastIndexByte(fullMethod, '/'); i >= 0 {
-		name = fullMethod[i+1:]
-	}
-	if writeMethods[name] {
-		return true
-	}
-	if readMethods[name] {
-		return false
-	}
-	return true
 }
