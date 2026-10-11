@@ -362,7 +362,7 @@ func xtxStatusErr(err error, ref string) error {
 		return xtxStatus(codes.Unimplemented, xtxapi.ReasonScanUnsupported, msg, meta)
 	case errors.Is(err, engine.ErrXTxTooLarge), errors.Is(err, engine.ErrRecordTooLarge):
 		return xtxStatus(codes.InvalidArgument, xtxapi.ReasonTooLarge, msg, meta)
-	case errors.Is(err, engine.ErrXTxInvalid), errors.Is(err, engine.ErrReservedName),
+	case errors.Is(err, engine.ErrXTxInvalid), errors.Is(err, engine.ErrReservedName), errors.Is(err, engine.ErrInvalidName), errors.Is(err, engine.ErrUnsafePath),
 		errors.Is(err, engine.ErrReservedField), errors.Is(err, engine.ErrXTxDuplicateOp):
 		return xtxStatus(codes.InvalidArgument, xtxapi.ReasonInvalid, msg, meta)
 

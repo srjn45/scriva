@@ -1087,6 +1087,41 @@ Every surface is a thin mapping onto the handle; none adds transaction logic or 
 
 **Replay after a restart.** The key → txid mapping is in the journal, the per-operation results are not. A commit replayed after a restart therefore returns the exact `tx_id` with placeholder revisions; the proto and user docs say so rather than inventing values.
 
+## Collection names and path containment
+
+`engine.ValidateCollectionName` is the single name check; `Open`,
+`CreateCollection*`, `CollectionWithConfig`, `Collection`, `DropCollection`,
+`OpenCollection`, XTx participant resolution and replicated-transaction apply
+all go through it, so the embedded façade and every server API inherit it. The
+gRPC layer maps `ErrInvalidName`/`ErrReservedName`/`ErrUnsafePath` to
+`InvalidArgument`; REST and the CLI go through gRPC.
+
+Names of collections that already exist on disk may fail the strict grammar
+(*legacy-named*). They are discovered at `Open` (any single-component
+directory), stay readable, writable and droppable, and can never be created.
+Operations that reach an existing collection accept a name if it is in the
+registry or meets the grammar; creation always requires the grammar.
+
+Containment (no on-disk format change):
+
+- `Open` resolves the data directory once (absolute, symlinks evaluated) and
+  uses it as the only base for joins.
+- A collection directory must be a real directory directly below the root.
+  Creation uses `Mkdir`, not `MkdirAll`; the directory is `Lstat`-ed, opened and
+  compared to its handle (`SameFile`) so a swap to a symlink between check and
+  use is detected (`ErrUnsafePath`). Drop `Lstat`s first; `RemoveAll` never
+  follows a symlink.
+- Root entries that are symlinks are skipped at discovery and never opened.
+- Snapshot export archives only regular files of known kinds (segments,
+  secondary-index files, `meta.json`, the two coordinator files); symlinks and
+  unknown files are skipped with a warning and never followed.
+- Snapshot import (follower bootstrap) extracts into a `0700` temp directory
+  next to the target, accepts only regular files at depth ≤ 2 with allow-listed
+  names, rejects anything else (including duplicates and entries over the
+  entry/size limits) as an error, then promotes by rename. A failed or crashed
+  extraction never touches the live directory; a stale temp directory is removed
+  by the next extraction.
+
 ## Backup / snapshot
 
 `DB.SnapshotTo(io.Writer)` (the `Snapshot` RPC and `scriva-cli backup`) writes a

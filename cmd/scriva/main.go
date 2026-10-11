@@ -300,6 +300,7 @@ func serve(cfg server.Config, configFile string) error {
 	engineCfg.OnAppend = server.AppendMetricsHook(m)
 	engineCfg.OnSegmentPoisoned = func(collection, _ string, _ error) { m.ObserveSegmentPoisoned(collection) }
 	engineCfg.OnLock = func(_, result string) { m.ObserveDirLock(result) }
+	engineCfg.OnRootNames = m.ObserveRootNames
 	engineCfg.OnXTx = m.ObserveXTx
 	engineCfg.OnXTxConflict = m.ObserveXTxConflict
 	engineCfg.OnXTxRecovery = m.ObserveXTxRecovery

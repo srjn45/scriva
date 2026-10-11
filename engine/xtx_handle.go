@@ -216,8 +216,8 @@ func (db *DB) BeginXTx(ctx context.Context, participants []string, opts XTxOptio
 		if name == "" {
 			return nil, xtxErr("", ErrXTxInvalid, errors.New("empty participant collection name"))
 		}
-		if isReservedXTxName(name) {
-			return nil, xtxErr("", ErrReservedName, fmt.Errorf("collection %q uses reserved prefix", name))
+		if err := db.checkParticipantName(name); err != nil {
+			return nil, xtxErr("", err, nil)
 		}
 		set[name] = struct{}{}
 	}

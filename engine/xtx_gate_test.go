@@ -289,7 +289,8 @@ func TestXTxReservedNames(t *testing.T) {
 			t.Errorf("rejected name %q left a directory", n)
 		}
 	}
-	if _, err := db.CreateCollection("xtx"); err != nil { // no dot: allowed
+	// D1: the bare name "xtx" is reserved too (it collides with /v1/xtx/...).
+	if _, err := db.CreateCollection("xtx"); !errors.Is(err, ErrReservedName) {
 		t.Errorf("collection xtx: %v", err)
 	}
 	_ = db.Close()

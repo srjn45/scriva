@@ -111,6 +111,17 @@ func (c *Collection) writeSnapshot(tw *tar.Writer) error {
 			continue
 		}
 		base := e.Name()
+		// Only regular files of a known engine file kind are archived (D2). A
+		// symlink — or any other non-regular entry — is never followed, so the
+		// bytes of a file outside the collection can never reach an archive.
+		if !e.Type().IsRegular() || !SnapshotFileAllowed(base) {
+			if !strings.HasPrefix(base, ".") && base != "index.json" && base != compactManifestFilename && !strings.HasSuffix(base, ".merge") {
+				if l := c.cfg.Logger; l != nil {
+					l.Warn("snapshot: skipped non-regular or unknown file", "collection", c.name, "file", base)
+				}
+			}
+			continue
+		}
 		// Skip in-flight compaction temp files (".compact_*", "*.merge") and any
 		// other dotfiles — they are not part of the durable state and a
 		// half-written temp file must never land in a backup.
@@ -139,10 +150,56 @@ func (c *Collection) writeSnapshot(tw *tar.Writer) error {
 	return nil
 }
 
+// SnapshotFileAllowed reports whether base is a file kind a collection
+// directory may contribute to (or receive from) a snapshot archive:
+// segments, secondary-index files and meta.json.
+func SnapshotFileAllowed(base string) bool {
+	switch {
+	case base == metaFilename:
+		return true
+	case strings.HasPrefix(base, "seg_") && strings.HasSuffix(base, ".ndjson"):
+		return isDigits(base[len("seg_") : len(base)-len(".ndjson")])
+	case strings.HasPrefix(base, "sidx_") && strings.HasSuffix(base, ".json"):
+		return len(base) > len("sidx_.json") && !strings.ContainsAny(base, "/\\\x00")
+	}
+	return false
+}
+
+// SnapshotRootFileAllowed reports whether base is a coordinator file that may
+// sit at the root of a snapshot archive.
+func SnapshotRootFileAllowed(base string) bool {
+	return base == xtxFormatFile || base == xtxJournalFile
+}
+
+// ValidateLegacyCollectionName is the minimum check for a collection name that
+// refers to data that may already exist: one plain path component. Archive
+// import uses it, since an archive may legitimately carry legacy-named
+// collections. Names for new collections use ValidateCollectionName.
+func ValidateLegacyCollectionName(name string) error { return validateLegacyName(name) }
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // writeFileToTar streams the file dir/base into tw under the archive path
 // name/base.
 func writeFileToTar(tw *tar.Writer, dir, base, name string) error {
 	path := filepath.Join(dir, base)
+	li, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("lstat %q: %w", path, err)
+	}
+	if !li.Mode().IsRegular() {
+		return fmt.Errorf("%w: %q is not a regular file", ErrUnsafePath, path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %q: %w", path, err)
@@ -152,6 +209,9 @@ func writeFileToTar(tw *tar.Writer, dir, base, name string) error {
 	info, err := f.Stat()
 	if err != nil {
 		return fmt.Errorf("stat %q: %w", path, err)
+	}
+	if !os.SameFile(li, info) {
+		return fmt.Errorf("%w: %q changed while being archived", ErrUnsafePath, path)
 	}
 
 	archiveName := base

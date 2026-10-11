@@ -122,10 +122,10 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 	if req.DefaultTtlSeconds > 0 {
 		ttl := time.Duration(req.DefaultTtlSeconds) * time.Second
 		if _, err := s.db.CreateCollectionWithDefaultTTL(req.Name, ttl); err != nil {
-			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+			return nil, createErr(err)
 		}
 	} else if _, err := s.db.CreateCollection(req.Name); err != nil {
-		return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		return nil, createErr(err)
 	}
 	return &pb.CreateCollectionResponse{
 		Name:      req.Name,
@@ -135,7 +135,7 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 
 func (s *GRPCServer) DropCollection(_ context.Context, req *pb.DropCollectionRequest) (*pb.DropCollectionResponse, error) {
 	if err := s.db.DropCollection(req.Name); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DropCollectionResponse{Ok: true}, nil
 }
@@ -155,7 +155,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	// Keyed Create (N1): a caller-supplied key routes to the engine's
@@ -209,7 +209,7 @@ func (s *GRPCServer) InsertMany(ctx context.Context, req *pb.InsertManyRequest) 
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	deadline := ttlDeadline(req.TtlSeconds)
 	records := make([]map[string]any, len(req.Records))
@@ -231,14 +231,14 @@ func (s *GRPCServer) FindById(ctx context.Context, req *pb.FindByIdRequest) (*pb
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	r, err := col.Get(req.Id)
 	if err != nil {
 		if errors.Is(err, engine.ErrIndexCorrupt) {
 			return nil, status.Errorf(codes.DataLoss, "%v", err)
 		}
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	// Field projection (N2): id/key/rev are passed separately and always kept.
 	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, engine.ProjectData(r.Data, req.Fields), r.Ts)
@@ -255,7 +255,7 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) erro
 	start := time.Now()
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 
 	f, err := protoFilterToQuery(req.Filter)
@@ -401,7 +401,7 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
@@ -428,7 +428,7 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 		ts, err = col.Update(req.Id, req.Data.AsMap())
 	}
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	resp := &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}
 	// Surface the record's key and post-write revision best-effort.
@@ -444,7 +444,7 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
@@ -460,7 +460,7 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	}
 
 	if err := col.Delete(req.Id); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DeleteResponse{Ok: true}, nil
 }
@@ -479,7 +479,7 @@ func (s *GRPCServer) Upsert(ctx context.Context, req *pb.UpsertRequest) (*pb.Ups
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	rec, err := col.Upsert(req.Key, req.Data.AsMap())
 	if err != nil {
@@ -499,7 +499,7 @@ func (s *GRPCServer) FindByKey(ctx context.Context, req *pb.FindByKeyRequest) (*
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	rec, err := col.GetByKey(req.Key)
 	if err != nil {
@@ -521,7 +521,7 @@ func (s *GRPCServer) UpdateByKey(ctx context.Context, req *pb.UpdateByKeyRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	ts, err := col.UpdateByKey(req.Key, req.Data.AsMap())
 	if err != nil {
@@ -542,7 +542,7 @@ func (s *GRPCServer) DeleteByKey(ctx context.Context, req *pb.DeleteByKeyRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.DeleteByKey(req.Key); err != nil {
 		return nil, keyedErr(err)
@@ -560,7 +560,7 @@ func (s *GRPCServer) UpdateIfRev(ctx context.Context, req *pb.UpdateIfRevRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	swapped, err := col.UpdateIfRev(req.Key, req.ExpectedRev, req.Data.AsMap())
 	if err != nil {
@@ -585,7 +585,7 @@ func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) 
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.EnsureIndex(req.Field); err != nil {
 		return nil, status.Errorf(codes.Internal, "ensure index: %v", err)
@@ -596,10 +596,10 @@ func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) 
 func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb.DropIndexResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.DropIndex(req.Field); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DropIndexResponse{Ok: true}, nil
 }
@@ -607,7 +607,7 @@ func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb
 func (s *GRPCServer) ListIndexes(_ context.Context, req *pb.ListIndexesRequest) (*pb.ListIndexesResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.ListIndexesResponse{Fields: col.ListIndexes()}, nil
 }
@@ -620,7 +620,7 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) e
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 
 	f, err := protoFilterToQuery(req.Filter)
@@ -683,7 +683,7 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) e
 func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsRequest) (*pb.CollectionStatsResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	st := col.Stats()
 	return &pb.CollectionStatsResponse{
@@ -707,7 +707,7 @@ func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_Aggreg
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 	f, err := protoFilterToQuery(req.Filter)
 	if err != nil {
@@ -780,7 +780,7 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.CompactNow(); err != nil {
 		if errors.Is(err, engine.ErrCompactionDeferred) {
@@ -997,7 +997,7 @@ func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.Beg
 		return nil, status.Error(codes.InvalidArgument, "collection required")
 	}
 	if _, err := s.db.Collection(req.Collection); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	txID := s.txMgr.Begin(req.Collection)
 	return &pb.BeginTxResponse{TxId: txID}, nil
@@ -1010,7 +1010,7 @@ func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.C
 	}
 	col, err := s.db.Collection(tx.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	ops := tx.Snapshot()
 	s.txMgr.Remove(req.TxId)
