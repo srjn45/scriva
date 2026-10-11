@@ -1,7 +1,8 @@
 # Replicating cross-collection transactions — protocol v2
 
-Status: implemented (wire format, leader publish, follower decode/verify). Atomic
-follower apply is the next stage and plugs into the seam described in §7.
+Status: implemented (wire format, leader publish, follower decode/verify, atomic
+follower apply — §7 and §9). The crash/failover matrix, status and runbook are the
+integration stage.
 
 This document supersedes the per-entry-LSN wording of §12.1/§12.2 of
 [design-cross-collection-transactions.md](design-cross-collection-transactions.md):
@@ -115,7 +116,7 @@ than receiving a partial envelope. A heavy envelope is always admitted to an emp
 buffer. The server calls `ReplicationStream.Consumed` for every live record it
 drains.
 
-## 7. Follower apply contract (next stage)
+## 7. Follower apply
 
 `Follower.stream` decodes and verifies each v2 record, then calls the seam
 
@@ -123,17 +124,94 @@ drains.
 func (f *Follower) applyEnvelope(lsn uint64, env *engine.TxEnvelope) error
 ```
 
-in `server/replication_tx.go`. Today it returns `ErrEnvelopeApplyUnsupported`:
-nothing is applied, the applied LSN does not advance and `Follower.Run` returns the
-error (it also stops on unknown versions and on the typed protocol refusal).
+which calls `engine.DB.ApplyReplicatedTx(lsn, env) (applied bool, err error)`.
+It returns nil only after the **whole** transaction is committed locally through
+the cross-collection coordinator (or was already applied). Any failure is wrapped
+in `server.ErrEnvelopeApplyFailed`; `Follower.Run` stops and returns it (it also
+stops on envelope-invalid/digest errors and unknown versions). A failed apply
+leaves nothing visible and the applied LSN unchanged.
 
-The implementation must return nil only after the **whole** transaction is
-committed locally and atomically through the cross-collection coordinator; the
-caller then advances the applied LSN. Re-delivery (resume from a stale applied LSN,
-or a snapshot that already contains the tx) must be a no-op, keyed on `env.TxID` /
-`env.Key` and entry revisions.
+Steps (all under `DB.xtxSnapshotMu.RLock`, `DB.mu.RLock` and every participant's
+write lock in canonical order, so readers see none or all):
 
-## 8. Not covered here
+1. Verify the envelope; create participant collections that do not exist locally
+   (same behaviour as legacy apply; an empty collection left by a failed apply is
+   harmless); ensure the `_key` index for keyed data.
+2. Idempotency/divergence check (§9.2).
+3. Drop operations whose effect is already present (insert/update at an
+   equal-or-newer revision, delete of an absent id) — the revision-level
+   idempotency legacy apply has, needed for the bootstrap watermark overlap.
+4. Shared coordinator steps S1–S4: stamped runs with the leader's exact ids,
+   revisions, timestamps, expiries and epochs; unconditional fsync; journal
+   COMMIT (carrying the binding, §9.1).
+5. Apply to primary/secondary indexes, bump id counters, release locks, rotate
+   segments / persist meta, emit watch events.
+6. `SetAppliedLSN(lsn)` (best-effort persist: §9.3 makes it recoverable).
+
+Unique constraints are not re-checked (the leader validated them). The follower's
+own broker is **not** published to: a replicated transaction is not a new leader
+LSN, exactly like legacy `ApplyReplication`. `Promote` calls `setLSN(applied)`
+so the new leader continues strictly above every replicated LSN.
+
+## 9. LSN binding, idempotency and recovery
+
+### 9.1 Binding
+
+The journal COMMIT record gains optional fields `rl` (replication LSN), `rt`
+(leader txid) and `rd` (hex envelope digest) — all or none; absent on locally
+originated commits. They are inside the record CRC, written and fsynced in the
+same append as the COMMIT, so the transaction's durability and its position are
+one atomic decision. ABORT/RETIRE records never carry them. A second commit
+binding the same LSN is a decision conflict. The follower allocates its own
+local txid (its journal epoch may differ from the leader's) and keeps the
+client's idempotency key, so a retry after promotion is still idempotent.
+
+### 9.2 Idempotency and divergence
+
+Looked up under the participant locks:
+
+- A commit bound to this LSN or this leader txid, with the same LSN, txid and
+  digest → no-op success (`applied=false`); the LSN still advances.
+- Bound to this LSN or txid but with a different digest or LSN →
+  `engine.ErrReplicationDivergence`: nothing applied, LSN not advanced, the run
+  stops. The follower must be re-bootstrapped.
+- A commit with the leader's own txid and no binding (the snapshot shipped the
+  leader's journal) whose participant digests match → no-op; differing →
+  divergence.
+- Otherwise per-operation revision filtering (step 3 above).
+
+### 9.3 Recovery and the applied-LSN rule
+
+The applied LSN advances only after the COMMIT is durable and the indexes are
+applied. Crash points:
+
+| crash | recovery | resume |
+|---|---|---|
+| before the COMMIT is durable (before/after PREPARE) | presumed abort, runs truncated; none of the tx | envelope redelivered and applied |
+| after COMMIT, before indexes / before `replication.json` | tx committed by journal; applied LSN raised to the highest bound `rl` | redelivery recognised, no-op |
+| after `replication.json` | as normal | next LSN |
+
+Raising the applied LSN is sound because a follower applies strictly in LSN order:
+every LSN below a bound one was applied before it. Journal records are never
+retired or dropped while they bind an LSN above the persisted applied LSN
+(currently nothing retires them).
+
+### 9.4 Promotion interlock
+
+`ApplyReplicatedTx` and `Promote` share `DB.replApplyMu`. Promote waits for an
+in-flight apply, reads the applied LSN, flips the role and marks the node
+promoted; later replicated applies fail with `ErrReplicationPromoted`.
+`ReplicationLag` and `AppliedLSN` therefore never cover a half-applied
+transaction.
+
+### 9.5 Test seams
+
+`engine.XTxHookReplApplied` (committed and visible, before the applied LSN is
+advanced) joins the existing `XTxHookLocked/Prepared/Decided/Applied` points
+(`SetTestXTxHook`; the hook key is the envelope's idempotency key). Crash images
+are taken by copying the data directory from inside a hook.
+
+## 10. Not covered here
 
 - Single-collection `CommitTx` still publishes per entry (one LSN each) and is not
   atomic on followers.
