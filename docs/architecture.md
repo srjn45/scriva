@@ -1141,6 +1141,21 @@ A fresh follower catches up in two phases:
    `replication.json` at the data-dir root so a restart resumes from exactly
    where it left off.
 
+### Cross-collection transactions (protocol v2)
+
+A cross-collection transaction is replicated as **one record with one LSN**: a
+`ReplicationRecord` with `record_version = 2` whose `tx` carries every op in
+canonical order plus a SHA-256 digest the follower verifies. The leader publishes
+it once, after the journal COMMIT is durable and while the participant locks are
+held; aborted transactions are never published. Followers advertise
+`protocol_versions` in `ReplicateRequest`; a legacy follower that would need an
+envelope is refused with a typed `FAILED_PRECONDITION`
+(`REPLICATION_PROTOCOL_UNSUPPORTED`) rather than receiving a per-entry downgrade.
+The ring and subscriber buffers account an envelope as one indivisible record of
+weight `len(ops)`. The current follower decodes and verifies envelopes but stops
+at the apply seam (`Follower.applyEnvelope`) without advancing its applied LSN
+until atomic apply lands. Details: [design-xtx-replication.md](design-xtx-replication.md).
+
 ### Idempotent apply → no gaps, no duplicates
 
 Apply is idempotent at the **record-revision** level: an insert/update whose id
