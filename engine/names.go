@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -115,37 +116,47 @@ func realDirExists(path string) (exists bool, err error) {
 // Mkdir, never MkdirAll) when absent. The directory is Lstat-checked before and
 // again after it is opened and compared with the open handle, so a symlink
 // swapped in between the check and the use is detected.
-func openContainedDir(dataDir, name string) (string, error) {
+func openContainedDir(dataDir, name string) (string, *os.File, error) {
 	dir := filepath.Join(dataDir, name)
 	if filepath.Dir(dir) != filepath.Clean(dataDir) {
-		return "", fmt.Errorf("%w: %q escapes the data directory", ErrUnsafePath, name)
+		return "", nil, fmt.Errorf("%w: %q escapes the data directory", ErrUnsafePath, name)
 	}
 	exists, err := realDirExists(dir)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !exists {
 		if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("collection: mkdir %q: %w", dir, err)
+			return "", nil, fmt.Errorf("collection: mkdir %q: %w", dir, err)
 		}
 	}
 	h, err := os.Open(dir)
 	if err != nil {
-		return "", fmt.Errorf("collection: open dir %q: %w", dir, err)
+		return "", nil, fmt.Errorf("collection: open dir %q: %w", dir, err)
 	}
-	defer func() { _ = h.Close() }()
 	hi, err := h.Stat()
 	if err != nil {
-		return "", fmt.Errorf("collection: stat dir %q: %w", dir, err)
+		_ = h.Close()
+		return "", nil, fmt.Errorf("collection: stat dir %q: %w", dir, err)
 	}
 	li, err := os.Lstat(dir)
 	if err != nil {
-		return "", fmt.Errorf("collection: lstat %q: %w", dir, err)
+		_ = h.Close()
+		return "", nil, fmt.Errorf("collection: lstat %q: %w", dir, err)
 	}
 	if li.Mode()&os.ModeSymlink != 0 || !li.IsDir() || !os.SameFile(hi, li) {
-		return "", fmt.Errorf("%w: %q changed while being opened", ErrUnsafePath, dir)
+		_ = h.Close()
+		return "", nil, fmt.Errorf("%w: %q changed while being opened", ErrUnsafePath, dir)
 	}
-	return dir, nil
+	// On Linux, /proc/self/fd/N resolves through the open directory descriptor,
+	// not through the collection's mutable name. Keep h open for the collection
+	// lifetime: every existing file operation below this path is consequently
+	// rooted at the directory that passed the containment check, even if an
+	// attacker renames it and replaces its old pathname with a symlink.
+	if runtime.GOOS == "linux" {
+		return fmt.Sprintf("/proc/self/fd/%d", h.Fd()), h, nil
+	}
+	return dir, h, nil
 }
 
 // resolveRoot makes dataDir absolute and resolves symlinks in it, so every

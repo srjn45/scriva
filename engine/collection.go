@@ -290,6 +290,7 @@ type WatchEvent struct {
 type Collection struct {
 	name      string
 	dir       string
+	dirHandle *os.File // pins dir on Linux; see openContainedDir
 	cfg       CollectionConfig
 	createdAt time.Time
 	mu        sync.RWMutex
@@ -420,7 +421,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 			return nil, err
 		}
 	}
-	dir, err := openContainedDir(dataDir, name)
+	dir, dirHandle, err := openContainedDir(dataDir, name)
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +478,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	c := &Collection{
 		name:        name,
 		dir:         dir,
+		dirHandle:   dirHandle,
 		cfg:         cfg,
 		decisions:   cfg.decisions,
 		decisionsFn: cfg.decisionsFn,
@@ -494,6 +496,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		if c.active != nil {
 			_ = c.active.Close()
 		}
+		_ = c.dirHandle.Close()
 		return nil, err
 	}
 
@@ -501,6 +504,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	// key-check for an already-encrypted collection, or enable and persist a new
 	// policy. A wrong key/passphrase fails fast here rather than on first read.
 	if err := c.initEncryption(cfg); err != nil {
+		_ = c.dirHandle.Close()
 		return nil, err
 	}
 
@@ -1719,6 +1723,11 @@ func (c *Collection) Close() error {
 	if c == nil {
 		return nil
 	}
+	defer func() {
+		if c.dirHandle != nil {
+			_ = c.dirHandle.Close()
+		}
+	}()
 	c.closeOnce.Do(func() { close(c.closed) })
 	// Wait for any in-flight compaction pass to complete (segment swap and
 	// index persist included) before writing the final index. Closing c.closed

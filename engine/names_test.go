@@ -318,6 +318,58 @@ func TestDropRefusesSwappedSymlink(t *testing.T) {
 	_ = os.Rename(real+".moved", real)
 }
 
+// C-1b: once a collection has been opened, later I/O remains anchored to the
+// opened directory rather than its mutable pathname. This is deliberately a
+// post-open swap: checking Lstat again before each operation would still leave
+// a check/use race here.
+func TestOpenCollectionIOIgnoresPostOpenSymlinkSwap(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("descriptor-rooted collection paths use /proc on Linux")
+	}
+	parent := t.TempDir()
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "precious"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(parent, "root"), CollectionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	c, err := db.CreateCollection("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Insert(map[string]any{"before": true}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, outside)
+	real := filepath.Join(db.dataDir, "c")
+	if err := os.Rename(real, real+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, real); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Insert(map[string]any{"after": true}); err != nil {
+		t.Fatalf("write after swap: %v", err)
+	}
+	var archive strings.Builder
+	if err := db.SnapshotTo(&archive); err != nil {
+		t.Fatalf("snapshot after swap: %v", err)
+	}
+	sameTree(t, "outside tree", before, snapshotTree(t, outside))
+	if err := os.Remove(real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(real+".moved", real); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // C-2: a symlinked root works and files appear only under its target.
 func TestSymlinkedRootAllowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
