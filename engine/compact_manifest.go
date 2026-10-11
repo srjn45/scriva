@@ -33,11 +33,36 @@ func compactManifestPath(dir string) string {
 
 // writeCompactManifest durably records the swap intent before the swap begins.
 func writeCompactManifest(dir string, m compactManifest) error {
-	b, err := json.Marshal(m)
+	b, err := json.Marshal(compactManifestForDisk(dir, m))
 	if err != nil {
 		return fmt.Errorf("manifest: marshal: %w", err)
 	}
 	return writeFileAtomic(compactManifestPath(dir), b, 0o644)
+}
+
+func compactManifestForDisk(dir string, m compactManifest) compactManifest {
+	out := compactManifest{Renames: make(map[string]string, len(m.Renames)), Removals: make([]string, 0, len(m.Removals))}
+	for src, dst := range m.Renames {
+		out.Renames[manifestPathForDisk(dir, src)] = manifestPathForDisk(dir, dst)
+	}
+	for _, p := range m.Removals {
+		out.Removals = append(out.Removals, manifestPathForDisk(dir, p))
+	}
+	return out
+}
+
+func manifestPathForDisk(dir, p string) string {
+	if filepath.Dir(p) == dir {
+		return filepath.Base(p)
+	}
+	return p
+}
+
+func manifestPathFromDisk(dir, p string) string {
+	if p == filepath.Base(p) {
+		return filepath.Join(dir, p)
+	}
+	return p
 }
 
 // clearCompactManifest retires the intent record once the swap and the
@@ -72,6 +97,7 @@ func recoverCompaction(dir string) (bool, error) {
 		// occur. Refuse to guess which side of the swap the segments are on.
 		return true, fmt.Errorf("manifest: unmarshal %q: %w", compactManifestPath(dir), err)
 	}
+	m = compactManifestFromDisk(dir, m)
 
 	for src, dst := range m.Renames {
 		if _, statErr := os.Stat(src); statErr == nil {
@@ -97,6 +123,17 @@ func recoverCompaction(dir string) (bool, error) {
 		return true, fmt.Errorf("manifest: %w", err)
 	}
 	return true, clearCompactManifest(dir)
+}
+
+func compactManifestFromDisk(dir string, m compactManifest) compactManifest {
+	out := compactManifest{Renames: make(map[string]string, len(m.Renames)), Removals: make([]string, 0, len(m.Removals))}
+	for src, dst := range m.Renames {
+		out.Renames[manifestPathFromDisk(dir, src)] = manifestPathFromDisk(dir, dst)
+	}
+	for _, p := range m.Removals {
+		out.Removals = append(out.Removals, manifestPathFromDisk(dir, p))
+	}
+	return out
 }
 
 // discardCompactTemps deletes stray compaction temp files (.compact_*,
