@@ -185,3 +185,48 @@ func TestRebalance_MergesTinySegments(t *testing.T) {
 		t.Errorf("expected 2 entries in merged segment, got %d", len(entries))
 	}
 }
+
+// TestCompact_OversizedInputBatchStillCompacts: a CommitTx batch is appended to
+// one segment whole, so a sealed segment can be many times SegmentMaxSize.
+// Re-packing its entries one at a time used to need more output segments than
+// input names, failing every pass ("exceeds input"). The last permitted output
+// segment now absorbs the overflow.
+func TestCompact_OversizedInputBatchStillCompacts(t *testing.T) {
+	col := openTestCollection(t)
+
+	const n = 40
+	pad := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	var ins []txOp
+	for i := 0; i < n; i++ {
+		ins = append(ins, txOp{kind: txOpInsert, id: col.ReserveID(), data: map[string]any{"v": i, "pad": pad}, ts: time.Now()})
+	}
+	if err := col.CommitTx(ins); err != nil {
+		t.Fatalf("CommitTx insert: %v", err)
+	}
+	col.rotateSegment()
+	var upd []txOp
+	for _, op := range ins {
+		upd = append(upd, txOp{kind: txOpUpdate, id: op.id, data: map[string]any{"v": -1, "pad": pad}, ts: time.Now()})
+	}
+	if err := col.CommitTx(upd); err != nil {
+		t.Fatalf("CommitTx update: %v", err)
+	}
+	col.rotateSegment()
+
+	col.mu.RLock()
+	in := len(col.sealed)
+	col.mu.RUnlock()
+
+	if err := col.compact(true); err != nil {
+		t.Fatalf("compact with %d sealed segments: %v", in, err)
+	}
+	for _, op := range ins {
+		got, err := col.Get(op.id)
+		if err != nil {
+			t.Fatalf("Get %d: %v", op.id, err)
+		}
+		if got.Data["v"] != float64(-1) && got.Data["v"] != -1 {
+			t.Fatalf("id %d: v = %v, want -1", op.id, got.Data["v"])
+		}
+	}
+}

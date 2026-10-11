@@ -1,0 +1,4 @@
+{"id":1,"op":"insert","ts":"2026-10-11T11:38:41.210976106Z","rev":1,"data":{"col":"ledger","kind":"legacy","n":0},"crc":899464039}
+{"id":2,"op":"insert","ts":"2026-10-11T11:38:41.210990641Z","rev":1,"data":{"col":"ledger","kind":"legacy","n":1},"crc":3102920701}
+{"id":3,"op":"insert","ts":"2026-10-11T11:38:41.210999252Z","rev":1,"data":{"col":"ledger","kind":"legacy","n":2},"crc":4188980031}
+{"id":4,"op":"insert","ts":"2026-10-11T11:38:41.211006645Z","rev":1,"data":{"col":"ledger","kind":"legacy","n":3},"crc":2814529592}

@@ -1,6 +1,6 @@
 # XTx fault-boundary checklist and design fixtures
 
-**Status:** design / test scaffolding. Nothing here is enabled in `engine.Open`.
+**Status:** implemented. This file records the design-time boundary checklist and frozen wire fixtures; the production implementation lives in `engine/xtx_*.go` and `internal/xtxspec` is retained as the executable specification the engine tests cross-check against (`engine/xtx_wire_test.go`).
 **Companion to:** [`design-cross-collection-transactions.md`](design-cross-collection-transactions.md)
 (`§` references below point there).
 **Executable form:** `internal/xtxspec` — `Boundaries()` is this table,

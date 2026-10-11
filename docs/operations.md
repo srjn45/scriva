@@ -266,3 +266,42 @@ Four Prometheus metrics expose transaction activity and recovery:
 3. **Monitor `rate(scriva_xtx_conflicts_total[5m])`:**
    Elevated conflict rates indicate concurrent contending transactions touching the same documents or unique keys. Ensure clients implement exponential backoff and jitter on retry.
 
+### Upgrade, downgrade and recovery playbook
+
+**Upgrading from a pre-transaction release (≤ v1.4).** A data directory written
+before cross-collection transactions is a *legacy root*: it has no `xtx.format`
+and no `xtx.journal`. The new binary opens, verifies and serves it unchanged and
+writes no `xtx.*` file until the first `CommitXTx`. That first transaction
+upgrades the root in place — `xtx.format` (file + directory fsync), then
+`xtx.journal`, then stamped runs — and never rewrites existing sealed segments.
+Verified against a real v1.4.0 directory by `TestXTxLifecycle_Upgraded`
+(fixture: `engine/testdata/upgrade/v1.4.0`, read-only input, regenerate only by
+running the v1.4.0 tag's engine; see its `README.md`).
+
+**Downgrading.** Once a root holds transaction state it is **not** downgradable
+to a binary that predates the fence:
+
+| Reader | Root has `xtx.*` | Behavior |
+|---|---|---|
+| pre-fence binary | live stamped runs | fails closed on the first stamped line (`ErrCorruptEntry`); **do not run that binary's `repair`** — it would quarantine the stamped segments |
+| this release, `xtx.format` `min_reader` too new | any | `Open`, `VerifyDir` and `Repair` refuse (`ErrFormatTooNew`, or `ErrXTxUnsupported` for an unknown feature) and modify nothing |
+| this release | `xtx.journal` without `xtx.format` | `ErrXTxUnsupported`, nothing modified |
+| this release | stamped runs, `xtx.journal` missing (with or without `xtx.format`) | `ErrXTxJournalMissing`; runs are **never** presumed aborted, because the journal is the only record of which were committed |
+
+To roll back to an older binary, restore the pre-upgrade backup. There is no
+in-place drain command yet.
+
+**Recovery.** `Open` resolves every undecided run itself (presumed abort only
+when no COMMIT exists, never when the evidence was lost). For anything it
+refuses: take a copy of the directory first, run `scriva verify` (read-only; it
+never takes the lock), then `scriva repair` — which backs up and verifies the
+affected collections before mutating anything and refuses transaction roots it
+cannot reconcile. Restore the missing `xtx.journal`/`xtx.format` from backup
+rather than deleting them. Never create an empty `xtx.journal` to silence
+`ErrXTxJournalMissing`.
+
+**Mixed versions in replication.** See [Upgrade order](#upgrade-order-protocol-negotiation):
+a follower that cannot speak protocol v2 is refused with
+`REPLICATION_PROTOCOL_UNSUPPORTED` when the first transaction would reach it,
+never fed per-entry records.
+

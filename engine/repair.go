@@ -262,6 +262,13 @@ func Repair(ctx context.Context, dataDir string, opts RepairOptions) (*RepairRep
 		rep.BackupDir = jr.BackupDir
 	}
 
+	// A transaction root this binary cannot interpret (xtx.format too new, an
+	// unknown feature, or corrupt) is refused with that precise error before
+	// anything is planned: Repair must not reinterpret state it does not understand.
+	if _, ferr := readXTxFormat(dataDir); ferr != nil {
+		return nil, ferr
+	}
+
 	// 1. Observe: verify the directory as it stands.
 	vopts := VerifyOptions{Mode: VerifyFull, Collections: opts.Collections, Now: opts.Now}
 	pre, err := VerifyDir(ctx, dataDir, vopts)

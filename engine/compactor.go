@@ -174,7 +174,7 @@ func (c *Collection) compactLocked(force bool) error {
 	c.compactRetryExp.Store(0)
 
 	// --- Step 3: Replay all entries, keep latest committed/plain value per id ---
-	resolved, err := resolveCompactEntries(toCompact, c.decisions)
+	resolved, err := resolveCompactEntries(toCompact, c.currentDecisions())
 	if err != nil {
 		return fmt.Errorf("compactor: resolve: %w", err)
 	}
@@ -196,7 +196,7 @@ func (c *Collection) compactLocked(force bool) error {
 	if err := discardCompactTemps(c.dir); err != nil {
 		return fmt.Errorf("compactor: %w", err)
 	}
-	tempSegs, err := c.writeCompactEntries(resolved)
+	tempSegs, err := c.writeCompactEntries(resolved, len(toCompact))
 	if err != nil {
 		_ = discardCompactTemps(c.dir)
 		return fmt.Errorf("compactor: write compacted: %w", err)
@@ -333,7 +333,8 @@ func (c *Collection) compactLocked(force bool) error {
 	all := make([]*Segment, 0, len(c.sealed)+1)
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
-	if err := c.index.Rebuild(all, c.decisions); err != nil {
+	decisions := c.currentDecisions()
+	if err := c.index.Rebuild(all, decisions); err != nil {
 		c.swapFailed = true
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: rebuild index: %w", err)
@@ -353,7 +354,7 @@ func (c *Collection) compactLocked(force bool) error {
 	c.sidxMu.RLock()
 	sidxSnaps := make(map[string]*sidxSnapshot, len(c.sidxMap))
 	for field, sidx := range c.sidxMap {
-		if err := sidx.rebuild(all, false, c.decisions); err != nil {
+		if err := sidx.rebuild(all, false, decisions); err != nil {
 			c.sidxMu.RUnlock()
 			c.swapFailed = true
 			c.mu.Unlock()
@@ -552,6 +553,7 @@ type compactEntry struct {
 func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]compactEntry, error) {
 	latest := make(map[uint64]store.Entry)
 	var evidence []compactEntry
+	hasEvidence := make(map[uint64]bool)
 
 	for _, seg := range segs {
 		err := seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
@@ -561,10 +563,12 @@ func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]comp
 			case entryVisible(tx, decisions):
 				stamp := *tx
 				evidence = append(evidence, compactEntry{entry: e, tx: &stamp})
+				hasEvidence[e.ID] = true
 				delete(latest, e.ID)
 			case decisions == nil || decisions[tx.T] == "":
 				stamp := *tx
 				evidence = append(evidence, compactEntry{entry: e, tx: &stamp})
+				hasEvidence[e.ID] = true
 			}
 			return nil
 		})
@@ -576,7 +580,7 @@ func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]comp
 	now := time.Now().UnixNano()
 	live := make([]store.Entry, 0, len(latest))
 	for _, e := range latest {
-		if e.Op == store.OpDelete || expired(e.ExpiresAt, now) {
+		if !hasEvidence[e.ID] && (e.Op == store.OpDelete || expired(e.ExpiresAt, now)) {
 			continue
 		}
 		live = append(live, e)
@@ -611,10 +615,17 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 	for _, e := range entries {
 		compact = append(compact, compactEntry{entry: e})
 	}
-	return c.writeCompactEntries(compact)
+	return c.writeCompactEntries(compact, 0)
 }
 
-func (c *Collection) writeCompactEntries(entries []compactEntry) ([]*Segment, error) {
+// writeCompactEntries writes entries into temp segments, rotating at
+// SegmentMaxSize. maxSegs > 0 caps the number of output segments: once only the
+// last permitted segment remains it is allowed to grow past SegmentMaxSize
+// instead of rotating. Input segments may legitimately exceed the limit (a
+// batch or cross-collection transaction run is appended to one segment whole),
+// and re-packing those entry by entry could otherwise need more output segments
+// than input names exist, which would make the pass fail forever.
+func (c *Collection) writeCompactEntries(entries []compactEntry, maxSegs int) ([]*Segment, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -639,7 +650,7 @@ func (c *Collection) writeCompactEntries(entries []compactEntry) ([]*Segment, er
 	}
 
 	for _, ce := range entries {
-		if current.Size() >= c.cfg.SegmentMaxSize {
+		if current.Size() >= c.cfg.SegmentMaxSize && (maxSegs <= 0 || len(segs)+1 < maxSegs) {
 			if sealErr := current.Seal(); sealErr != nil {
 				return nil, sealErr
 			}

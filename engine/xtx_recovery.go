@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-
-	"github.com/srjn45/scriva/store"
 )
 
 // runEvidence records the evidence recovery found for one participant of one txid.
@@ -151,33 +149,34 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 
 		for _, seg := range cd.all {
 			isActive := (seg == cd.active)
-			_ = seg.ScanStampedFromOffset(0, func(offset int64, e store.Entry, tx *TxStamp) error {
-				if tx != nil && tx.T != "" {
+			sr, scanErr := ScanSegmentTolerant(seg.Path())
+			if scanErr != nil {
+				continue
+			}
+			for _, se := range sr.Entries {
+				if se.Tx != nil && se.Tx.T != "" {
 					hasAnyStamped = true
-					se := stampedEntry{
-						ID:        e.ID,
-						Op:        e.Op,
-						Rev:       e.Rev,
-						Epoch:     e.Epoch,
-						ExpiresAt: e.ExpiresAt,
-						Data:      e.Data,
-						Tx:        *tx,
+					sentry := stampedEntry{
+						ID:        se.Entry.ID,
+						Op:        se.Entry.Op,
+						Rev:       se.Entry.Rev,
+						Epoch:     se.Entry.Epoch,
+						ExpiresAt: se.Entry.ExpiresAt,
+						Data:      se.Entry.Data,
+						Tx:        *se.Tx,
 					}
-					if e.CRC != nil {
-						se.CRC = *e.CRC
+					if se.Entry.CRC != nil {
+						sentry.CRC = *se.Entry.CRC
 					}
-					lineBytes, _ := encodeStamped(se)
-					endOffset := offset + int64(len(lineBytes))
-					runsInCol[tx.T] = append(runsInCol[tx.T], stampedItem{
-						se:       se,
-						offset:   offset,
-						endOff:   endOffset,
+					runsInCol[se.Tx.T] = append(runsInCol[se.Tx.T], stampedItem{
+						se:       sentry,
+						offset:   se.Offset,
+						endOff:   se.Offset + se.Length,
 						segPath:  seg.Path(),
 						isActive: isActive,
 					})
 				}
-				return nil
-			})
+			}
 		}
 
 		for txid, items := range runsInCol {
@@ -223,10 +222,13 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		}
 	}
 
-	// Check Row 12: xtx.format says enabled, journal is missing, but stamped entries exist.
-	// A present-but-empty journal is legitimate (crash during the first prepare):
-	// undecided runs are then resolved as aborted (presumed abort).
-	if hasFormat && xj == nil && hasAnyStamped {
+	// Check Row 12: the journal is missing but stamped entries exist. This holds
+	// whether or not xtx.format survived: a root that lost both xtx.* files is
+	// not a legacy root, and its stamped runs must never be adopted as ordinary
+	// visible documents. A present-but-empty journal is legitimate (crash during
+	// the first prepare): undecided runs are then resolved as aborted (presumed
+	// abort).
+	if xj == nil && hasAnyStamped {
 		return xtxErr("", ErrXTxJournalMissing, errors.New("stamped entries exist but xtx.journal is missing"))
 	}
 
@@ -369,7 +371,9 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		decisions = make(map[string]string)
 	}
 	cfg.decisions = decisions
+	cfg.decisionsFn = db.decisionsMap
 	db.defaultCfg.decisions = decisions
+	db.defaultCfg.decisionsFn = db.decisionsMap
 
 	// A follower-applied transaction's COMMIT carries its replication LSN. A
 	// follower applies strictly in LSN order, so every LSN at or below the

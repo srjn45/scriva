@@ -865,20 +865,15 @@ aborts instead of mutating the layout afterwards.
 
 ## Transactions
 
-> **Planned format — not implemented.** Cross-collection transactions (XTx) —
-> atomic, durable writes spanning several collections of one data directory —
-> are designed but **not shipped**: no released binary writes or reads the
-> format it describes, and the harness in `internal/xtxspec` is not wired into
-> `Open`. The design (coordinator authority via a root-level `xtx.journal`
-> `COMMIT` record, redo-only stamped entries, presumed abort, fsync ordering
-> S2 < S3 < S4, DB-level recovery state machine, canonical lock order, conflict
-> and isolation semantics, error outcomes, and the old-binary compatibility
-> fence) is in
-> [design-cross-collection-transactions.md](design-cross-collection-transactions.md);
-> the per-boundary crash checklist and frozen wire fixtures are in
+> **Two transaction scopes.** `CommitTx` / `begin-tx` below is single-collection and
+> unchanged. Atomic, durable, crash-recoverable **cross-collection** transactions
+> (XTx) over one data directory are implemented and documented in
+> [Cross-collection transactions](#cross-collection-transactions); the protocol is
+> specified in
+> [design-cross-collection-transactions.md](design-cross-collection-transactions.md)
+> and the per-boundary crash checklist in
 > [design-xtx-fault-boundaries.md](design-xtx-fault-boundaries.md). Single-node,
 > single data directory only — distributed/XA transactions are out of scope.
-> Existing `CommitTx` (single collection) is unchanged.
 
 Transactions are optimistic and scoped to a single collection. Operations are staged in memory and applied atomically on commit:
 
@@ -1071,9 +1066,8 @@ tar xzf db.tar.gz -C ./data      # then start the server with --data ./data
   created, dropped, or reopened mid-snapshot.
 - Each collection's files are copied while its **own read lock** is held, so no
   write, rotation, or compaction can mutate them during the copy — the archive
-  captures a per-collection point in time. (ScrivaDB has no cross-collection
-  transactions, so per-collection consistency is the strongest meaningful
-  guarantee.)
+  captures a per-collection point in time. Cross-collection transactions are
+  kept atomic across the archive by the XTx barrier described below.
 - Segments are append-only, so even the active segment is captured at a valid
   entry boundary — the copy simply ends at the current file size.
 
