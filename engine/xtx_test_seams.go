@@ -18,6 +18,9 @@ const (
 	XTxHookDecided
 	// XTxHookApplied: applied to indexes and locks released.
 	XTxHookApplied
+	// XTxHookReplApplied: a replicated transaction is durable and visible on
+	// a follower, before its applied LSN is advanced and persisted.
+	XTxHookReplApplied
 )
 
 // SetTestXTxHook installs a test hook for cross-collection commit phases.

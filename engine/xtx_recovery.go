@@ -371,6 +371,23 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 	cfg.decisions = decisions
 	db.defaultCfg.decisions = decisions
 
+	// A follower-applied transaction's COMMIT carries its replication LSN. A
+	// follower applies strictly in LSN order, so every LSN at or below the
+	// highest bound one was applied: raise the applied watermark to it. This
+	// closes the window between the durable COMMIT and the replication.json
+	// write (crash there must not lose or redo the position).
+	if bound := xj.maxBoundLSN(); bound > 0 {
+		db.replMu.Lock()
+		raise := bound > db.appliedLSN
+		if raise {
+			db.appliedLSN = bound
+		}
+		db.replMu.Unlock()
+		if raise {
+			_ = db.persistReplState()
+		}
+	}
+
 	for _, name := range colNames {
 		col, err := OpenCollection(name, db.dataDir, cfg)
 		if err != nil {

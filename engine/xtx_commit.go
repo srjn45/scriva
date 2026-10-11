@@ -464,85 +464,80 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 		sealedDatas[c.name] = colSealed
 	}
 
+	// With replication enabled the transaction is published as one envelope.
+	// Normalizing the payload and enforcing its size bound happens here, before
+	// any byte is written, so a transaction that commits can always be published.
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	var envOps []TxEnvelopeOp
+	if db.broker != nil {
+		nowTs, _ := time.Parse(time.RFC3339Nano, nowStr)
+		for _, c := range participants {
+			for i, op := range opsByCol[c.name] {
+				envOps = append(envOps, TxEnvelopeOp{
+					Collection: c.name,
+					Entry: store.Entry{
+						ID:        op.ID,
+						Op:        op.Op,
+						Ts:        nowTs,
+						Rev:       computedRevs[c.name][i],
+						Data:      sealedDatas[c.name][i],
+						Epoch:     epochs[c.name],
+						ExpiresAt: computedExps[c.name][i],
+					},
+				})
+			}
+		}
+		var size int64
+		var perr error
+		envOps, size, perr = prepareEnvelopeOps(envOps)
+		if perr != nil {
+			return nil, nil, xtxErr("", ErrXTxConflict, perr)
+		}
+		if size > DefaultMaxEnvelopeBytes {
+			return nil, nil, xtxErr("", ErrXTxTooLarge, fmt.Errorf("replication envelope %d bytes > limit %d", size, DefaultMaxEnvelopeBytes))
+		}
+	}
+
 	// Allocate txid under journal.mu
 	txid, err := j.allocateTxID(key)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// S1: Append stamped runs to active segments
-	startSizes := make(map[string]int64)
-	offsets := make(map[string][]int64)
-	parts := make([]xtxPart, 0, len(participants))
-	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
-
-	rollbackRuns := func() {
-		for _, p := range participants {
-			if sz, ok := startSizes[p.name]; ok {
-				_ = p.active.rollback(sz)
-			}
+	var env *TxEnvelope
+	if db.broker != nil {
+		// Persist the LSN watermark ahead of the COMMIT (see reserveNext): a
+		// crash after the COMMIT but before publish must force followers to
+		// re-bootstrap rather than silently miss the recovered transaction.
+		db.broker.reserveNext()
+		env, err = sealEnvelope(txid, key, envOps)
+		if err != nil {
+			_ = j.abort(txid, key, "client")
+			return nil, nil, xtxErr(txid, ErrXTxConflict, err)
 		}
 	}
 
-	for _, c := range participants {
-		startSizes[c.name] = c.active.Size()
+	// S1..S4: stamped runs, fsync, journal COMMIT.
+	runs := make([]xtxRun, len(participants))
+	for i, c := range participants {
 		colOps := opsByCol[c.name]
-		colRevs := computedRevs[c.name]
-		colExps := computedExps[c.name]
-		colSealed := sealedDatas[c.name]
-		txEpoch := epochs[c.name]
-		n := uint32(len(colOps))
-		opRefs := make([]xtxOpRef, n)
-		colOffsets := make([]int64, n)
-
-		for i, op := range colOps {
-			se := stampedEntry{
+		entries := make([]stampedEntry, len(colOps))
+		for k, op := range colOps {
+			entries[k] = stampedEntry{
 				ID:        op.ID,
 				Op:        op.Op,
 				Ts:        nowStr,
-				Rev:       colRevs[i],
-				Data:      colSealed[i],
-				Epoch:     txEpoch,
-				ExpiresAt: colExps[i],
-				Tx:        TxStamp{T: txid, I: uint32(i), N: n},
+				Rev:       computedRevs[c.name][k],
+				Data:      sealedDatas[c.name][k],
+				Epoch:     epochs[c.name],
+				ExpiresAt: computedExps[c.name][k],
 			}
-			offset, err := c.active.AppendStamped(se)
-			if err != nil {
-				rollbackRuns()
-				_ = j.abort(txid, key, "io")
-				return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-			}
-			colOffsets[i] = offset
-			opRefs[i] = xtxOpRef{ID: op.ID, Op: string(op.Op), Rev: colRevs[i]}
 		}
-		offsets[c.name] = colOffsets
-		parts = append(parts, xtxPart{C: c.name, N: n, D: partDigest(opRefs)})
+		runs[i] = xtxRun{col: c, entries: entries}
 	}
-
-	// S2: Fsync all participant active segments unconditionally
-	for _, c := range participants {
-		if err := c.active.Sync(); err != nil {
-			c.active.poisoned = err
-			rollbackRuns()
-			_ = j.abort(txid, key, "io")
-			return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-		}
+	offsets, err := db.xtxPrepareAndDecide(j, key, txid, runs, nil)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	db.xtxHookAt(xtxHookPrepared, key, txid)
-
-	// S3 + S4: Commit record in coordinator journal and fsync
-	if err := j.commitPrepared(txid, key, parts); err != nil {
-		if errors.Is(err, ErrXTxOutcomeUnknown) {
-			// S4 fsync failed: outcome is unknown to this process. Do NOT roll back runs.
-			return nil, nil, xtxErr(txid, ErrXTxOutcomeUnknown, err)
-		}
-		rollbackRuns()
-		_ = j.abort(txid, key, "io")
-		return nil, nil, xtxErr(txid, ErrXTxDurability, err)
-	}
-
-	db.xtxHookAt(xtxHookDecided, key, txid)
 
 	// S5: Apply runs to in-memory primary and secondary indexes
 	var opResults []XTxOpResult
@@ -581,16 +576,6 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 			}
 
 			ts, _ := time.Parse(time.RFC3339Nano, nowStr)
-			e := store.Entry{
-				ID:        op.ID,
-				Op:        op.Op,
-				Ts:        ts,
-				Rev:       rev,
-				Data:      sealedDatas[c.name][i],
-				Epoch:     txEpoch,
-				ExpiresAt: exp,
-			}
-			c.publishCommit(e)
 			watchEvents = append(watchEvents, struct {
 				col   *Collection
 				event WatchEvent
@@ -610,6 +595,14 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 		if c.active.Size() >= c.cfg.SegmentMaxSize {
 			needsRotate[c.name] = true
 		}
+	}
+
+	// Publish the whole transaction as one envelope (one LSN) now that the
+	// COMMIT is durable and the indexes are applied, still under every
+	// participant lock so per-collection order matches the LSN order. Participant
+	// entries are never also published individually.
+	if env != nil {
+		db.broker.publishTx(env)
 	}
 
 	// S6: Post-lock maintenance and notifications

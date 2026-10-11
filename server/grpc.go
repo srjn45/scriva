@@ -834,8 +834,13 @@ func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.Scriva_Replic
 	}
 	defer rs.Close()
 
+	// Protocol negotiation: a follower that did not advertise v2 is served the
+	// legacy feed and refused (typed error, stream ends) the moment it would need
+	// a transaction envelope. Transactions are never flattened into entries.
+	v2 := supportsProtocolV2(req.ProtocolVersions)
+
 	for _, re := range backlog {
-		if err := sendReplRecord(stream, rs, re); err != nil {
+		if err := sendReplRecord(stream, rs, re, v2, false); err != nil {
 			return err
 		}
 	}
@@ -851,7 +856,7 @@ func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.Scriva_Replic
 			if !live {
 				return nil
 			}
-			if err := sendReplRecord(stream, rs, re); err != nil {
+			if err := sendReplRecord(stream, rs, re, v2, true); err != nil {
 				return err
 			}
 		}
@@ -859,9 +864,22 @@ func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.Scriva_Replic
 }
 
 // sendReplRecord marshals and ships one entry, then records the shipped LSN for
-// ReplicationStatus lag reporting.
-func sendReplRecord(stream pb.Scriva_ReplicateServer, rs *engine.ReplicationStream, re engine.ReplicationEntry) error {
-	rec, err := replEntryToProto(re)
+// ReplicationStatus lag reporting. live is true for records drained from the
+// subscription channel (their buffer weight is released once consumed).
+func sendReplRecord(stream pb.Scriva_ReplicateServer, rs *engine.ReplicationStream, re engine.ReplicationEntry, v2, live bool) error {
+	if live {
+		rs.Consumed(re)
+	}
+	var rec *pb.ReplicationRecord
+	var err error
+	if re.IsTx() {
+		if !v2 {
+			return protocolUnsupportedStatus(re.LSN, re.Tx.TxID)
+		}
+		rec, err = txEnvelopeToProto(re.LSN, re.Tx)
+	} else {
+		rec, err = replEntryToProto(re)
+	}
 	if err != nil {
 		return status.Errorf(codes.Internal, "replicate: %v", err)
 	}

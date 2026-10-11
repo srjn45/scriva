@@ -779,7 +779,7 @@ func TestCommitXTx_ReplicationBrokerGroup(t *testing.T) {
 		t.Fatal("empty TxID")
 	}
 
-	// Verify broker received entries with contiguous LSNs
+	// The transaction is one envelope record consuming exactly one LSN.
 	if db.broker == nil {
 		t.Fatal("broker is nil")
 	}
@@ -787,13 +787,20 @@ func TestCommitXTx_ReplicationBrokerGroup(t *testing.T) {
 	if !ok {
 		t.Fatal("broker subscribe failed")
 	}
-	if len(backlog) != 2 {
-		t.Fatalf("broker backlog: got %d, want 2", len(backlog))
+	if len(backlog) != 1 {
+		t.Fatalf("broker backlog: got %d records, want 1 envelope", len(backlog))
 	}
-	if db.broker.currentLSN() != 2 {
-		t.Fatalf("highest LSN = %d, want 2", db.broker.currentLSN())
+	if db.broker.currentLSN() != 1 {
+		t.Fatalf("highest LSN = %d, want 1", db.broker.currentLSN())
 	}
-	if backlog[0].LSN != 1 || backlog[1].LSN != 2 {
-		t.Fatalf("LSNs not contiguous: [%d, %d]", backlog[0].LSN, backlog[1].LSN)
+	rec := backlog[0]
+	if !rec.IsTx() || rec.LSN != 1 || rec.Tx.TxID != res.TxID || len(rec.Tx.Ops) != 2 {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+	if rec.Tx.Ops[0].Collection != "colA" || rec.Tx.Ops[1].Collection != "colB" {
+		t.Fatalf("ops not in canonical order: %+v", rec.Tx.Ops)
+	}
+	if err := rec.Tx.Verify(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -41,6 +41,10 @@ type Metrics struct {
 	XTxDuration       *prometheus.HistogramVec
 	XTxConflictsTotal *prometheus.CounterVec
 	XTxRecoveryTotal  *prometheus.CounterVec
+
+	ReplTxApplyTotal    *prometheus.CounterVec
+	ReplTxApplyDuration *prometheus.HistogramVec
+	ReplTxOpsTotal      prometheus.Counter
 }
 
 // New creates a Metrics and registers all instruments with reg.
@@ -148,6 +152,23 @@ func New(reg prometheus.Registerer) *Metrics {
 		Help: "Cross-collection transactions resolved during startup recovery, by outcome (recovered_committed|presumed_abort).",
 	}, []string{"outcome"})
 
+	m.ReplTxApplyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_replication_tx_apply_total",
+		Help: "Replicated cross-collection transaction envelopes processed by a follower, by outcome (applied|duplicate|diverged|promoted|failed).",
+	}, []string{"outcome"})
+
+	m.ReplTxApplyDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "scriva_replication_tx_apply_duration_seconds",
+		Help:    "Time a follower spent applying one replicated transaction envelope, by outcome.",
+		Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"outcome"})
+
+	m.ReplTxOpsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "scriva_replication_tx_ops_total",
+		Help: "Operations contained in replicated transaction envelopes that a follower applied.",
+	})
+
+	reg.MustRegister(m.ReplTxApplyTotal, m.ReplTxApplyDuration, m.ReplTxOpsTotal)
 	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal,
 		m.RecoveryTotal, m.RecoveryDuration, m.RecoveryBytesTotal, m.IntegrityOpenTotal, m.IntegrityFindings,
 		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal,
@@ -180,6 +201,35 @@ func (m *Metrics) ObserveXTxRecovery(outcome string, count int) {
 		return
 	}
 	m.XTxRecoveryTotal.WithLabelValues(outcome).Add(float64(count))
+}
+
+// ObserveReplTxApply records one replicated transaction envelope a follower
+// processed. ops is the envelope's operation count; it is added to the ops
+// counter only for outcome "applied".
+func (m *Metrics) ObserveReplTxApply(outcome string, ops int, dur time.Duration) {
+	if outcome == "" {
+		return
+	}
+	m.ReplTxApplyTotal.WithLabelValues(outcome).Inc()
+	m.ReplTxApplyDuration.WithLabelValues(outcome).Observe(dur.Seconds())
+	if outcome == "applied" && ops > 0 {
+		m.ReplTxOpsTotal.Add(float64(ops))
+	}
+}
+
+// RegisterReplicationGauges exposes a follower's applied LSN and lag (leader
+// LSN minus applied LSN, in records; one transaction is one LSN).
+func (m *Metrics) RegisterReplicationGauges(applied, lag func() uint64) {
+	m.reg.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "scriva_replication_applied_lsn",
+			Help: "Highest LSN this follower has fully applied (never covers a partially applied transaction).",
+		}, func() float64 { return float64(applied()) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "scriva_replication_lag_lsn",
+			Help: "Replication lag in LSNs: last-known leader LSN minus applied LSN.",
+		}, func() float64 { return float64(lag()) }),
+	)
 }
 
 // ObserveCompaction records one completed compaction run.

@@ -4113,9 +4113,17 @@ type ReplicateRequest struct {
 	FromLsn uint64 `protobuf:"varint,1,opt,name=from_lsn,json=fromLsn,proto3" json:"from_lsn,omitempty"`
 	// Opaque follower identity, surfaced in ReplicationStatus so an operator can
 	// tell followers apart. Not required for correctness.
-	FollowerId    string `protobuf:"bytes,2,opt,name=follower_id,json=followerId,proto3" json:"follower_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FollowerId string `protobuf:"bytes,2,opt,name=follower_id,json=followerId,proto3" json:"follower_id,omitempty"`
+	// Replication protocol versions this follower can decode. v1 is the legacy
+	// one-record-per-entry feed; v2 adds the cross-collection transaction
+	// envelope (ReplicationRecord.tx). Empty means a pre-v2 follower, i.e. {1}.
+	// A leader that must ship a transaction envelope to a follower that did not
+	// advertise 2 fails the stream with FAILED_PRECONDITION and an ErrorInfo of
+	// reason REPLICATION_PROTOCOL_UNSUPPORTED — it never downgrades a transaction
+	// into independent per-entry records.
+	ProtocolVersions []uint32 `protobuf:"varint,3,rep,packed,name=protocol_versions,json=protocolVersions,proto3" json:"protocol_versions,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ReplicateRequest) Reset() {
@@ -4162,18 +4170,32 @@ func (x *ReplicateRequest) GetFollowerId() string {
 	return ""
 }
 
+func (x *ReplicateRequest) GetProtocolVersions() []uint32 {
+	if x != nil {
+		return x.ProtocolVersions
+	}
+	return nil
+}
+
 // ReplicationRecord is one committed entry, shipped verbatim so the follower can
 // reproduce the leader's primary and secondary indexes identically.
+//
+// A record with record_version == 0 (or 1) is a legacy single-entry record
+// described by fields 2-8. A record with record_version == 2 is a transaction
+// envelope: lsn (field 1) is the transaction's single global LSN, fields 2-8
+// are unset and tx carries the operations.
 type ReplicationRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lsn           uint64                 `protobuf:"varint,1,opt,name=lsn,proto3" json:"lsn,omitempty"`
 	Collection    string                 `protobuf:"bytes,2,opt,name=collection,proto3" json:"collection,omitempty"`
 	Op            ReplicationOp          `protobuf:"varint,3,opt,name=op,proto3,enum=scriva.v1.ReplicationOp" json:"op,omitempty"`
 	Id            uint64                 `protobuf:"varint,4,opt,name=id,proto3" json:"id,omitempty"`
-	Rev           uint64                 `protobuf:"varint,5,opt,name=rev,proto3" json:"rev,omitempty"`                              // record revision (1 on insert, +1 per update)
-	Data          *structpb.Struct       `protobuf:"bytes,6,opt,name=data,proto3" json:"data,omitempty"`                             // unset for REP_DELETE
-	ExpiresAt     int64                  `protobuf:"varint,7,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"` // Unix-nano TTL deadline (0 = never)
-	Ts            *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=ts,proto3" json:"ts,omitempty"`                                 // the entry's commit timestamp
+	Rev           uint64                 `protobuf:"varint,5,opt,name=rev,proto3" json:"rev,omitempty"`                                          // record revision (1 on insert, +1 per update)
+	Data          *structpb.Struct       `protobuf:"bytes,6,opt,name=data,proto3" json:"data,omitempty"`                                         // unset for REP_DELETE
+	ExpiresAt     int64                  `protobuf:"varint,7,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`             // Unix-nano TTL deadline (0 = never)
+	Ts            *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=ts,proto3" json:"ts,omitempty"`                                             // the entry's commit timestamp
+	RecordVersion uint32                 `protobuf:"varint,9,opt,name=record_version,json=recordVersion,proto3" json:"record_version,omitempty"` // 0/1 = legacy entry, 2 = transaction envelope
+	Tx            *ReplicationTx         `protobuf:"bytes,10,opt,name=tx,proto3" json:"tx,omitempty"`                                            // set iff record_version == 2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4264,6 +4286,196 @@ func (x *ReplicationRecord) GetTs() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *ReplicationRecord) GetRecordVersion() uint32 {
+	if x != nil {
+		return x.RecordVersion
+	}
+	return 0
+}
+
+func (x *ReplicationRecord) GetTx() *ReplicationTx {
+	if x != nil {
+		return x.Tx
+	}
+	return nil
+}
+
+// ReplicationTx is one committed cross-collection transaction shipped as an
+// indivisible unit under a single LSN.
+type ReplicationTx struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	TxId  string                 `protobuf:"bytes,1,opt,name=tx_id,json=txId,proto3" json:"tx_id,omitempty"`
+	Key   string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"` // client idempotency key ("" when none)
+	// Participant operations in the leader's canonical commit order: collections
+	// ascending bytewise, each collection's operations in staging order.
+	Ops []*ReplicationTxOp `protobuf:"bytes,3,rep,name=ops,proto3" json:"ops,omitempty"`
+	// SHA-256 over the canonical encoding of tx_id, key and ops (docs/design-xtx-replication.md §3.3).
+	// The receiver recomputes and verifies it before acting on the envelope.
+	Digest        []byte `protobuf:"bytes,4,opt,name=digest,proto3" json:"digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicationTx) Reset() {
+	*x = ReplicationTx{}
+	mi := &file_proto_scriva_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicationTx) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicationTx) ProtoMessage() {}
+
+func (x *ReplicationTx) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_scriva_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicationTx.ProtoReflect.Descriptor instead.
+func (*ReplicationTx) Descriptor() ([]byte, []int) {
+	return file_proto_scriva_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *ReplicationTx) GetTxId() string {
+	if x != nil {
+		return x.TxId
+	}
+	return ""
+}
+
+func (x *ReplicationTx) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ReplicationTx) GetOps() []*ReplicationTxOp {
+	if x != nil {
+		return x.Ops
+	}
+	return nil
+}
+
+func (x *ReplicationTx) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+// ReplicationTxOp is one committed participant operation (the same fields a
+// legacy ReplicationRecord carries, plus the encryption epoch).
+type ReplicationTxOp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Op            ReplicationOp          `protobuf:"varint,2,opt,name=op,proto3,enum=scriva.v1.ReplicationOp" json:"op,omitempty"`
+	Id            uint64                 `protobuf:"varint,3,opt,name=id,proto3" json:"id,omitempty"`
+	Rev           uint64                 `protobuf:"varint,4,opt,name=rev,proto3" json:"rev,omitempty"`
+	Data          *structpb.Struct       `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`                             // unset for REP_DELETE
+	ExpiresAt     int64                  `protobuf:"varint,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"` // Unix-nano TTL deadline (0 = never)
+	Ts            *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=ts,proto3" json:"ts,omitempty"`
+	Epoch         uint64                 `protobuf:"varint,8,opt,name=epoch,proto3" json:"epoch,omitempty"` // encryption epoch (0 = unencrypted)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicationTxOp) Reset() {
+	*x = ReplicationTxOp{}
+	mi := &file_proto_scriva_proto_msgTypes[68]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicationTxOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicationTxOp) ProtoMessage() {}
+
+func (x *ReplicationTxOp) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_scriva_proto_msgTypes[68]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicationTxOp.ProtoReflect.Descriptor instead.
+func (*ReplicationTxOp) Descriptor() ([]byte, []int) {
+	return file_proto_scriva_proto_rawDescGZIP(), []int{68}
+}
+
+func (x *ReplicationTxOp) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *ReplicationTxOp) GetOp() ReplicationOp {
+	if x != nil {
+		return x.Op
+	}
+	return ReplicationOp_REPLICATION_OP_UNSPECIFIED
+}
+
+func (x *ReplicationTxOp) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *ReplicationTxOp) GetRev() uint64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *ReplicationTxOp) GetData() *structpb.Struct {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *ReplicationTxOp) GetExpiresAt() int64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
+func (x *ReplicationTxOp) GetTs() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Ts
+	}
+	return nil
+}
+
+func (x *ReplicationTxOp) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 type ReplicationStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -4272,7 +4484,7 @@ type ReplicationStatusRequest struct {
 
 func (x *ReplicationStatusRequest) Reset() {
 	*x = ReplicationStatusRequest{}
-	mi := &file_proto_scriva_proto_msgTypes[67]
+	mi := &file_proto_scriva_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4284,7 +4496,7 @@ func (x *ReplicationStatusRequest) String() string {
 func (*ReplicationStatusRequest) ProtoMessage() {}
 
 func (x *ReplicationStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_scriva_proto_msgTypes[67]
+	mi := &file_proto_scriva_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4297,7 +4509,7 @@ func (x *ReplicationStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationStatusRequest.ProtoReflect.Descriptor instead.
 func (*ReplicationStatusRequest) Descriptor() ([]byte, []int) {
-	return file_proto_scriva_proto_rawDescGZIP(), []int{67}
+	return file_proto_scriva_proto_rawDescGZIP(), []int{69}
 }
 
 type ReplicationStatusResponse struct {
@@ -4316,7 +4528,7 @@ type ReplicationStatusResponse struct {
 
 func (x *ReplicationStatusResponse) Reset() {
 	*x = ReplicationStatusResponse{}
-	mi := &file_proto_scriva_proto_msgTypes[68]
+	mi := &file_proto_scriva_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4328,7 +4540,7 @@ func (x *ReplicationStatusResponse) String() string {
 func (*ReplicationStatusResponse) ProtoMessage() {}
 
 func (x *ReplicationStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_scriva_proto_msgTypes[68]
+	mi := &file_proto_scriva_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4341,7 +4553,7 @@ func (x *ReplicationStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationStatusResponse.ProtoReflect.Descriptor instead.
 func (*ReplicationStatusResponse) Descriptor() ([]byte, []int) {
-	return file_proto_scriva_proto_rawDescGZIP(), []int{68}
+	return file_proto_scriva_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *ReplicationStatusResponse) GetLeaderLsn() uint64 {
@@ -4380,7 +4592,7 @@ type FollowerStatus struct {
 
 func (x *FollowerStatus) Reset() {
 	*x = FollowerStatus{}
-	mi := &file_proto_scriva_proto_msgTypes[69]
+	mi := &file_proto_scriva_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4392,7 +4604,7 @@ func (x *FollowerStatus) String() string {
 func (*FollowerStatus) ProtoMessage() {}
 
 func (x *FollowerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_scriva_proto_msgTypes[69]
+	mi := &file_proto_scriva_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4405,7 +4617,7 @@ func (x *FollowerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowerStatus.ProtoReflect.Descriptor instead.
 func (*FollowerStatus) Descriptor() ([]byte, []int) {
-	return file_proto_scriva_proto_rawDescGZIP(), []int{69}
+	return file_proto_scriva_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *FollowerStatus) GetFollowerId() string {
@@ -4449,7 +4661,7 @@ type PromoteRequest struct {
 
 func (x *PromoteRequest) Reset() {
 	*x = PromoteRequest{}
-	mi := &file_proto_scriva_proto_msgTypes[70]
+	mi := &file_proto_scriva_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4461,7 +4673,7 @@ func (x *PromoteRequest) String() string {
 func (*PromoteRequest) ProtoMessage() {}
 
 func (x *PromoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_scriva_proto_msgTypes[70]
+	mi := &file_proto_scriva_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4474,7 +4686,7 @@ func (x *PromoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromoteRequest.ProtoReflect.Descriptor instead.
 func (*PromoteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_scriva_proto_rawDescGZIP(), []int{70}
+	return file_proto_scriva_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *PromoteRequest) GetForce() bool {
@@ -4501,7 +4713,7 @@ type PromoteResponse struct {
 
 func (x *PromoteResponse) Reset() {
 	*x = PromoteResponse{}
-	mi := &file_proto_scriva_proto_msgTypes[71]
+	mi := &file_proto_scriva_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4513,7 +4725,7 @@ func (x *PromoteResponse) String() string {
 func (*PromoteResponse) ProtoMessage() {}
 
 func (x *PromoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_scriva_proto_msgTypes[71]
+	mi := &file_proto_scriva_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4526,7 +4738,7 @@ func (x *PromoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromoteResponse.ProtoReflect.Descriptor instead.
 func (*PromoteResponse) Descriptor() ([]byte, []int) {
-	return file_proto_scriva_proto_rawDescGZIP(), []int{71}
+	return file_proto_scriva_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *PromoteResponse) GetRole() string {
@@ -4835,11 +5047,12 @@ const file_proto_scriva_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x11\n" +
 	"\x0fSnapshotRequest\"#\n" +
 	"\rSnapshotChunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"N\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"{\n" +
 	"\x10ReplicateRequest\x12\x19\n" +
 	"\bfrom_lsn\x18\x01 \x01(\x04R\afromLsn\x12\x1f\n" +
 	"\vfollower_id\x18\x02 \x01(\tR\n" +
-	"followerId\"\x89\x02\n" +
+	"followerId\x12+\n" +
+	"\x11protocol_versions\x18\x03 \x03(\rR\x10protocolVersions\"\xda\x02\n" +
 	"\x11ReplicationRecord\x12\x10\n" +
 	"\x03lsn\x18\x01 \x01(\x04R\x03lsn\x12\x1e\n" +
 	"\n" +
@@ -4851,7 +5064,27 @@ const file_proto_scriva_proto_rawDesc = "" +
 	"\x04data\x18\x06 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\a \x01(\x03R\texpiresAt\x12*\n" +
-	"\x02ts\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\"\x1a\n" +
+	"\x02ts\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12%\n" +
+	"\x0erecord_version\x18\t \x01(\rR\rrecordVersion\x12(\n" +
+	"\x02tx\x18\n" +
+	" \x01(\v2\x18.scriva.v1.ReplicationTxR\x02tx\"|\n" +
+	"\rReplicationTx\x12\x13\n" +
+	"\x05tx_id\x18\x01 \x01(\tR\x04txId\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12,\n" +
+	"\x03ops\x18\x03 \x03(\v2\x1a.scriva.v1.ReplicationTxOpR\x03ops\x12\x16\n" +
+	"\x06digest\x18\x04 \x01(\fR\x06digest\"\x8b\x02\n" +
+	"\x0fReplicationTxOp\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12(\n" +
+	"\x02op\x18\x02 \x01(\x0e2\x18.scriva.v1.ReplicationOpR\x02op\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\x04R\x02id\x12\x10\n" +
+	"\x03rev\x18\x04 \x01(\x04R\x03rev\x12+\n" +
+	"\x04data\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x04data\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x06 \x01(\x03R\texpiresAt\x12*\n" +
+	"\x02ts\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x14\n" +
+	"\x05epoch\x18\b \x01(\x04R\x05epoch\"\x1a\n" +
 	"\x18ReplicationStatusRequest\"\x94\x01\n" +
 	"\x19ReplicationStatusResponse\x12\x1d\n" +
 	"\n" +
@@ -4965,7 +5198,7 @@ func file_proto_scriva_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_scriva_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_proto_scriva_proto_msgTypes = make([]protoimpl.MessageInfo, 72)
+var file_proto_scriva_proto_msgTypes = make([]protoimpl.MessageInfo, 74)
 var file_proto_scriva_proto_goTypes = []any{
 	(FilterOp)(0),                     // 0: scriva.v1.FilterOp
 	(XTxOpKind)(0),                    // 1: scriva.v1.XTxOpKind
@@ -5040,38 +5273,40 @@ var file_proto_scriva_proto_goTypes = []any{
 	(*SnapshotChunk)(nil),             // 70: scriva.v1.SnapshotChunk
 	(*ReplicateRequest)(nil),          // 71: scriva.v1.ReplicateRequest
 	(*ReplicationRecord)(nil),         // 72: scriva.v1.ReplicationRecord
-	(*ReplicationStatusRequest)(nil),  // 73: scriva.v1.ReplicationStatusRequest
-	(*ReplicationStatusResponse)(nil), // 74: scriva.v1.ReplicationStatusResponse
-	(*FollowerStatus)(nil),            // 75: scriva.v1.FollowerStatus
-	(*PromoteRequest)(nil),            // 76: scriva.v1.PromoteRequest
-	(*PromoteResponse)(nil),           // 77: scriva.v1.PromoteResponse
-	(*structpb.Struct)(nil),           // 78: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),     // 79: google.protobuf.Timestamp
-	(*structpb.Value)(nil),            // 80: google.protobuf.Value
+	(*ReplicationTx)(nil),             // 73: scriva.v1.ReplicationTx
+	(*ReplicationTxOp)(nil),           // 74: scriva.v1.ReplicationTxOp
+	(*ReplicationStatusRequest)(nil),  // 75: scriva.v1.ReplicationStatusRequest
+	(*ReplicationStatusResponse)(nil), // 76: scriva.v1.ReplicationStatusResponse
+	(*FollowerStatus)(nil),            // 77: scriva.v1.FollowerStatus
+	(*PromoteRequest)(nil),            // 78: scriva.v1.PromoteRequest
+	(*PromoteResponse)(nil),           // 79: scriva.v1.PromoteResponse
+	(*structpb.Struct)(nil),           // 80: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),     // 81: google.protobuf.Timestamp
+	(*structpb.Value)(nil),            // 82: google.protobuf.Value
 }
 var file_proto_scriva_proto_depIdxs = []int32{
-	78, // 0: scriva.v1.Record.data:type_name -> google.protobuf.Struct
-	79, // 1: scriva.v1.Record.date_added:type_name -> google.protobuf.Timestamp
-	79, // 2: scriva.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
+	80, // 0: scriva.v1.Record.data:type_name -> google.protobuf.Struct
+	81, // 1: scriva.v1.Record.date_added:type_name -> google.protobuf.Timestamp
+	81, // 2: scriva.v1.Record.date_modified:type_name -> google.protobuf.Timestamp
 	8,  // 3: scriva.v1.Filter.field:type_name -> scriva.v1.FieldFilter
 	9,  // 4: scriva.v1.Filter.and:type_name -> scriva.v1.AndFilter
 	10, // 5: scriva.v1.Filter.or:type_name -> scriva.v1.OrFilter
 	0,  // 6: scriva.v1.FieldFilter.op:type_name -> scriva.v1.FilterOp
 	7,  // 7: scriva.v1.AndFilter.filters:type_name -> scriva.v1.Filter
 	7,  // 8: scriva.v1.OrFilter.filters:type_name -> scriva.v1.Filter
-	78, // 9: scriva.v1.InsertRequest.data:type_name -> google.protobuf.Struct
-	78, // 10: scriva.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
+	80, // 9: scriva.v1.InsertRequest.data:type_name -> google.protobuf.Struct
+	80, // 10: scriva.v1.InsertManyRequest.records:type_name -> google.protobuf.Struct
 	7,  // 11: scriva.v1.FindRequest.filter:type_name -> scriva.v1.Filter
 	22, // 12: scriva.v1.FindRequest.order_by_fields:type_name -> scriva.v1.OrderBy
 	6,  // 13: scriva.v1.FindResponse.record:type_name -> scriva.v1.Record
-	78, // 14: scriva.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
-	78, // 15: scriva.v1.UpsertRequest.data:type_name -> google.protobuf.Struct
+	80, // 14: scriva.v1.UpdateRequest.data:type_name -> google.protobuf.Struct
+	80, // 15: scriva.v1.UpsertRequest.data:type_name -> google.protobuf.Struct
 	6,  // 16: scriva.v1.UpsertResponse.record:type_name -> scriva.v1.Record
-	78, // 17: scriva.v1.UpdateByKeyRequest.data:type_name -> google.protobuf.Struct
-	78, // 18: scriva.v1.UpdateIfRevRequest.data:type_name -> google.protobuf.Struct
+	80, // 17: scriva.v1.UpdateByKeyRequest.data:type_name -> google.protobuf.Struct
+	80, // 18: scriva.v1.UpdateIfRevRequest.data:type_name -> google.protobuf.Struct
 	6,  // 19: scriva.v1.UpdateIfRevResponse.record:type_name -> scriva.v1.Record
 	1,  // 20: scriva.v1.StageXTxRequest.op:type_name -> scriva.v1.XTxOpKind
-	78, // 21: scriva.v1.StageXTxRequest.data:type_name -> google.protobuf.Struct
+	80, // 21: scriva.v1.StageXTxRequest.data:type_name -> google.protobuf.Struct
 	6,  // 22: scriva.v1.GetXTxResponse.record:type_name -> scriva.v1.Record
 	1,  // 23: scriva.v1.XTxOpResult.op:type_name -> scriva.v1.XTxOpKind
 	55, // 24: scriva.v1.CommitXTxResponse.ops:type_name -> scriva.v1.XTxOpResult
@@ -5079,88 +5314,93 @@ var file_proto_scriva_proto_depIdxs = []int32{
 	7,  // 26: scriva.v1.WatchRequest.filter:type_name -> scriva.v1.Filter
 	3,  // 27: scriva.v1.WatchEvent.op:type_name -> scriva.v1.WatchOp
 	6,  // 28: scriva.v1.WatchEvent.record:type_name -> scriva.v1.Record
-	79, // 29: scriva.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
+	81, // 29: scriva.v1.WatchEvent.ts:type_name -> google.protobuf.Timestamp
 	7,  // 30: scriva.v1.AggregateRequest.filter:type_name -> scriva.v1.Filter
 	4,  // 31: scriva.v1.AggregateRequest.aggregations:type_name -> scriva.v1.AggregateOp
-	80, // 32: scriva.v1.AggregateResponse.group_value:type_name -> google.protobuf.Value
+	82, // 32: scriva.v1.AggregateResponse.group_value:type_name -> google.protobuf.Value
 	5,  // 33: scriva.v1.ReplicationRecord.op:type_name -> scriva.v1.ReplicationOp
-	78, // 34: scriva.v1.ReplicationRecord.data:type_name -> google.protobuf.Struct
-	79, // 35: scriva.v1.ReplicationRecord.ts:type_name -> google.protobuf.Timestamp
-	75, // 36: scriva.v1.ReplicationStatusResponse.followers:type_name -> scriva.v1.FollowerStatus
-	79, // 37: scriva.v1.FollowerStatus.connected_at:type_name -> google.protobuf.Timestamp
-	11, // 38: scriva.v1.Scriva.CreateCollection:input_type -> scriva.v1.CreateCollectionRequest
-	13, // 39: scriva.v1.Scriva.DropCollection:input_type -> scriva.v1.DropCollectionRequest
-	15, // 40: scriva.v1.Scriva.ListCollections:input_type -> scriva.v1.ListCollectionsRequest
-	17, // 41: scriva.v1.Scriva.Insert:input_type -> scriva.v1.InsertRequest
-	19, // 42: scriva.v1.Scriva.InsertMany:input_type -> scriva.v1.InsertManyRequest
-	21, // 43: scriva.v1.Scriva.FindById:input_type -> scriva.v1.FindByIdRequest
-	23, // 44: scriva.v1.Scriva.Find:input_type -> scriva.v1.FindRequest
-	25, // 45: scriva.v1.Scriva.Update:input_type -> scriva.v1.UpdateRequest
-	27, // 46: scriva.v1.Scriva.Delete:input_type -> scriva.v1.DeleteRequest
-	29, // 47: scriva.v1.Scriva.Upsert:input_type -> scriva.v1.UpsertRequest
-	31, // 48: scriva.v1.Scriva.FindByKey:input_type -> scriva.v1.FindByKeyRequest
-	32, // 49: scriva.v1.Scriva.UpdateByKey:input_type -> scriva.v1.UpdateByKeyRequest
-	33, // 50: scriva.v1.Scriva.DeleteByKey:input_type -> scriva.v1.DeleteByKeyRequest
-	34, // 51: scriva.v1.Scriva.UpdateIfRev:input_type -> scriva.v1.UpdateIfRevRequest
-	36, // 52: scriva.v1.Scriva.EnsureIndex:input_type -> scriva.v1.EnsureIndexRequest
-	38, // 53: scriva.v1.Scriva.DropIndex:input_type -> scriva.v1.DropIndexRequest
-	40, // 54: scriva.v1.Scriva.ListIndexes:input_type -> scriva.v1.ListIndexesRequest
-	42, // 55: scriva.v1.Scriva.BeginTx:input_type -> scriva.v1.BeginTxRequest
-	44, // 56: scriva.v1.Scriva.CommitTx:input_type -> scriva.v1.CommitTxRequest
-	46, // 57: scriva.v1.Scriva.RollbackTx:input_type -> scriva.v1.RollbackTxRequest
-	48, // 58: scriva.v1.Scriva.BeginXTx:input_type -> scriva.v1.BeginXTxRequest
-	50, // 59: scriva.v1.Scriva.StageXTx:input_type -> scriva.v1.StageXTxRequest
-	52, // 60: scriva.v1.Scriva.GetXTx:input_type -> scriva.v1.GetXTxRequest
-	54, // 61: scriva.v1.Scriva.CommitXTx:input_type -> scriva.v1.CommitXTxRequest
-	57, // 62: scriva.v1.Scriva.RollbackXTx:input_type -> scriva.v1.RollbackXTxRequest
-	59, // 63: scriva.v1.Scriva.XTxStatus:input_type -> scriva.v1.XTxStatusRequest
-	61, // 64: scriva.v1.Scriva.Watch:input_type -> scriva.v1.WatchRequest
-	63, // 65: scriva.v1.Scriva.Aggregate:input_type -> scriva.v1.AggregateRequest
-	65, // 66: scriva.v1.Scriva.CollectionStats:input_type -> scriva.v1.CollectionStatsRequest
-	67, // 67: scriva.v1.Scriva.Compact:input_type -> scriva.v1.CompactRequest
-	69, // 68: scriva.v1.Scriva.Snapshot:input_type -> scriva.v1.SnapshotRequest
-	71, // 69: scriva.v1.Scriva.Replicate:input_type -> scriva.v1.ReplicateRequest
-	73, // 70: scriva.v1.Scriva.ReplicationStatus:input_type -> scriva.v1.ReplicationStatusRequest
-	76, // 71: scriva.v1.Scriva.Promote:input_type -> scriva.v1.PromoteRequest
-	12, // 72: scriva.v1.Scriva.CreateCollection:output_type -> scriva.v1.CreateCollectionResponse
-	14, // 73: scriva.v1.Scriva.DropCollection:output_type -> scriva.v1.DropCollectionResponse
-	16, // 74: scriva.v1.Scriva.ListCollections:output_type -> scriva.v1.ListCollectionsResponse
-	18, // 75: scriva.v1.Scriva.Insert:output_type -> scriva.v1.InsertResponse
-	20, // 76: scriva.v1.Scriva.InsertMany:output_type -> scriva.v1.InsertManyResponse
-	24, // 77: scriva.v1.Scriva.FindById:output_type -> scriva.v1.FindResponse
-	24, // 78: scriva.v1.Scriva.Find:output_type -> scriva.v1.FindResponse
-	26, // 79: scriva.v1.Scriva.Update:output_type -> scriva.v1.UpdateResponse
-	28, // 80: scriva.v1.Scriva.Delete:output_type -> scriva.v1.DeleteResponse
-	30, // 81: scriva.v1.Scriva.Upsert:output_type -> scriva.v1.UpsertResponse
-	24, // 82: scriva.v1.Scriva.FindByKey:output_type -> scriva.v1.FindResponse
-	26, // 83: scriva.v1.Scriva.UpdateByKey:output_type -> scriva.v1.UpdateResponse
-	28, // 84: scriva.v1.Scriva.DeleteByKey:output_type -> scriva.v1.DeleteResponse
-	35, // 85: scriva.v1.Scriva.UpdateIfRev:output_type -> scriva.v1.UpdateIfRevResponse
-	37, // 86: scriva.v1.Scriva.EnsureIndex:output_type -> scriva.v1.EnsureIndexResponse
-	39, // 87: scriva.v1.Scriva.DropIndex:output_type -> scriva.v1.DropIndexResponse
-	41, // 88: scriva.v1.Scriva.ListIndexes:output_type -> scriva.v1.ListIndexesResponse
-	43, // 89: scriva.v1.Scriva.BeginTx:output_type -> scriva.v1.BeginTxResponse
-	45, // 90: scriva.v1.Scriva.CommitTx:output_type -> scriva.v1.CommitTxResponse
-	47, // 91: scriva.v1.Scriva.RollbackTx:output_type -> scriva.v1.RollbackTxResponse
-	49, // 92: scriva.v1.Scriva.BeginXTx:output_type -> scriva.v1.BeginXTxResponse
-	51, // 93: scriva.v1.Scriva.StageXTx:output_type -> scriva.v1.StageXTxResponse
-	53, // 94: scriva.v1.Scriva.GetXTx:output_type -> scriva.v1.GetXTxResponse
-	56, // 95: scriva.v1.Scriva.CommitXTx:output_type -> scriva.v1.CommitXTxResponse
-	58, // 96: scriva.v1.Scriva.RollbackXTx:output_type -> scriva.v1.RollbackXTxResponse
-	60, // 97: scriva.v1.Scriva.XTxStatus:output_type -> scriva.v1.XTxStatusResponse
-	62, // 98: scriva.v1.Scriva.Watch:output_type -> scriva.v1.WatchEvent
-	64, // 99: scriva.v1.Scriva.Aggregate:output_type -> scriva.v1.AggregateResponse
-	66, // 100: scriva.v1.Scriva.CollectionStats:output_type -> scriva.v1.CollectionStatsResponse
-	68, // 101: scriva.v1.Scriva.Compact:output_type -> scriva.v1.CompactResponse
-	70, // 102: scriva.v1.Scriva.Snapshot:output_type -> scriva.v1.SnapshotChunk
-	72, // 103: scriva.v1.Scriva.Replicate:output_type -> scriva.v1.ReplicationRecord
-	74, // 104: scriva.v1.Scriva.ReplicationStatus:output_type -> scriva.v1.ReplicationStatusResponse
-	77, // 105: scriva.v1.Scriva.Promote:output_type -> scriva.v1.PromoteResponse
-	72, // [72:106] is the sub-list for method output_type
-	38, // [38:72] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	80, // 34: scriva.v1.ReplicationRecord.data:type_name -> google.protobuf.Struct
+	81, // 35: scriva.v1.ReplicationRecord.ts:type_name -> google.protobuf.Timestamp
+	73, // 36: scriva.v1.ReplicationRecord.tx:type_name -> scriva.v1.ReplicationTx
+	74, // 37: scriva.v1.ReplicationTx.ops:type_name -> scriva.v1.ReplicationTxOp
+	5,  // 38: scriva.v1.ReplicationTxOp.op:type_name -> scriva.v1.ReplicationOp
+	80, // 39: scriva.v1.ReplicationTxOp.data:type_name -> google.protobuf.Struct
+	81, // 40: scriva.v1.ReplicationTxOp.ts:type_name -> google.protobuf.Timestamp
+	77, // 41: scriva.v1.ReplicationStatusResponse.followers:type_name -> scriva.v1.FollowerStatus
+	81, // 42: scriva.v1.FollowerStatus.connected_at:type_name -> google.protobuf.Timestamp
+	11, // 43: scriva.v1.Scriva.CreateCollection:input_type -> scriva.v1.CreateCollectionRequest
+	13, // 44: scriva.v1.Scriva.DropCollection:input_type -> scriva.v1.DropCollectionRequest
+	15, // 45: scriva.v1.Scriva.ListCollections:input_type -> scriva.v1.ListCollectionsRequest
+	17, // 46: scriva.v1.Scriva.Insert:input_type -> scriva.v1.InsertRequest
+	19, // 47: scriva.v1.Scriva.InsertMany:input_type -> scriva.v1.InsertManyRequest
+	21, // 48: scriva.v1.Scriva.FindById:input_type -> scriva.v1.FindByIdRequest
+	23, // 49: scriva.v1.Scriva.Find:input_type -> scriva.v1.FindRequest
+	25, // 50: scriva.v1.Scriva.Update:input_type -> scriva.v1.UpdateRequest
+	27, // 51: scriva.v1.Scriva.Delete:input_type -> scriva.v1.DeleteRequest
+	29, // 52: scriva.v1.Scriva.Upsert:input_type -> scriva.v1.UpsertRequest
+	31, // 53: scriva.v1.Scriva.FindByKey:input_type -> scriva.v1.FindByKeyRequest
+	32, // 54: scriva.v1.Scriva.UpdateByKey:input_type -> scriva.v1.UpdateByKeyRequest
+	33, // 55: scriva.v1.Scriva.DeleteByKey:input_type -> scriva.v1.DeleteByKeyRequest
+	34, // 56: scriva.v1.Scriva.UpdateIfRev:input_type -> scriva.v1.UpdateIfRevRequest
+	36, // 57: scriva.v1.Scriva.EnsureIndex:input_type -> scriva.v1.EnsureIndexRequest
+	38, // 58: scriva.v1.Scriva.DropIndex:input_type -> scriva.v1.DropIndexRequest
+	40, // 59: scriva.v1.Scriva.ListIndexes:input_type -> scriva.v1.ListIndexesRequest
+	42, // 60: scriva.v1.Scriva.BeginTx:input_type -> scriva.v1.BeginTxRequest
+	44, // 61: scriva.v1.Scriva.CommitTx:input_type -> scriva.v1.CommitTxRequest
+	46, // 62: scriva.v1.Scriva.RollbackTx:input_type -> scriva.v1.RollbackTxRequest
+	48, // 63: scriva.v1.Scriva.BeginXTx:input_type -> scriva.v1.BeginXTxRequest
+	50, // 64: scriva.v1.Scriva.StageXTx:input_type -> scriva.v1.StageXTxRequest
+	52, // 65: scriva.v1.Scriva.GetXTx:input_type -> scriva.v1.GetXTxRequest
+	54, // 66: scriva.v1.Scriva.CommitXTx:input_type -> scriva.v1.CommitXTxRequest
+	57, // 67: scriva.v1.Scriva.RollbackXTx:input_type -> scriva.v1.RollbackXTxRequest
+	59, // 68: scriva.v1.Scriva.XTxStatus:input_type -> scriva.v1.XTxStatusRequest
+	61, // 69: scriva.v1.Scriva.Watch:input_type -> scriva.v1.WatchRequest
+	63, // 70: scriva.v1.Scriva.Aggregate:input_type -> scriva.v1.AggregateRequest
+	65, // 71: scriva.v1.Scriva.CollectionStats:input_type -> scriva.v1.CollectionStatsRequest
+	67, // 72: scriva.v1.Scriva.Compact:input_type -> scriva.v1.CompactRequest
+	69, // 73: scriva.v1.Scriva.Snapshot:input_type -> scriva.v1.SnapshotRequest
+	71, // 74: scriva.v1.Scriva.Replicate:input_type -> scriva.v1.ReplicateRequest
+	75, // 75: scriva.v1.Scriva.ReplicationStatus:input_type -> scriva.v1.ReplicationStatusRequest
+	78, // 76: scriva.v1.Scriva.Promote:input_type -> scriva.v1.PromoteRequest
+	12, // 77: scriva.v1.Scriva.CreateCollection:output_type -> scriva.v1.CreateCollectionResponse
+	14, // 78: scriva.v1.Scriva.DropCollection:output_type -> scriva.v1.DropCollectionResponse
+	16, // 79: scriva.v1.Scriva.ListCollections:output_type -> scriva.v1.ListCollectionsResponse
+	18, // 80: scriva.v1.Scriva.Insert:output_type -> scriva.v1.InsertResponse
+	20, // 81: scriva.v1.Scriva.InsertMany:output_type -> scriva.v1.InsertManyResponse
+	24, // 82: scriva.v1.Scriva.FindById:output_type -> scriva.v1.FindResponse
+	24, // 83: scriva.v1.Scriva.Find:output_type -> scriva.v1.FindResponse
+	26, // 84: scriva.v1.Scriva.Update:output_type -> scriva.v1.UpdateResponse
+	28, // 85: scriva.v1.Scriva.Delete:output_type -> scriva.v1.DeleteResponse
+	30, // 86: scriva.v1.Scriva.Upsert:output_type -> scriva.v1.UpsertResponse
+	24, // 87: scriva.v1.Scriva.FindByKey:output_type -> scriva.v1.FindResponse
+	26, // 88: scriva.v1.Scriva.UpdateByKey:output_type -> scriva.v1.UpdateResponse
+	28, // 89: scriva.v1.Scriva.DeleteByKey:output_type -> scriva.v1.DeleteResponse
+	35, // 90: scriva.v1.Scriva.UpdateIfRev:output_type -> scriva.v1.UpdateIfRevResponse
+	37, // 91: scriva.v1.Scriva.EnsureIndex:output_type -> scriva.v1.EnsureIndexResponse
+	39, // 92: scriva.v1.Scriva.DropIndex:output_type -> scriva.v1.DropIndexResponse
+	41, // 93: scriva.v1.Scriva.ListIndexes:output_type -> scriva.v1.ListIndexesResponse
+	43, // 94: scriva.v1.Scriva.BeginTx:output_type -> scriva.v1.BeginTxResponse
+	45, // 95: scriva.v1.Scriva.CommitTx:output_type -> scriva.v1.CommitTxResponse
+	47, // 96: scriva.v1.Scriva.RollbackTx:output_type -> scriva.v1.RollbackTxResponse
+	49, // 97: scriva.v1.Scriva.BeginXTx:output_type -> scriva.v1.BeginXTxResponse
+	51, // 98: scriva.v1.Scriva.StageXTx:output_type -> scriva.v1.StageXTxResponse
+	53, // 99: scriva.v1.Scriva.GetXTx:output_type -> scriva.v1.GetXTxResponse
+	56, // 100: scriva.v1.Scriva.CommitXTx:output_type -> scriva.v1.CommitXTxResponse
+	58, // 101: scriva.v1.Scriva.RollbackXTx:output_type -> scriva.v1.RollbackXTxResponse
+	60, // 102: scriva.v1.Scriva.XTxStatus:output_type -> scriva.v1.XTxStatusResponse
+	62, // 103: scriva.v1.Scriva.Watch:output_type -> scriva.v1.WatchEvent
+	64, // 104: scriva.v1.Scriva.Aggregate:output_type -> scriva.v1.AggregateResponse
+	66, // 105: scriva.v1.Scriva.CollectionStats:output_type -> scriva.v1.CollectionStatsResponse
+	68, // 106: scriva.v1.Scriva.Compact:output_type -> scriva.v1.CompactResponse
+	70, // 107: scriva.v1.Scriva.Snapshot:output_type -> scriva.v1.SnapshotChunk
+	72, // 108: scriva.v1.Scriva.Replicate:output_type -> scriva.v1.ReplicationRecord
+	76, // 109: scriva.v1.Scriva.ReplicationStatus:output_type -> scriva.v1.ReplicationStatusResponse
+	79, // 110: scriva.v1.Scriva.Promote:output_type -> scriva.v1.PromoteResponse
+	77, // [77:111] is the sub-list for method output_type
+	43, // [43:77] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_proto_scriva_proto_init() }
@@ -5179,7 +5419,7 @@ func file_proto_scriva_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_scriva_proto_rawDesc), len(file_proto_scriva_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   72,
+			NumMessages:   74,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

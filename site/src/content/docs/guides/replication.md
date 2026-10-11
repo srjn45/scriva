@@ -28,6 +28,27 @@ The follower:
 
 Replication is async, so the follower runs at a bounded lag behind the leader.
 
+## Cross-collection transactions
+
+Cross-collection transactions replicate as a single **transaction record** (protocol
+v2) carrying every operation under one LSN, so a follower never sees a partial
+transaction. Followers built from this release advertise protocol v2
+automatically. A leader will **not** downgrade a transaction to per-entry records:
+an older follower that does not speak v2 keeps receiving ordinary writes, but is
+refused with `FAILED_PRECONDITION` (`REPLICATION_PROTOCOL_UNSUPPORTED`) the moment
+a transaction must be shipped — upgrade the follower first.
+
+The follower applies each transaction **atomically and durably** through its own
+cross-collection coordinator: readers see all of its operations or none, and the
+follower's applied LSN advances only once the whole transaction is committed
+locally. After a crash or reconnect an already-applied transaction is recognised
+and skipped; a redelivery whose content differs from what was applied stops the
+follower with a divergence error (re-bootstrap it from a snapshot). Missing
+participant collections are created on the follower as legacy replication does.
+A promotion waits for an in-flight transaction apply, so a new leader never
+starts from a partially applied transaction. See
+[design-xtx-replication.md](https://github.com/srjn45/scriva/blob/main/docs/design-xtx-replication.md).
+
 ## Read replicas
 
 A follower serves reads — `Find`, `FindById`, `FindByKey`, `Aggregate` — from

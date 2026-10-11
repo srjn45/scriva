@@ -29,10 +29,28 @@ const replStateFilename = "replication.json"
 // the server maps it to a proto ReplicationRecord, and a follower reproduces it
 // verbatim via DB.ApplyReplication so its primary and secondary indexes match
 // the leader's exactly.
+//
+// A cross-collection transaction is shipped as a single ReplicationEntry whose
+// Tx is non-nil (protocol v2): one LSN for the whole transaction, Collection and
+// Entry unused. Such an entry is indivisible in the ring and in subscriber
+// buffers (see docs/design-xtx-replication.md).
 type ReplicationEntry struct {
 	LSN        uint64
 	Collection string
 	Entry      store.Entry
+	Tx         *TxEnvelope
+}
+
+// IsTx reports whether the entry is a transaction envelope (needs protocol v2).
+func (r ReplicationEntry) IsTx() bool { return r.Tx != nil }
+
+// Weight is how many entries the record counts as against ring and subscriber
+// capacity: 1 for a legacy entry, one per participant operation for an envelope.
+func (r ReplicationEntry) Weight() int {
+	if r.Tx != nil {
+		return r.Tx.Weight()
+	}
+	return 1
 }
 
 // replSub is a single Replicate subscriber: a buffered channel of committed
@@ -47,6 +65,7 @@ type replSub struct {
 	once        sync.Once
 	connectedAt time.Time
 	sent        atomic.Uint64 // last LSN shipped to this subscriber
+	queued      atomic.Int64  // weight (entries) currently buffered in ch
 }
 
 func (s *replSub) kill() { s.once.Do(func() { close(s.dead) }) }
@@ -60,13 +79,27 @@ type replicationBroker struct {
 	lsn  uint64             // last assigned LSN
 	ring []ReplicationEntry // circular buffer of recent entries, ascending by LSN
 	cap  int
-	head int // index of the oldest retained entry
-	size int // number of valid entries in the ring
+	head int // index of the oldest retained record
+	size int // number of retained records (an envelope is one record)
+	// weight is the total entry weight of the retained records; it is kept <= cap
+	// by evicting whole records from the head (an envelope is never split).
+	weight int
 
 	subBuf int
 	subs   map[uint64]*replSub
 	subSeq uint64
+
+	// reserved is the highest LSN already made durable via reserveFn. LSNs are
+	// reserved in blocks ahead of assignment so a crash can never lead to a
+	// reissued LSN (see reserveLocked).
+	reserved  uint64
+	reserveFn func(high uint64)
 }
+
+// lsnReserveBlock is how far ahead of the assigned LSN the leader persists its
+// watermark. After a crash the persisted value is >= every LSN ever handed to a
+// follower, so a restarted leader never reissues one.
+const lsnReserveBlock = 4096
 
 func newReplicationBroker(ringSize, subBuf int) *replicationBroker {
 	if ringSize <= 0 {
@@ -94,25 +127,41 @@ func (b *replicationBroker) oldest() uint64 {
 	return b.ring[b.head].LSN
 }
 
-// publish assigns the next LSN to a committed entry, records it in the ring, and
-// fans it out to every live subscriber (non-blocking: a subscriber whose buffer
-// is full is killed so it re-bootstraps rather than receiving a gapped feed).
-// It is called under the committing collection's write lock, so per-collection
-// order — and therefore a consistent global LSN order — is preserved.
-func (b *replicationBroker) publish(collection string, e store.Entry) uint64 {
-	b.mu.Lock()
-	b.lsn++
-	lsn := b.lsn
-	re := ReplicationEntry{LSN: lsn, Collection: collection, Entry: e}
-
-	if b.size < b.cap {
-		b.ring[(b.head+b.size)%b.cap] = re
-		b.size++
-	} else {
-		// Ring full: overwrite the oldest entry.
-		b.ring[b.head] = re
-		b.head = (b.head + 1) % b.cap
+// reserveLocked makes sure the durable LSN watermark covers lsn, persisting a
+// new block ahead of it through reserveFn when it does not. The caller holds
+// b.mu. reserveFn is best-effort (a failed write only narrows crash safety).
+func (b *replicationBroker) reserveLocked(lsn uint64) {
+	if lsn <= b.reserved {
+		return
 	}
+	b.reserved = lsn + lsnReserveBlock
+	if b.reserveFn != nil {
+		b.reserveFn(b.reserved)
+	}
+}
+
+// appendLocked assigns the next LSN to rec, retains it in the ring (evicting
+// whole oldest records until it fits) and fans it out. A subscriber whose
+// buffer is full — by record count or by entry weight — is killed so it
+// re-bootstraps rather than receiving a gapped or partial feed. The caller
+// holds b.mu.
+func (b *replicationBroker) appendLocked(rec ReplicationEntry) uint64 {
+	b.lsn++
+	rec.LSN = b.lsn
+	b.reserveLocked(b.lsn)
+	w := rec.Weight()
+
+	// Evict whole records from the head until the new one fits. A record heavier
+	// than the whole ring evicts everything and is retained alone.
+	for b.size > 0 && (b.size >= b.cap || b.weight+w > b.cap) {
+		b.weight -= b.ring[b.head].Weight()
+		b.ring[b.head] = ReplicationEntry{}
+		b.head = (b.head + 1) % b.cap
+		b.size--
+	}
+	b.ring[(b.head+b.size)%b.cap] = rec
+	b.size++
+	b.weight += w
 
 	for _, s := range b.subs {
 		select {
@@ -120,14 +169,74 @@ func (b *replicationBroker) publish(collection string, e store.Entry) uint64 {
 			continue // already overflowed; leave it for the server to reap
 		default:
 		}
+		// A record is always admitted into an empty buffer, however heavy, so a
+		// single large envelope cannot wedge a subscriber.
+		if q := s.queued.Load(); q > 0 && q+int64(w) > int64(b.subWeight()) {
+			s.kill()
+			continue
+		}
 		select {
-		case s.ch <- re:
+		case s.ch <- rec:
+			s.queued.Add(int64(w))
 		default:
 			s.kill() // buffer full: signal resync rather than drop silently
 		}
 	}
-	b.mu.Unlock()
-	return lsn
+	return rec.LSN
+}
+
+// subWeight is the entry-weight capacity of one subscriber buffer.
+func (b *replicationBroker) subWeight() int { return b.subBuf }
+
+// publish assigns the next LSN to a committed entry, records it in the ring, and
+// fans it out to every live subscriber (non-blocking). It is called under the
+// committing collection's write lock, so per-collection order — and therefore a
+// consistent global LSN order — is preserved.
+func (b *replicationBroker) publish(collection string, e store.Entry) uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.appendLocked(ReplicationEntry{Collection: collection, Entry: e})
+}
+
+// publishTx publishes a cross-collection transaction as ONE record consuming
+// exactly one LSN. It is called by the coordinator after the transaction's
+// COMMIT is durable and while every participant lock is still held.
+func (b *replicationBroker) publishTx(env *TxEnvelope) uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.appendLocked(ReplicationEntry{Tx: env})
+}
+
+// reserveNext makes the durable LSN watermark cover the LSN the next record
+// will receive. A transaction calls it BEFORE its COMMIT becomes durable: if
+// the process then dies between the COMMIT and publishTx, the restarted
+// leader restores an LSN at or above the one the transaction would have been
+// given, which is above every caught-up follower's resume point, so those
+// followers are told to re-bootstrap (the recovered transaction is never
+// republished) instead of silently resuming past it.
+func (b *replicationBroker) reserveNext() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.reserveLocked(b.lsn + 1)
+}
+
+// resyncBarrier forces every follower to re-bootstrap: it burns one LSN,
+// empties the ring (so no follower's resume point is serveable) and cuts every
+// subscriber. The coordinator uses it when a transaction's durable outcome is
+// unknown to this process, since a transaction that may have committed without
+// ever being published can only reach followers through a snapshot.
+func (b *replicationBroker) resyncBarrier() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lsn++
+	b.reserveLocked(b.lsn)
+	for i := range b.ring {
+		b.ring[i] = ReplicationEntry{}
+	}
+	b.head, b.size, b.weight = 0, 0, 0
+	for _, s := range b.subs {
+		s.kill()
+	}
 }
 
 // subscribe registers a follower resuming from fromLSN. It returns the buffered
@@ -139,6 +248,8 @@ func (b *replicationBroker) subscribe(fromLSN uint64, followerID string) (*replS
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Whole records only: LSNs identify records (an envelope is one LSN), so a
+	// resume point can never fall inside a transaction.
 	if fromLSN+1 < b.oldest() {
 		return nil, nil, false
 	}
@@ -226,6 +337,13 @@ func (r *ReplicationStream) Dead() <-chan struct{} { return r.sub.dead }
 // NoteSent records the highest LSN shipped to this follower for ReplicationStatus.
 func (r *ReplicationStream) NoteSent(lsn uint64) { r.sub.sent.Store(lsn) }
 
+// Consumed releases the buffer weight of a record received from Entries(). The
+// server calls it for every live record it drains so the broker can tell a
+// subscriber that is genuinely behind from one that is merely mid-envelope.
+func (r *ReplicationStream) Consumed(re ReplicationEntry) {
+	r.sub.queued.Add(-int64(re.Weight()))
+}
+
 // Close unregisters the subscription.
 func (r *ReplicationStream) Close() { r.broker.unsubscribe(r.sub.id) }
 
@@ -263,6 +381,8 @@ func (db *DB) initReplication(ringSize int) {
 	if ringSize > 0 {
 		db.broker = newReplicationBroker(ringSize, 0)
 		db.broker.setLSN(st.LeaderLSN)
+		db.broker.reserved = st.LeaderLSN
+		db.broker.reserveFn = func(high uint64) { _ = db.persistLeaderLSN(high) }
 	}
 }
 
@@ -284,12 +404,21 @@ func loadReplState(path string) (replState, error) {
 // lost write only costs the follower a harmless re-apply (apply is idempotent by
 // record revision) or, on the leader, a wider resync window after a crash.
 func (db *DB) persistReplState() error {
-	db.replMu.Lock()
-	st := replState{AppliedLSN: db.appliedLSN}
-	db.replMu.Unlock()
+	var lsn uint64
 	if db.broker != nil {
-		st.LeaderLSN = db.broker.currentLSN()
+		lsn = db.broker.currentLSN()
 	}
+	return db.persistLeaderLSN(lsn)
+}
+
+// persistLeaderLSN writes the watermark file with the given leader LSN. While
+// running, the broker passes a reserved value ahead of the assigned LSN so a
+// crash restores a counter at or above every LSN handed out; a clean Close
+// writes the exact current LSN.
+func (db *DB) persistLeaderLSN(leaderLSN uint64) error {
+	db.replMu.Lock()
+	st := replState{AppliedLSN: db.appliedLSN, LeaderLSN: leaderLSN}
+	db.replMu.Unlock()
 	data, err := json.Marshal(st)
 	if err != nil {
 		return err
@@ -462,6 +591,19 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 		return PromoteResult{}, ErrNotFollower
 	}
 
+	// Wait for an in-flight replicated-transaction apply (and exclude any later
+	// one): the applied LSN read below then never covers a half-applied
+	// transaction, and the flip to leader never exposes a partial one.
+	db.replApplyMu.Lock()
+	applyLocked := true
+	unlockApply := func() {
+		if applyLocked {
+			applyLocked = false
+			db.replApplyMu.Unlock()
+		}
+	}
+	defer unlockApply()
+
 	applied := db.AppliedLSN()
 	leaderLSN := db.lastLeaderLSN.Load()
 	var lag uint64
@@ -476,6 +618,7 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 	// Flip to leader. Subsequent writes route through the normal (writable) path;
 	// the read-only guard, which reads db.role on every RPC, now lets them through.
 	db.role.Store(int32(RoleLeader))
+	db.promoted.Store(true)
 
 	// Continue assigning LSNs strictly above every entry already replicated, so a
 	// promoted leader never reissues an LSN the old leader assigned.
@@ -489,6 +632,9 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 
 	// Stop the follower apply loop so the new leader no longer tails its old
 	// upstream. Best-effort persistence of the (now leader) watermark follows.
+	// The apply mutex is released first: the hook may wait for the loop, which
+	// may be blocked on that mutex.
+	unlockApply()
 	if db.onPromote != nil {
 		db.onPromote()
 	}
@@ -502,17 +648,9 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 // created on the leader replicate automatically). The entry is written verbatim,
 // preserving its id, revision, timestamp, and expiry.
 func (db *DB) ApplyReplication(collection string, e store.Entry) error {
-	col, err := db.Collection(collection)
+	col, err := db.ensureReplCollection(collection)
 	if err != nil {
-		// Not seen yet — create it (tolerating a concurrent creation).
-		col, err = db.CreateCollection(collection)
-		if err != nil {
-			if col2, err2 := db.Collection(collection); err2 == nil {
-				col = col2
-			} else {
-				return fmt.Errorf("apply replication: %w", err)
-			}
-		}
+		return fmt.Errorf("apply replication: %w", err)
 	}
 	return col.applyEntry(e)
 }

@@ -1120,6 +1120,11 @@ order. The broker keeps the most recent entries in a bounded in-memory ring
 (default 8192) so a briefly-disconnected follower can resume from memory rather
 than re-fetching a whole snapshot.
 
+Cross-collection transactions travel as one protocol-v2 envelope record (one
+LSN) and are applied atomically by the follower's coordinator; the wire format,
+LSN binding, recovery rules, failover guarantees and metrics are specified in
+[design-xtx-replication.md](design-xtx-replication.md).
+
 The engine exposes this as plain Go types — `ReplicationEntry`,
 `DB.SubscribeReplication`, `DB.ApplyReplication`, `DB.ReplicationStatus` — and
 never imports gRPC/protobuf; the server maps them onto the `Replicate` and
@@ -1140,6 +1145,33 @@ A fresh follower catches up in two phases:
    follower applies each entry and advances its **applied-LSN**, persisted to
    `replication.json` at the data-dir root so a restart resumes from exactly
    where it left off.
+
+### Cross-collection transactions (protocol v2)
+
+A cross-collection transaction is replicated as **one record with one LSN**: a
+`ReplicationRecord` with `record_version = 2` whose `tx` carries every op in
+canonical order plus a SHA-256 digest the follower verifies. The leader publishes
+it once, after the journal COMMIT is durable and while the participant locks are
+held; aborted transactions are never published. Followers advertise
+`protocol_versions` in `ReplicateRequest`; a legacy follower that would need an
+envelope is refused with a typed `FAILED_PRECONDITION`
+(`REPLICATION_PROTOCOL_UNSUPPORTED`) rather than receiving a per-entry downgrade.
+The ring and subscriber buffers account an envelope as one indivisible record of
+weight `len(ops)`.
+
+The follower applies an envelope with `DB.ApplyReplicatedTx(lsn, env)`, which
+drives the **same durable coordinator** as a leader commit (stamped prepare runs,
+fsync, one journal COMMIT, index apply under canonical-order participant locks).
+The journal COMMIT record additionally carries the replication binding
+(`rl` = LSN, `rt` = leader txid, `rd` = envelope digest), so "applied at LSN n"
+is part of the same atomic durable decision as the commit. The applied LSN
+advances only after the transaction is durable and visible; if the process dies
+between the COMMIT and the `replication.json` write, startup recovery raises the
+applied LSN to the highest bound LSN. Redelivery is recognised through the
+binding (no-op); the same LSN or leader txid with different content is
+`ErrReplicationDivergence` and stops the follower. `Promote` takes the same
+mutex as an in-flight apply, so it never exposes a partial transaction. Details:
+[design-xtx-replication.md](design-xtx-replication.md).
 
 ### Idempotent apply → no gaps, no duplicates
 

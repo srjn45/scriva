@@ -1431,6 +1431,15 @@ the follower, it **resumes from the last entry it applied** (persisted in
 `replication.json`) — no re-copy, no gaps, no duplicates. Writes to the leader
 show up on the follower within the replication lag.
 
+**Cross-collection transactions** replicate as one record (protocol v2) so a
+follower never observes a partial transaction. Upgrade followers before leaders
+start committing cross-collection transactions: a follower that does not advertise
+v2 is refused with `FAILED_PRECONDITION` / `REPLICATION_PROTOCOL_UNSUPPORTED` when
+one must be shipped. A follower applies each transaction atomically through its
+own coordinator, advances its applied LSN only after the whole transaction is
+committed, skips already-applied redeliveries, and stops with a divergence error
+if the same transaction arrives with different content. See [design-xtx-replication.md](design-xtx-replication.md).
+
 ### Reading from a follower (read replicas)
 
 A follower **serves reads** — point read traffic at it and writes at the leader to
