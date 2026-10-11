@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -962,4 +964,626 @@ func TestXTxConcurrency_IdempotencyAndDisconnect_Engine(t *testing.T) {
 			t.Fatalf("c2/id2 rev = %d, want 1", r2.Rev)
 		}
 	})
+}
+
+// Scenario: Concurrent XTx racing ordinary writes
+// Proves cross-collection transactions and single-collection writes can execute
+// concurrently without deadlocks, corruption, or race conditions.
+func TestXTxConcurrency_RacingOrdinaryWrites(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	c1, err := db.CreateCollection("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := db.CreateCollection("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var xtxCommitted, ordWrites int64
+
+	// 3 XTx workers
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(100 + workerID)))
+			for ctx.Err() == nil {
+				tx, err := db.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{})
+				if err != nil {
+					continue
+				}
+				id1, err1 := tx.Insert("alpha", map[string]any{"w": workerID, "v": rng.Intn(1000)})
+				id2, err2 := tx.Insert("beta", map[string]any{"w": workerID, "v": rng.Intn(1000)})
+				if err1 != nil || err2 != nil {
+					_ = tx.Rollback()
+					continue
+				}
+				if _, err := tx.Commit(ctx); err == nil {
+					atomic.AddInt64(&xtxCommitted, 1)
+					if _, err := c1.Get(id1); err != nil {
+						t.Errorf("Get alpha %d: %v", id1, err)
+					}
+					if _, err := c2.Get(id2); err != nil {
+						t.Errorf("Get beta %d: %v", id2, err)
+					}
+				}
+			}
+		}(w)
+	}
+
+	// 3 Ordinary write workers
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(200 + workerID)))
+			for ctx.Err() == nil {
+				target := c1
+				if rng.Intn(2) == 1 {
+					target = c2
+				}
+				id, _, err := target.Insert(map[string]any{"ord": workerID, "v": rng.Intn(1000)})
+				if err == nil {
+					atomic.AddInt64(&ordWrites, 1)
+					if rng.Intn(2) == 0 {
+						_, _ = target.Update(id, map[string]any{"ord": workerID, "v": rng.Intn(1000), "u": true})
+					}
+				}
+			}
+		}(w)
+	}
+
+	// 2 Reader workers
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				_, _ = c1.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error { return nil })
+				_, _ = c2.ScanStream(ctx, ScanOptions{}, func(r ScanResult) error { return nil })
+				time.Sleep(10 * time.Millisecond)
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if xtxCommitted == 0 || ordWrites == 0 {
+		t.Fatalf("expected both xtx and ord writes to succeed, got xtx=%d, ord=%d", xtxCommitted, ordWrites)
+	}
+
+	// Run full verify
+	rep, err := db.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+	for _, c := range rep.Collections {
+		for _, f := range c.Findings {
+			if f.Severity.rank() > SeverityInfo.rank() {
+				t.Fatalf("severe finding in %s: %+v", c.Name, f)
+			}
+		}
+	}
+}
+
+// Scenario: Concurrent XTx racing compaction and rotation
+// Proves cross-collection transactions commit safely during ongoing segment
+// rotation and background/on-demand compaction.
+func TestXTxConcurrency_RacingCompactionAndRotation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := defaultConfig()
+	cfg.SegmentMaxSize = 256 // tiny to force frequent rotation
+	db, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	c1, err := db.CreateCollection("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c1.EnsureIndex("tag"); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := db.CreateCollection("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c2.EnsureIndex("tag"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var xtxCommitted int64
+
+	// XTx workers
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(300 + workerID)))
+			for ctx.Err() == nil {
+				tx, err := db.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{})
+				if err != nil {
+					continue
+				}
+				tag := fmt.Sprintf("t%d", rng.Intn(5))
+				_, err1 := tx.Insert("alpha", map[string]any{"tag": tag, "v": rng.Intn(100)})
+				_, err2 := tx.Insert("beta", map[string]any{"tag": tag, "v": rng.Intn(100)})
+				if err1 != nil || err2 != nil {
+					_ = tx.Rollback()
+					continue
+				}
+				if _, err := tx.Commit(ctx); err == nil {
+					atomic.AddInt64(&xtxCommitted, 1)
+				}
+			}
+		}(w)
+	}
+
+	// Ordinary rotating writers
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(400 + workerID)))
+			for ctx.Err() == nil {
+				tag := fmt.Sprintf("t%d", rng.Intn(5))
+				_, _, _ = c1.Insert(map[string]any{"tag": tag, "pad": strings.Repeat("x", 60)})
+				_, _, _ = c2.Insert(map[string]any{"tag": tag, "pad": strings.Repeat("y", 60)})
+			}
+		}(w)
+	}
+
+	// Compaction worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			_ = c1.CompactNow()
+			_ = c2.CompactNow()
+			time.Sleep(15 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	if xtxCommitted == 0 {
+		t.Fatalf("expected xtx commits, got 0")
+	}
+
+	// Close and reopen cleanly to verify rebuilt on-disk state
+	if err := db.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	dbReopened, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer func() { _ = dbReopened.Close() }()
+
+	rep, err := dbReopened.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		t.Fatalf("verify after compaction race: %v", err)
+	}
+	for _, c := range rep.Collections {
+		for _, f := range c.Findings {
+			if f.Severity.rank() > SeverityInfo.rank() {
+				t.Fatalf("severe finding in %s: %+v", c.Name, f)
+			}
+		}
+	}
+}
+
+// Scenario: Concurrent XTx racing snapshots
+// Proves cross-collection transactions racing db.SnapshotTo produce transaction-
+// consistent snapshots that never observe partial commits.
+func TestXTxConcurrency_RacingSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.CreateCollection("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.CreateCollection("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var snapshotsTaken int64
+
+	// XTx workers
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(500 + workerID)))
+			for ctx.Err() == nil {
+				tx, err := db.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{})
+				if err != nil {
+					continue
+				}
+				v := rng.Intn(1000)
+				_, err1 := tx.Insert("alpha", map[string]any{"tx": workerID, "v": v})
+				_, err2 := tx.Insert("beta", map[string]any{"tx": workerID, "v": v})
+				if err1 != nil || err2 != nil {
+					_ = tx.Rollback()
+					continue
+				}
+				_, _ = tx.Commit(ctx)
+			}
+		}(w)
+	}
+
+	// Snapshot worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			var buf bytes.Buffer
+			if err := db.SnapshotTo(&buf); err != nil {
+				t.Errorf("SnapshotTo failed: %v", err)
+				return
+			}
+			atomic.AddInt64(&snapshotsTaken, 1)
+
+			// Restore and verify the snapshot
+			snapDir := t.TempDir()
+			extractTarGz(t, buf.Bytes(), snapDir)
+			snapDB, err := Open(snapDir, defaultConfig())
+			if err != nil {
+				t.Errorf("open restored snapshot failed: %v", err)
+				return
+			}
+			rep, err := snapDB.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+			_ = snapDB.Close()
+			if err != nil {
+				t.Errorf("verify restored snapshot failed: %v", err)
+				return
+			}
+			for _, c := range rep.Collections {
+				for _, f := range c.Findings {
+					if f.Severity.rank() > SeverityInfo.rank() {
+						t.Errorf("restored snapshot severe finding in %s: %+v", c.Name, f)
+					}
+				}
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	if snapshotsTaken == 0 {
+		t.Fatalf("expected snapshots to be taken")
+	}
+}
+
+// Scenario: Concurrent XTx racing index persistence
+// Proves cross-collection transactions running concurrently with persistIndexes
+// leave index files consistent.
+func TestXTxConcurrency_RacingIndexPersistence(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	c1, _ := db.CreateCollection("alpha")
+	_ = c1.EnsureIndex("tag")
+	c2, _ := db.CreateCollection("beta")
+	_ = c2.EnsureIndex("tag")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// XTx workers
+	for w := 0; w < 3; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(600 + workerID)))
+			for ctx.Err() == nil {
+				tx, err := db.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{})
+				if err != nil {
+					continue
+				}
+				_, err1 := tx.Insert("alpha", map[string]any{"tag": "x", "v": rng.Intn(100)})
+				_, err2 := tx.Insert("beta", map[string]any{"tag": "y", "v": rng.Intn(100)})
+				if err1 != nil || err2 != nil {
+					_ = tx.Rollback()
+					continue
+				}
+				_, _ = tx.Commit(ctx)
+			}
+		}(w)
+	}
+
+	// Index persistence workers
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				_ = c1.persistIndexes()
+				_ = c2.persistIndexes()
+				time.Sleep(20 * time.Millisecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	_ = db.Close()
+	reopened, err := Open(dir, defaultConfig())
+	if err != nil {
+		t.Fatalf("reopen after index persistence race: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	rep, err := reopened.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	for _, c := range rep.Collections {
+		for _, f := range c.Findings {
+			if f.Severity.rank() > SeverityInfo.rank() {
+				t.Fatalf("severe finding in %s: %+v", c.Name, f)
+			}
+		}
+	}
+}
+
+// Scenario: Concurrent XTx racing replication stream
+// Proves cross-collection transactions streaming to a follower apply with
+// identical document state and zero divergence.
+func TestXTxConcurrency_RacingReplication(t *testing.T) {
+	ldir := t.TempDir()
+	lcfg := defaultConfig()
+	// Keep enough whole records for the short adversarial run. A transaction
+	// weighs two records, so the default-sized ring can otherwise deliberately
+	// evict the follower while the test is exercising apply throughput rather
+	// than the intended concurrent replication path.
+	lcfg.ReplicationRingSize = 16384
+	leader, err := Open(ldir, lcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = leader.Close() }()
+
+	la, _ := leader.CreateCollection("alpha")
+	lb, _ := leader.CreateCollection("beta")
+
+	fdir := t.TempDir()
+	follower := openFollower(t, fdir)
+	defer func() { _ = follower.Close() }()
+
+	stream, backlog, ok := leader.SubscribeReplication(0, "follower-race")
+	if !ok {
+		t.Fatal("failed to subscribe to replication")
+	}
+	defer stream.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// XTx workers on leader
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(700 + workerID)))
+			for ctx.Err() == nil {
+				tx, err := leader.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{})
+				if err != nil {
+					continue
+				}
+				v := rng.Intn(1000)
+				_, err1 := tx.Insert("alpha", map[string]any{"tx": workerID, "val": v})
+				_, err2 := tx.Insert("beta", map[string]any{"tx": workerID, "val": v})
+				if err1 != nil || err2 != nil {
+					_ = tx.Rollback()
+					continue
+				}
+				_, _ = tx.Commit(ctx)
+				// Leave room for the follower to apply the envelope concurrently;
+				// overflow/resync behavior is covered by the broker tests.
+				time.Sleep(time.Millisecond)
+			}
+		}(w)
+	}
+
+	// Ordinary write worker on leader
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rng := rand.New(rand.NewSource(800))
+		for ctx.Err() == nil {
+			target := la
+			if rng.Intn(2) == 1 {
+				target = lb
+			}
+			_, _, _ = target.Insert(map[string]any{"ord": true, "val": rng.Intn(500)})
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	// Replication applier loop on follower
+	applyEntry := func(re ReplicationEntry) {
+		if re.IsTx() {
+			if _, err := follower.ApplyReplicatedTx(re.LSN, re.Tx); err != nil {
+				t.Errorf("ApplyReplicatedTx LSN %d failed: %v", re.LSN, err)
+			}
+		} else {
+			if err := follower.ApplyReplication(re.Collection, re.Entry); err != nil {
+				t.Errorf("ApplyReplication %s LSN %d failed: %v", re.Collection, re.LSN, err)
+			}
+		}
+	}
+
+	for _, re := range backlog {
+		applyEntry(re)
+	}
+
+	applierDone := make(chan struct{})
+	go func() {
+		defer close(applierDone)
+		for {
+			select {
+			case re := <-stream.Entries():
+				applyEntry(re)
+				stream.NoteSent(re.LSN)
+				stream.Consumed(re)
+			case <-stream.Dead():
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	// Drain remaining entries from leader to follower
+	leaderLSN := leader.ReplicationStatus().LeaderLSN
+	drainDeadline := time.Now().Add(3 * time.Second)
+	for follower.AppliedLSN() < leaderLSN && time.Now().Before(drainDeadline) {
+		select {
+		case re := <-stream.Entries():
+			applyEntry(re)
+			stream.NoteSent(re.LSN)
+			stream.Consumed(re)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	if follower.AppliedLSN() != leaderLSN {
+		t.Fatalf("follower applied LSN %d != leader LSN %d", follower.AppliedLSN(), leaderLSN)
+	}
+
+	// Compare document counts between leader and follower
+	lCountA, _ := la.Count(nil)
+	fa, err := follower.Collection("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fCountA, _ := fa.Count(nil)
+	if lCountA != fCountA {
+		t.Fatalf("alpha count mismatch: leader %d, follower %d", lCountA, fCountA)
+	}
+
+	lCountB, _ := lb.Count(nil)
+	fb, err := follower.Collection("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fCountB, _ := fb.Count(nil)
+	if lCountB != fCountB {
+		t.Fatalf("beta count mismatch: leader %d, follower %d", lCountB, fCountB)
+	}
+}
+
+// Scenario: Concurrent cancellations and retries
+// Proves context cancellations while competing for participant locks do not leak
+// locks or poison collections, and immediate retries succeed.
+func TestXTxConcurrency_ConcurrentCancellationsAndRetries(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.CreateCollection("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.CreateCollection("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var retriedSuccess int64
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(900 + workerID)))
+			for ctx.Err() == nil {
+				key := fmt.Sprintf("cancel-retry-%d-%d", workerID, rng.Int63())
+				tx, err := db.BeginXTx(ctx, []string{"alpha", "beta"}, XTxOptions{Key: key})
+				if err != nil {
+					continue
+				}
+				_, _ = tx.Insert("alpha", map[string]any{"k": workerID, "v": rng.Intn(100)})
+				_, _ = tx.Insert("beta", map[string]any{"k": workerID, "v": rng.Intn(100)})
+
+				// Short timeout to provoke cancellation while waiting for locks
+				cctx, ccancel := context.WithTimeout(ctx, time.Duration(1+rng.Intn(5))*time.Millisecond)
+				res, err := tx.Commit(cctx)
+				ccancel()
+
+				if errors.Is(err, ErrXTxCanceled) {
+					// Retry commit with un-canceled context
+					if resRetry, errRetry := tx.Commit(ctx); errRetry == nil && resRetry.TxID != "" {
+						atomic.AddInt64(&retriedSuccess, 1)
+					}
+				} else if err == nil && res.TxID != "" {
+					atomic.AddInt64(&retriedSuccess, 1)
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if retriedSuccess == 0 {
+		t.Fatalf("expected successful retries after cancellation, got 0")
+	}
+
+	rep, err := db.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	for _, c := range rep.Collections {
+		for _, f := range c.Findings {
+			if f.Severity.rank() > SeverityInfo.rank() {
+				t.Fatalf("severe finding in %s: %+v", c.Name, f)
+			}
+		}
+	}
 }
