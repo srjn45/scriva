@@ -1152,9 +1152,21 @@ held; aborted transactions are never published. Followers advertise
 envelope is refused with a typed `FAILED_PRECONDITION`
 (`REPLICATION_PROTOCOL_UNSUPPORTED`) rather than receiving a per-entry downgrade.
 The ring and subscriber buffers account an envelope as one indivisible record of
-weight `len(ops)`. The current follower decodes and verifies envelopes but stops
-at the apply seam (`Follower.applyEnvelope`) without advancing its applied LSN
-until atomic apply lands. Details: [design-xtx-replication.md](design-xtx-replication.md).
+weight `len(ops)`.
+
+The follower applies an envelope with `DB.ApplyReplicatedTx(lsn, env)`, which
+drives the **same durable coordinator** as a leader commit (stamped prepare runs,
+fsync, one journal COMMIT, index apply under canonical-order participant locks).
+The journal COMMIT record additionally carries the replication binding
+(`rl` = LSN, `rt` = leader txid, `rd` = envelope digest), so "applied at LSN n"
+is part of the same atomic durable decision as the commit. The applied LSN
+advances only after the transaction is durable and visible; if the process dies
+between the COMMIT and the `replication.json` write, startup recovery raises the
+applied LSN to the highest bound LSN. Redelivery is recognised through the
+binding (no-op); the same LSN or leader txid with different content is
+`ErrReplicationDivergence` and stops the follower. `Promote` takes the same
+mutex as an in-flight apply, so it never exposes a partial transaction. Details:
+[design-xtx-replication.md](design-xtx-replication.md).
 
 ### Idempotent apply → no gaps, no duplicates
 

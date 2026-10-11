@@ -578,6 +578,19 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 		return PromoteResult{}, ErrNotFollower
 	}
 
+	// Wait for an in-flight replicated-transaction apply (and exclude any later
+	// one): the applied LSN read below then never covers a half-applied
+	// transaction, and the flip to leader never exposes a partial one.
+	db.replApplyMu.Lock()
+	applyLocked := true
+	unlockApply := func() {
+		if applyLocked {
+			applyLocked = false
+			db.replApplyMu.Unlock()
+		}
+	}
+	defer unlockApply()
+
 	applied := db.AppliedLSN()
 	leaderLSN := db.lastLeaderLSN.Load()
 	var lag uint64
@@ -592,6 +605,7 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 	// Flip to leader. Subsequent writes route through the normal (writable) path;
 	// the read-only guard, which reads db.role on every RPC, now lets them through.
 	db.role.Store(int32(RoleLeader))
+	db.promoted.Store(true)
 
 	// Continue assigning LSNs strictly above every entry already replicated, so a
 	// promoted leader never reissues an LSN the old leader assigned.
@@ -605,6 +619,9 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 
 	// Stop the follower apply loop so the new leader no longer tails its old
 	// upstream. Best-effort persistence of the (now leader) watermark follows.
+	// The apply mutex is released first: the hook may wait for the loop, which
+	// may be blocked on that mutex.
+	unlockApply()
 	if db.onPromote != nil {
 		db.onPromote()
 	}
@@ -618,17 +635,9 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 // created on the leader replicate automatically). The entry is written verbatim,
 // preserving its id, revision, timestamp, and expiry.
 func (db *DB) ApplyReplication(collection string, e store.Entry) error {
-	col, err := db.Collection(collection)
+	col, err := db.ensureReplCollection(collection)
 	if err != nil {
-		// Not seen yet — create it (tolerating a concurrent creation).
-		col, err = db.CreateCollection(collection)
-		if err != nil {
-			if col2, err2 := db.Collection(collection); err2 == nil {
-				col = col2
-			} else {
-				return fmt.Errorf("apply replication: %w", err)
-			}
-		}
+		return fmt.Errorf("apply replication: %w", err)
 	}
 	return col.applyEntry(e)
 }

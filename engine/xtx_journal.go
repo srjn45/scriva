@@ -238,7 +238,15 @@ type xtxRecord struct {
 	PD    string    `json:"pd,omitempty"`
 	Why   string    `json:"why,omitempty"`
 	O     string    `json:"o,omitempty"`
-	CRC   *uint32   `json:"crc,omitempty"`
+	// RL, RT and RD bind a COMMIT applied by a replication follower to its
+	// stream position: the transaction's LSN, the leader's txid and the hex
+	// envelope digest (docs/design-xtx-replication.md §9). All three are set
+	// together or not at all; a record without them is a locally originated
+	// commit.
+	RL  uint64  `json:"rl,omitempty"`
+	RT  string  `json:"rt,omitempty"`
+	RD  string  `json:"rd,omitempty"`
+	CRC *uint32 `json:"crc,omitempty"`
 }
 
 func crcOf(b []byte) uint32 { return crc32.Checksum(b, xtxCRCTable) }
@@ -372,6 +380,17 @@ func decodeXTxRecord(line []byte, epoch string, off int64) (xtxRecord, error) {
 		if r.Why != "" || r.O != "" {
 			return r, bad("commit record carries abort/retire fields")
 		}
+		if (r.RL == 0) != (r.RT == "") || (r.RL == 0) != (r.RD == "") {
+			return r, bad("commit record has a partial replication binding")
+		}
+		if r.RL != 0 {
+			if len(r.RT) > xtxMaxTxIDLen {
+				return r, bad("replication leader txid too long")
+			}
+			if d, err := hex.DecodeString(r.RD); err != nil || len(d) != sha256.Size {
+				return r, bad("replication digest malformed")
+			}
+		}
 		if err := validateParts(r.Parts); err != nil {
 			return r, bad("%v", err)
 		}
@@ -380,14 +399,14 @@ func decodeXTxRecord(line []byte, epoch string, off int64) (xtxRecord, error) {
 			return r, bad("participant-set digest mismatch")
 		}
 	case xtxKindAbort:
-		if len(r.Parts) != 0 || r.PD != "" || r.O != "" {
+		if len(r.Parts) != 0 || r.PD != "" || r.O != "" || r.RL != 0 || r.RT != "" || r.RD != "" {
 			return r, bad("abort record carries commit/retire fields")
 		}
 		if !xtxAbortReasons[r.Why] {
 			return r, bad("unknown abort reason %q", r.Why)
 		}
 	case xtxKindRetire:
-		if len(r.Parts) != 0 || r.PD != "" || r.Why != "" {
+		if len(r.Parts) != 0 || r.PD != "" || r.Why != "" || r.RL != 0 || r.RT != "" || r.RD != "" {
 			return r, bad("retire record carries commit/abort fields")
 		}
 		if r.O != xtxKindCommit && r.O != xtxKindAbort {
@@ -411,16 +430,23 @@ type xtxDecision struct {
 	TS      string
 	Parts   []xtxPart // commit only; absent for a bare RETIRE(commit)
 	PD      string
+	// Replication binding of a follower-applied commit (zero when local).
+	RL uint64
+	RT string
+	RD string
 }
 
 type xtxTable struct {
 	byTx   map[string]*xtxDecision
 	byKey  map[string]string
+	byLSN  map[uint64]string // replication LSN → local txid (bound commits)
+	byLead map[string]string // leader txid → local txid (bound commits)
 	maxSeq uint64
 }
 
 func newXTxTable() *xtxTable {
-	return &xtxTable{byTx: map[string]*xtxDecision{}, byKey: map[string]string{}}
+	return &xtxTable{byTx: map[string]*xtxDecision{}, byKey: map[string]string{},
+		byLSN: map[uint64]string{}, byLead: map[string]string{}}
 }
 
 func conflictErr(tx, why string) error {
@@ -459,6 +485,17 @@ func (t *xtxTable) apply(r xtxRecord) error {
 			}
 		} else {
 			d.Parts, d.PD = r.Parts, r.PD
+		}
+		if r.RL != 0 {
+			if d.RL != 0 && (d.RL != r.RL || d.RT != r.RT || d.RD != r.RD) {
+				return conflictErr(r.Tx, "replication binding of commit records differ")
+			}
+			if prev, ok := t.byLSN[r.RL]; ok && prev != r.Tx {
+				return conflictErr(r.Tx, fmt.Sprintf("replication lsn %d already bound to %s", r.RL, prev))
+			}
+			d.RL, d.RT, d.RD = r.RL, r.RT, r.RD
+			t.byLSN[r.RL] = r.Tx
+			t.byLead[r.RT] = r.Tx
 		}
 	case xtxKindAbort:
 		if d.Why == "" {
@@ -802,6 +839,14 @@ func (j *xtxJournal) allocateTxID(key string) (string, error) {
 
 // commitPrepared appends a COMMIT record for an already-allocated txid and fsyncs (S3+S4).
 func (j *xtxJournal) commitPrepared(tx, key string, parts []xtxPart) error {
+	return j.commitPreparedBound(tx, key, parts, nil)
+}
+
+// commitPreparedBound is commitPrepared with an optional replication binding:
+// the COMMIT record then also carries the LSN, leader txid and envelope digest,
+// making "this transaction is applied at LSN n" part of the same durable,
+// atomic decision as the commit itself.
+func (j *xtxJournal) commitPreparedBound(tx, key string, parts []xtxPart, bind *xtxReplBind) error {
 	if len(key) > xtxMaxKeyLen {
 		return xtxErr(tx, ErrXTxTooLarge, fmt.Errorf("idempotency key longer than %d bytes", xtxMaxKeyLen))
 	}
@@ -820,6 +865,15 @@ func (j *xtxJournal) commitPrepared(tx, key string, parts []xtxPart) error {
 	r := j.newRecord(xtxKindCommit, tx, key)
 	r.Parts = append([]xtxPart(nil), parts...)
 	r.PD = pd
+	if bind != nil {
+		if bind.LSN == 0 || bind.LeadTx == "" || bind.Digest == "" {
+			return fmt.Errorf("xtx journal: incomplete replication binding")
+		}
+		if prev, ok := j.table.byLSN[bind.LSN]; ok {
+			return conflictErr(tx, fmt.Sprintf("replication lsn %d already bound to %s", bind.LSN, prev))
+		}
+		r.RL, r.RT, r.RD = bind.LSN, bind.LeadTx, bind.Digest
+	}
 	line, err := encodeXTxRecord(r)
 	if err != nil {
 		return err
@@ -945,6 +999,41 @@ func (j *xtxJournal) decision(tx string) (xtxDecision, bool) {
 	c := *d
 	c.Parts = append([]xtxPart(nil), d.Parts...)
 	return c, true
+}
+
+// boundDecision returns the commit bound to a replication LSN, then to a
+// leader txid, if one is durable.
+func (j *xtxJournal) boundDecision(lsn uint64, leadTx string) (xtxDecision, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	tx, ok := j.table.byLSN[lsn]
+	if !ok {
+		tx, ok = j.table.byLead[leadTx]
+	}
+	if !ok {
+		return xtxDecision{}, false
+	}
+	c := *j.table.byTx[tx]
+	c.Parts = append([]xtxPart(nil), c.Parts...)
+	return c, true
+}
+
+// maxBoundLSN is the highest replication LSN bound to a durable COMMIT (0 when
+// none): everything at or below it was applied, because a follower applies
+// strictly in LSN order.
+func (j *xtxJournal) maxBoundLSN() uint64 {
+	if j == nil {
+		return 0
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var max uint64
+	for lsn := range j.table.byLSN {
+		if lsn > max {
+			max = lsn
+		}
+	}
+	return max
 }
 
 // decisions returns a snapshot of the whole decision table, sorted by txid

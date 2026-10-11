@@ -1435,7 +1435,10 @@ show up on the follower within the replication lag.
 follower never observes a partial transaction. Upgrade followers before leaders
 start committing cross-collection transactions: a follower that does not advertise
 v2 is refused with `FAILED_PRECONDITION` / `REPLICATION_PROTOCOL_UNSUPPORTED` when
-one must be shipped. See [design-xtx-replication.md](design-xtx-replication.md).
+one must be shipped. A follower applies each transaction atomically through its
+own coordinator, advances its applied LSN only after the whole transaction is
+committed, skips already-applied redeliveries, and stops with a divergence error
+if the same transaction arrives with different content. See [design-xtx-replication.md](design-xtx-replication.md).
 
 ### Reading from a follower (read replicas)
 

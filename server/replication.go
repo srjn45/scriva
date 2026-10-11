@@ -179,7 +179,8 @@ func (f *Follower) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if err != nil {
-			if errors.Is(err, ErrEnvelopeApplyUnsupported) || errors.Is(err, ErrUnknownRecordVersion) ||
+			if errors.Is(err, ErrEnvelopeApplyFailed) || errors.Is(err, ErrUnknownRecordVersion) ||
+				errors.Is(err, engine.ErrEnvelopeInvalid) || errors.Is(err, engine.ErrEnvelopeDigest) ||
 				IsReplicationProtocolError(err) {
 				f.logger.Error("replication stopped: cannot process record; applied LSN not advanced",
 					"err", err, "applied_lsn", f.db.AppliedLSN())

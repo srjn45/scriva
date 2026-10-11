@@ -89,6 +89,9 @@ const (
 	// xtxHookApplied: applied and every lock released; the caller has not been
 	// answered yet.
 	xtxHookApplied
+	// xtxHookReplApplied: a replicated transaction is committed, visible and
+	// unlocked; the follower's applied LSN is not yet advanced/persisted.
+	xtxHookReplApplied
 )
 
 func (db *DB) xtxHookAt(point xtxHookPoint, key, txid string) {

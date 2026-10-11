@@ -40,7 +40,12 @@ type DB struct {
 	role          atomic.Int32
 	lastLeaderLSN atomic.Uint64
 	roleMu        sync.Mutex
-	onPromote     func()
+	// replApplyMu serializes replicated-transaction applies and is taken by
+	// Promote, so a promotion never races an in-flight apply. promoted is set
+	// by Promote and refuses further replicated applies.
+	replApplyMu sync.Mutex
+	promoted    atomic.Bool
+	onPromote   func()
 
 	// lock guarantees exclusive access to the database directory.
 	lock *dirLock
