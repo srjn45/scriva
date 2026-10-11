@@ -246,6 +246,10 @@ type CollectionConfig struct {
 	// the DB-level recovery phase (design §7.1). Standalone opens in an XTx root
 	// leave this nil and fail with ErrXTxRecoveryRequired.
 	decisions map[string]string
+
+	// decisionsFn supplies dynamic cross-collection transaction decisions from
+	// the active DB coordinator journal while the database is live.
+	decisionsFn func() map[string]string
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -297,7 +301,8 @@ type Collection struct {
 	segSeq   atomic.Uint64 // monotonically increasing segment id counter
 
 	// decisions is the cross-collection transaction decision table.
-	decisions map[string]string
+	decisions   map[string]string
+	decisionsFn func() map[string]string
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -458,7 +463,8 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		name:      name,
 		dir:       dir,
 		cfg:       cfg,
-		decisions: cfg.decisions,
+		decisions:   cfg.decisions,
+		decisionsFn: cfg.decisionsFn,
 		index:     newIndex(),
 		sidxMap:   make(map[string]*SecondaryIndex),
 		watchers:  make(map[uint64]*watcher),
@@ -511,6 +517,15 @@ func (c *Collection) observeActive(seg *Segment) {
 			h(name, path, cause)
 		}
 	}
+}
+
+func (c *Collection) currentDecisions() map[string]string {
+	if c.decisionsFn != nil {
+		if d := c.decisionsFn(); d != nil {
+			return d
+		}
+	}
+	return c.decisions
 }
 
 // syncLoop periodically fsyncs the active segment when SyncModeInterval is
@@ -1057,8 +1072,9 @@ func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, bef
 	segs := append(append([]*Segment(nil), c.sealed...), c.active)
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
+	decisions := c.currentDecisions()
 	for _, sidx := range c.sidxMap {
-		if err := sidx.rebuild(segs, false, c.decisions); err != nil {
+		if err := sidx.rebuild(segs, false, decisions); err != nil {
 			return err
 		}
 	}
@@ -1870,7 +1886,7 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 
-	if err := sidx.rebuild(all, false, c.decisions); err != nil {
+	if err := sidx.rebuild(all, false, c.currentDecisions()); err != nil {
 		c.sidxMu.Lock()
 		delete(c.sidxMap, field)
 		c.sidxMu.Unlock()

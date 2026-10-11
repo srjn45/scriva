@@ -79,6 +79,30 @@ func openFaulty(t *testing.T, dir string, fs *faultFS, cfg CollectionConfig) (*D
 	return db, col
 }
 
+// openFaultyMulti opens a DB at dir whose segment files, compactor renames,
+// and coordinator journal ops go through fs. The requested collections are created
+// and returned in a map.
+func openFaultyMulti(t *testing.T, dir string, fs *faultFS, cfg CollectionConfig, names ...string) (*DB, map[string]*Collection) {
+	t.Helper()
+	cfg.wrapFile, cfg.renameFn = fs.wrap, fs.rename
+	if cfg.CompactInterval == 0 {
+		cfg.CompactInterval = 24 * 3600 * 1e9
+	}
+	db, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatalf("open faulty multi: %v", err)
+	}
+	cols := make(map[string]*Collection, len(names))
+	for _, name := range names {
+		col, err := db.CreateCollection(name)
+		if err != nil {
+			t.Fatalf("create collection %q: %v", name, err)
+		}
+		cols[name] = col
+	}
+	return db, cols
+}
+
 // reopenAfterCrash simulates a restart after kill -9: it abandons old WITHOUT
 // Close() (no index persist, no fsync) and opens dir with a fresh handle.
 //
@@ -131,6 +155,7 @@ func diskState(t *testing.T, colDir string) diskReport {
 	sort.Strings(paths)
 	latest := map[uint64]store.Entry{}
 	rep := diskReport{Live: map[uint64]store.Entry{}, Tombstones: map[uint64]store.Entry{}}
+	decisions, _ := readXTxDecisions(filepath.Dir(colDir))
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
 		if err != nil {
@@ -150,13 +175,18 @@ func diskState(t *testing.T, colDir string) diskReport {
 			if len(raw) == 0 {
 				continue
 			}
-			e, derr := store.Decode(raw)
+			e, tx, derr := decodeSegmentLine(raw)
 			if derr == nil && torn {
 				derr = errors.New("missing trailing newline")
 			}
 			if derr != nil {
 				rep.Bad = append(rep.Bad, badLine{File: filepath.Base(p), Line: line, Err: derr, Raw: string(raw)})
 				continue
+			}
+			if tx != nil {
+				if decisions == nil || (decisions[tx.T] != xtxKindCommit && decisions[tx.T] != "retire-"+xtxKindCommit) {
+					continue // uncommitted or aborted stamped entry
+				}
 			}
 			latest[e.ID] = e
 		}
