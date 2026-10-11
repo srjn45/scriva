@@ -95,6 +95,7 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		collections: make(map[string]*Collection),
 		lock:        dl,
 	}
+	db.defaultCfg.decisionsFn = db.decisionsMap
 	// A node opened as a follower starts in the follower role so the read-only
 	// guard rejects writes until an operator promotes it (R3).
 	if cfg.Follower {
@@ -130,6 +131,7 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 		return nil, fmt.Errorf("db: collection %q already exists", name)
 	}
 	colCfg := db.defaultCfg
+	colCfg.decisionsFn = db.decisionsMap
 	if db.xtxJournal != nil {
 		colCfg.decisions = db.xtxJournal.decisionsMap()
 	}
@@ -184,6 +186,7 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 	}
 	if db.xtxJournal != nil {
 		cfg.decisions = db.xtxJournal.decisionsMap()
+		cfg.decisionsFn = db.decisionsMap
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
 	if err != nil {
@@ -211,6 +214,13 @@ func (db *DB) DropCollection(name string) error {
 		return fmt.Errorf("db: drop %q: %w", name, err)
 	}
 	return nil
+}
+
+func (db *DB) decisionsMap() map[string]string {
+	if db.xtxJournal == nil {
+		return nil
+	}
+	return db.xtxJournal.decisionsMap()
 }
 
 // Collection returns an existing collection or an error if it doesn't exist.
