@@ -32,6 +32,7 @@ package engine
 // this suite does not simulate.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -921,4 +922,810 @@ func workCompactionNoCompact(r *cmRun) {
 	}
 	r.step(r.col.rotateSegment())
 	r.del(ids[1])
+}
+
+// ---- cross-collection transaction crash matrix --------------------------------
+
+type cmPendXTx struct {
+	key  string
+	txid string
+	ops  []XTxOp
+	prev map[string]map[uint64]map[string]any // col -> id -> oldData
+}
+
+type cmRunMulti struct {
+	t          *testing.T
+	db         *DB
+	cols       map[string]*Collection
+	live       map[string]map[uint64]map[string]any // col -> id -> data
+	deleted    map[string]map[uint64]bool           // col -> id -> bool
+	vals       map[string]map[string]bool           // col -> val -> bool
+	pendSingle *cmPend
+	pendCol    string
+	pendXTx    *cmPendXTx
+	dead       bool
+	definitive bool
+	seq        int
+}
+
+func newCmRunMulti(t *testing.T, db *DB, cols map[string]*Collection, definitive bool) *cmRunMulti {
+	live := make(map[string]map[uint64]map[string]any, len(cols))
+	deleted := make(map[string]map[uint64]bool, len(cols))
+	vals := make(map[string]map[string]bool, len(cols))
+	for name := range cols {
+		live[name] = make(map[uint64]map[string]any)
+		deleted[name] = make(map[uint64]bool)
+		vals[name] = make(map[string]bool)
+	}
+	return &cmRunMulti{
+		t: t, db: db, cols: cols, live: live, deleted: deleted, vals: vals, definitive: definitive,
+	}
+}
+
+func (r *cmRunMulti) data(col, v string) map[string]any {
+	r.seq++
+	r.vals[col][v] = true
+	return map[string]any{"v": v, "i": fmt.Sprint(r.seq)}
+}
+
+func (r *cmRunMulti) insert(colName, v string) uint64 {
+	if r.dead {
+		return 0
+	}
+	d := r.data(colName, v)
+	r.pendCol = colName
+	r.pendSingle = &cmPend{kind: "insert", new: d}
+	id, _, err := r.cols[colName].Insert(d)
+	if err != nil {
+		if r.definitive {
+			r.pendSingle = nil
+		} else {
+			r.dead = true
+		}
+		return 0
+	}
+	r.pendSingle = nil
+	r.live[colName][id] = d
+	return id
+}
+
+func (r *cmRunMulti) update(colName string, id uint64, v string) {
+	if r.dead || id == 0 {
+		return
+	}
+	d := r.data(colName, v)
+	r.pendCol = colName
+	r.pendSingle = &cmPend{kind: "update", id: id, old: r.live[colName][id], new: d}
+	if _, err := r.cols[colName].Update(id, d); err != nil {
+		if r.definitive {
+			r.pendSingle = nil
+		} else {
+			r.dead = true
+		}
+		return
+	}
+	r.pendSingle = nil
+	r.live[colName][id] = d
+}
+
+func (r *cmRunMulti) del(colName string, id uint64) {
+	if r.dead || id == 0 {
+		return
+	}
+	r.pendCol = colName
+	r.pendSingle = &cmPend{kind: "delete", id: id, old: r.live[colName][id]}
+	if err := r.cols[colName].Delete(id); err != nil {
+		if r.definitive {
+			r.pendSingle = nil
+		} else {
+			r.dead = true
+		}
+		return
+	}
+	r.pendSingle = nil
+	delete(r.live[colName], id)
+	r.deleted[colName][id] = true
+}
+
+func (r *cmRunMulti) commitXTx(key string, ops []XTxOp) error {
+	if r.dead {
+		return errCrash
+	}
+	prev := make(map[string]map[uint64]map[string]any)
+	for _, op := range ops {
+		if prev[op.Collection] == nil {
+			prev[op.Collection] = make(map[uint64]map[string]any)
+		}
+		if d, ok := r.live[op.Collection][op.ID]; ok {
+			prev[op.Collection][op.ID] = d
+		}
+	}
+	r.pendXTx = &cmPendXTx{key: key, ops: ops, prev: prev}
+	res, err := r.db.CommitXTx(key, ops)
+	if err != nil {
+		if r.definitive {
+			r.pendXTx = nil
+		} else {
+			r.dead = true
+		}
+		return err
+	}
+	r.pendXTx.txid = res.TxID
+	// Apply acknowledged transaction to model
+	for _, op := range ops {
+		cName := op.Collection
+		switch op.Op {
+		case store.OpInsert:
+			r.live[cName][op.ID] = op.Data
+			if op.Data != nil && op.Data["v"] != nil {
+				if vs, ok := op.Data["v"].(string); ok {
+					r.vals[cName][vs] = true
+				}
+			}
+		case store.OpUpdate:
+			r.live[cName][op.ID] = op.Data
+			if op.Data != nil && op.Data["v"] != nil {
+				if vs, ok := op.Data["v"].(string); ok {
+					r.vals[cName][vs] = true
+				}
+			}
+		case store.OpDelete:
+			delete(r.live[cName], op.ID)
+			r.deleted[cName][op.ID] = true
+		}
+	}
+	r.pendXTx = nil
+	return nil
+}
+
+func (r *cmRunMulti) step(err error) {
+	if err != nil && !r.definitive {
+		r.dead = true
+	}
+}
+
+func cmVerifyMulti(t *testing.T, db *DB, dir string, r *cmRunMulti, allowBad bool) {
+	t.Helper()
+	scans := make(map[string]map[uint64]map[string]any, len(r.cols))
+	for name := range r.cols {
+		col, err := db.Collection(name)
+		if err != nil {
+			t.Fatalf("collection %s: %v", name, err)
+		}
+		res, err := col.Scan(nil)
+		if err != nil {
+			t.Fatalf("scan %s: %v", name, err)
+		}
+		scan := make(map[uint64]map[string]any, len(res))
+		for _, rec := range res {
+			scan[rec.ID] = rec.Data
+		}
+		scans[name] = scan
+	}
+
+	// In-flight XTx atomicity check: ALL or NOTHING across all participants
+	if p := r.pendXTx; p != nil && len(p.ops) > 0 {
+		appliedCount := 0
+		for _, op := range p.ops {
+			scan := scans[op.Collection]
+			switch op.Op {
+			case store.OpInsert:
+				if d, ok := scan[op.ID]; ok && sameData(d, op.Data) {
+					appliedCount++
+				}
+			case store.OpUpdate:
+				if d, ok := scan[op.ID]; ok && sameData(d, op.Data) {
+					appliedCount++
+				}
+			case store.OpDelete:
+				if _, ok := scan[op.ID]; !ok {
+					appliedCount++
+				}
+			}
+		}
+		if appliedCount > 0 && appliedCount < len(p.ops) {
+			t.Fatalf("PARTIAL VISIBILITY: in-flight XTx %s had %d of %d ops applied across collections",
+				p.key, appliedCount, len(p.ops))
+		}
+		if appliedCount == len(p.ops) {
+			for _, op := range p.ops {
+				cName := op.Collection
+				switch op.Op {
+				case store.OpInsert, store.OpUpdate:
+					r.live[cName][op.ID] = op.Data
+				case store.OpDelete:
+					delete(r.live[cName], op.ID)
+					r.deleted[cName][op.ID] = true
+				}
+			}
+		}
+	}
+
+	for name := range r.cols {
+		scan := scans[name]
+		live := r.live[name]
+		deleted := r.deleted[name]
+
+		for id, want := range live {
+			got, ok := scan[id]
+			if r.pendSingle != nil && r.pendCol == name && r.pendSingle.id == id {
+				continue
+			}
+			if !ok {
+				t.Errorf("[%s] LOST ACK: id %d %v missing after recovery", name, id, want)
+			} else if !sameData(got, want) {
+				t.Errorf("[%s] STALE: id %d got %v want %v", name, id, got, want)
+			}
+		}
+
+		for id, got := range scan {
+			if _, ok := live[id]; ok {
+				continue
+			}
+			if deleted[id] {
+				t.Errorf("[%s] RESURRECTED: deleted id %d reappeared as %v", name, id, got)
+				continue
+			}
+			if r.pendSingle != nil && r.pendCol == name && r.pendSingle.kind == "insert" && sameData(got, r.pendSingle.new) {
+				continue
+			}
+			t.Errorf("[%s] GHOST: unexpected id %d %v", name, id, got)
+		}
+
+		var delList []uint64
+		for id := range deleted {
+			delList = append(delList, id)
+		}
+		cHandle, _ := db.Collection(name)
+		assertLookupScanAgree(t, cHandle, scan, delList...)
+
+		cDir := filepath.Join(dir, name)
+		rep := diskState(t, cDir)
+		if len(rep.Bad) != 0 && !allowBad {
+			t.Errorf("[%s] undecodable lines on disk: %v", name, rep.Bad)
+		}
+		for id := range scan {
+			if _, ok := rep.Live[id]; !ok {
+				t.Errorf("[%s] id %d served but not live on disk", name, id)
+			}
+		}
+
+		for v := range r.vals[name] {
+			var want []uint64
+			for id, d := range scan {
+				if d["v"] == v {
+					want = append(want, id)
+				}
+			}
+			got, ok := cHandle.IndexLookup("v", v)
+			if !ok {
+				continue
+			}
+			sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+			sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("[%s] sidx v=%q lookup %v != scan %v", name, v, got, want)
+			}
+		}
+	}
+}
+
+func workXTxCoordinator(r *cmRunMulti) {
+	c1 := r.cols["c1"]
+	c2 := r.cols["c2"]
+	r.step(c1.EnsureIndex("v"))
+	r.step(c2.EnsureIndex("v"))
+
+	a := r.insert("c1", "a1")
+	b := r.insert("c2", "b1")
+
+	idC1 := c1.ReserveID()
+	_ = r.commitXTx("xtx1", []XTxOp{
+		{Collection: "c1", Op: store.OpInsert, ID: idC1, Data: r.data("c1", "c1_data")},
+		{Collection: "c2", Op: store.OpUpdate, ID: b, Data: r.data("c2", "b_updated")},
+	})
+
+	r.update("c1", a, "a_updated")
+
+	_ = r.commitXTx("xtx2", []XTxOp{
+		{Collection: "c1", Op: store.OpUpdate, ID: idC1, Data: r.data("c1", "c1_v2")},
+		{Collection: "c2", Op: store.OpDelete, ID: b},
+	})
+
+	if !r.dead {
+		r.step(c1.rotateSegment())
+		r.step(c2.rotateSegment())
+	}
+	r.insert("c2", "b_new")
+}
+
+func TestCrashMatrix_XTxStepBoundaries(t *testing.T) {
+	cfg := cmBaseCfg(SyncModeAlways, 1<<20)
+	dry := newFaultFS()
+	dDB, dCols := openFaultyMulti(t, t.TempDir(), dry, cfg, "c1", "c2")
+	base := dry.totalSteps()
+	rDry := newCmRunMulti(t, dDB, dCols, false)
+	workXTxCoordinator(rDry)
+	total := dry.totalSteps() - base
+	if total < 5 {
+		t.Fatalf("workload produced only %d steps", total)
+	}
+	trace := make([]string, total+1)
+	for k := 0; k <= total; k++ {
+		trace[k] = dry.opAt(base + k)
+	}
+	dry.kill()
+	dry.releaseFDs()
+
+	for k := 0; k <= total; k++ {
+		name := fmt.Sprintf("crash_after_%02d_steps_before_%s", k, trace[k])
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			fs := newFaultFS()
+			db, cols := openFaultyMulti(t, dir, fs, cfg, "c1", "c2")
+			fs.crashAfter(fs.totalSteps() + k)
+			r := newCmRunMulti(t, db, cols, false)
+			workXTxCoordinator(r)
+
+			c2 := cfg
+			c2.wrapFile, c2.renameFn = nil, nil
+			db2 := reopenAfterCrash(t, db, fs, dir, c2)
+			cmVerifyMulti(t, db2, dir, r, false)
+		})
+	}
+}
+
+func TestCrashMatrix_XTxCoordinatorBoundaries(t *testing.T) {
+	cfg := cmBaseCfg(SyncModeAlways, 1<<20)
+
+	setup := func(t *testing.T, hook func(point XTxHookPoint, key, txid string)) (*DB, *faultFS, string, *cmRunMulti, *Collection, *Collection) {
+		dir := t.TempDir()
+		fs := newFaultFS()
+		c := cfg
+		if hook != nil {
+			SetTestXTxHook(&c, hook)
+		}
+		db, cols := openFaultyMulti(t, dir, fs, c, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		_ = cols["c1"].EnsureIndex("v")
+		_ = cols["c2"].EnsureIndex("v")
+		r.insert("c1", "base1")
+		r.insert("c2", "base2")
+		return db, fs, dir, r, cols["c1"], cols["c2"]
+	}
+
+	t.Run("initial_before_locks", func(t *testing.T) {
+		var hit bool
+		var hookDb *DB
+		var hookFs *faultFS
+		db, fs, dir, r, c1, c2 := setup(t, func(point XTxHookPoint, key, txid string) {
+			if point == XTxHookBeforeLocks && key == "boundary-tx" {
+				hit = true
+				hookFs.kill()
+				hookFs.releaseFDs()
+				_ = hookDb.lock.release()
+			}
+		})
+		hookDb = db
+		hookFs = fs
+
+		id1 := c1.ReserveID()
+		id2 := c2.ReserveID()
+		_, _ = db.CommitXTx("boundary-tx", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: map[string]any{"v": "tx1"}},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: map[string]any{"v": "tx2"}},
+		})
+		if !hit {
+			t.Fatal("XTxHookBeforeLocks hook never hit")
+		}
+
+		c2Cfg := cfg
+		db2, err := Open(dir, c2Cfg)
+		if err != nil {
+			t.Fatalf("reopen after crash: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("locked", func(t *testing.T) {
+		var hit bool
+		var hookDb *DB
+		var hookFs *faultFS
+		db, fs, dir, r, c1, c2 := setup(t, func(point XTxHookPoint, key, txid string) {
+			if point == XTxHookLocked && key == "boundary-tx" {
+				hit = true
+				hookFs.kill()
+				hookFs.releaseFDs()
+				_ = hookDb.lock.release()
+			}
+		})
+		hookDb = db
+		hookFs = fs
+
+		id1 := c1.ReserveID()
+		id2 := c2.ReserveID()
+		_, _ = db.CommitXTx("boundary-tx", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: map[string]any{"v": "tx1"}},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: map[string]any{"v": "tx2"}},
+		})
+		if !hit {
+			t.Fatal("XTxHookLocked hook never hit")
+		}
+
+		c2Cfg := cfg
+		db2, err := Open(dir, c2Cfg)
+		if err != nil {
+			t.Fatalf("reopen after crash: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("prepared_presumed_abort", func(t *testing.T) {
+		// Crashed right after participant stamped runs are written and fsynced,
+		// but before journal decision is durable. Reopen MUST presumed abort.
+		var hit bool
+		var hookDb *DB
+		var hookFs *faultFS
+		var hookTxID string
+		db, fs, dir, r, c1, c2 := setup(t, func(point XTxHookPoint, key, txid string) {
+			if point == XTxHookPrepared && key == "boundary-tx" {
+				hit = true
+				hookTxID = txid
+				hookFs.kill()
+				hookFs.releaseFDs()
+				_ = hookDb.lock.release()
+			}
+		})
+		hookDb = db
+		hookFs = fs
+
+		id1 := c1.ReserveID()
+		id2 := c2.ReserveID()
+		_, _ = db.CommitXTx("boundary-tx", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: map[string]any{"v": "tx1"}},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: map[string]any{"v": "tx2"}},
+		})
+		if !hit {
+			t.Fatal("XTxHookPrepared hook never hit")
+		}
+
+		c2Cfg := cfg
+		db2, err := Open(dir, c2Cfg)
+		if err != nil {
+			t.Fatalf("reopen after crash: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		// Verify status reports aborted
+		st, _ := db2.XTxStatus(hookTxID)
+		if st != XTxAborted {
+			t.Fatalf("status = %v, want XTxAborted", st)
+		}
+
+		// Staged records must not be visible on any collection
+		col1, _ := db2.Collection("c1")
+		col2, _ := db2.Collection("c2")
+		if _, err := col1.Get(id1); err == nil {
+			t.Fatalf("id %d visible in c1 after presumed abort", id1)
+		}
+		if _, err := col2.Get(id2); err == nil {
+			t.Fatalf("id %d visible in c2 after presumed abort", id2)
+		}
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("journal_decided_commit", func(t *testing.T) {
+		// Crashed right after journal COMMIT record is durable, before indexes applied.
+		// Reopen MUST recover committed and replay into indexes.
+		var hit bool
+		var hookDb *DB
+		var hookFs *faultFS
+		db, fs, dir, r, c1, c2 := setup(t, func(point XTxHookPoint, key, txid string) {
+			if point == XTxHookDecided && key == "boundary-tx" {
+				hit = true
+				hookFs.kill()
+				hookFs.releaseFDs()
+				_ = hookDb.lock.release()
+			}
+		})
+		hookDb = db
+		hookFs = fs
+
+		id1 := c1.ReserveID()
+		id2 := c2.ReserveID()
+		d1 := map[string]any{"v": "tx1", "i": "1"}
+		d2 := map[string]any{"v": "tx2", "i": "2"}
+		_, _ = db.CommitXTx("boundary-tx", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: d1},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: d2},
+		})
+		if !hit {
+			t.Fatal("XTxHookDecided hook never hit")
+		}
+
+		c2Cfg := cfg
+		db2, err := Open(dir, c2Cfg)
+		if err != nil {
+			t.Fatalf("reopen after crash: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		st, _ := db2.XTxStatus("boundary-tx")
+		if st != XTxCommitted {
+			t.Fatalf("status = %v, want XTxCommitted", st)
+		}
+
+		col1, _ := db2.Collection("c1")
+		col2, _ := db2.Collection("c2")
+		r1, err := col1.Get(id1)
+		if err != nil || !sameData(r1.Data, d1) {
+			t.Fatalf("c1/id1 Get = %v, want %v (err=%v)", r1, d1, err)
+		}
+		r2, err := col2.Get(id2)
+		if err != nil || !sameData(r2.Data, d2) {
+			t.Fatalf("c2/id2 Get = %v, want %v (err=%v)", r2, d2, err)
+		}
+
+		r.live["c1"][id1] = d1
+		r.live["c2"][id2] = d2
+		r.vals["c1"]["tx1"] = true
+		r.vals["c2"]["tx2"] = true
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("journal_decided_abort", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		_ = cols["c1"].EnsureIndex("v")
+		_ = cols["c2"].EnsureIndex("v")
+		id1 := cols["c1"].ReserveID()
+		id2 := cols["c2"].ReserveID()
+		_ = db.Close()
+
+		// Write journal with explicit ABORT
+		j, err := openOrCreateXTxJournal(dir, xtxOptions{}, "v1.4.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		txid, err := j.allocateTxID("abort-bound-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.abort(txid, "abort-bound-key", "io"); err != nil {
+			t.Fatal(err)
+		}
+		_ = j.close()
+
+		// Stamped runs on participants (simulating participant abort mid-cleanup crash)
+		ordLine, _ := encodeStamped(stampedEntry{
+			ID: id1, Op: store.OpInsert, Rev: 1, Tx: TxStamp{T: txid, I: 0, N: 1},
+			Data: map[string]any{"v": "aborted1"},
+		})
+		_ = os.WriteFile(filepath.Join(dir, "c1", "seg_000001.ndjson"), ordLine, 0o644)
+		stockLine, _ := encodeStamped(stampedEntry{
+			ID: id2, Op: store.OpInsert, Rev: 1, Tx: TxStamp{T: txid, I: 0, N: 1},
+			Data: map[string]any{"v": "aborted2"},
+		})
+		_ = os.WriteFile(filepath.Join(dir, "c2", "seg_000001.ndjson"), stockLine, 0o644)
+
+		db2, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatalf("Open after crash: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		if st, _ := db2.XTxStatus(txid); st != XTxAborted {
+			t.Fatalf("status = %v, want XTxAborted", st)
+		}
+		c1Post, _ := db2.Collection("c1")
+		c2Post, _ := db2.Collection("c2")
+		if _, err := c1Post.Get(id1); err == nil {
+			t.Fatal("c1 document visible after abort recovery")
+		}
+		if _, err := c2Post.Get(id2); err == nil {
+			t.Fatal("c2 document visible after abort recovery")
+		}
+	})
+
+	t.Run("cleanup_tmp_checkpoint_recovery", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		r.insert("c1", "v1")
+		_ = db.Close()
+
+		// Leave orphaned tmp checkpoint file in directory
+		tmpPath := filepath.Join(dir, xtxJournalTmpFile)
+		if err := os.WriteFile(tmpPath, []byte(`{"magic":"SCRIVA-XTX","v":1}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		db2, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatalf("Open with leftover tmp checkpoint: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("recovery_replay_repeated", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		r.insert("c1", "v1")
+		r.insert("c2", "v2")
+		id1 := cols["c1"].ReserveID()
+		id2 := cols["c2"].ReserveID()
+		if err := r.commitXTx("rep-key", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: r.data("c1", "comm1")},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: r.data("c2", "comm2")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_ = db.Close()
+
+		// Reopen 1
+		db1, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = db1.Close()
+
+		// Reopen 2
+		db2, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+}
+
+func TestCrashMatrix_XTxPowerLossAndTornWrites(t *testing.T) {
+	cfg := cmBaseCfg(SyncModeAlways, 1<<20)
+
+	t.Run("power_loss_participant_torn_tail", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		r.insert("c1", "ack1")
+		r.insert("c2", "ack2")
+		_ = db.Close()
+
+		// Append torn stamped entry line to c1's segment
+		tornLine := []byte(`{"id":999,"op":"ins","rev":1,"tx":{"t":"torn-tx","i":0,"n":1},"data":{"v":"to`)
+		segPath := filepath.Join(dir, "c1", "seg_000001.ndjson")
+		f, err := os.OpenFile(segPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.Write(tornLine)
+		_ = f.Close()
+
+		db2, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatalf("Open after torn participant tail: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		cmVerifyMulti(t, db2, dir, r, true)
+
+		// Must accept new writes
+		col1, _ := db2.Collection("c1")
+		idNew, _, err := col1.Insert(map[string]any{"v": "new_after_torn"})
+		if err != nil || idNew == 0 {
+			t.Fatalf("Insert after torn participant tail recovery: %v", err)
+		}
+	})
+
+	t.Run("power_loss_journal_torn_tail", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		r.insert("c1", "ack1")
+		r.insert("c2", "ack2")
+		if _, err := EnsureDBXTxJournal(db); err != nil {
+			t.Fatal(err)
+		}
+		id1 := cols["c1"].ReserveID()
+		id2 := cols["c2"].ReserveID()
+		_ = db.Close()
+
+		jPath := filepath.Join(dir, xtxJournalFile)
+		tornRec := []byte(`{"t":"0123456789abcdef-0000000000000001","k":"commit","parts":[{"c":"c1","n":1,"d":"abc`)
+		jf, err := os.OpenFile(jPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = jf.Write(tornRec)
+		_ = jf.Close()
+
+		// Write participant stamped entries corresponding to the uncommitted torn tx
+		txid := "0123456789abcdef-0000000000000001"
+		line1, _ := encodeStamped(stampedEntry{
+			ID: id1, Op: store.OpInsert, Rev: 1, Tx: TxStamp{T: txid, I: 0, N: 1},
+			Data: map[string]any{"v": "uncommitted1"},
+		})
+		line2, _ := encodeStamped(stampedEntry{
+			ID: id2, Op: store.OpInsert, Rev: 1, Tx: TxStamp{T: txid, I: 0, N: 1},
+			Data: map[string]any{"v": "uncommitted2"},
+		})
+		f1, _ := os.OpenFile(filepath.Join(dir, "c1", "seg_000001.ndjson"), os.O_APPEND|os.O_WRONLY, 0o644)
+		_, _ = f1.Write(line1)
+		_ = f1.Close()
+		f2, _ := os.OpenFile(filepath.Join(dir, "c2", "seg_000001.ndjson"), os.O_APPEND|os.O_WRONLY, 0o644)
+		_, _ = f2.Write(line2)
+		_ = f2.Close()
+
+		db2, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatalf("Open after torn journal tail: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+
+		cmVerifyMulti(t, db2, dir, r, false)
+	})
+
+	t.Run("repeated_recovery_repair", func(t *testing.T) {
+		dir := t.TempDir()
+		db, cols := openFaultyMulti(t, dir, newFaultFS(), cfg, "c1", "c2")
+		r := newCmRunMulti(t, db, cols, false)
+		r.insert("c1", "rec1")
+		r.insert("c2", "rec2")
+		id1 := cols["c1"].ReserveID()
+		id2 := cols["c2"].ReserveID()
+		if err := r.commitXTx("rep-repair-key", []XTxOp{
+			{Collection: "c1", Op: store.OpInsert, ID: id1, Data: r.data("c1", "rep1")},
+			{Collection: "c2", Op: store.OpInsert, ID: id2, Data: r.data("c2", "rep2")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_ = db.Close()
+
+		for cycle := 1; cycle <= 3; cycle++ {
+			// Reopen and verify
+			dbCycle, err := Open(dir, cfg)
+			if err != nil {
+				t.Fatalf("cycle %d Open: %v", cycle, err)
+			}
+			rep, err := dbCycle.Verify(context.Background(), VerifyOptions{Mode: VerifyFull})
+			if err != nil {
+				t.Fatalf("cycle %d online Verify: %v", cycle, err)
+			}
+			if !rep.Clean() {
+				t.Fatalf("cycle %d online Verify not clean: %+v", cycle, rep.AllFindings())
+			}
+			if err := dbCycle.Close(); err != nil {
+				t.Fatalf("cycle %d Close: %v", cycle, err)
+			}
+
+			// Run Repair
+			repairRep, err := Repair(context.Background(), dir, RepairOptions{BackupDir: t.TempDir()})
+			if err != nil {
+				t.Fatalf("cycle %d Repair: %v", cycle, err)
+			}
+			_ = repairRep
+
+			// Offline VerifyDir
+			vRep, err := VerifyDir(context.Background(), dir, VerifyOptions{Mode: VerifyFull})
+			if err != nil {
+				t.Fatalf("cycle %d VerifyDir: %v", cycle, err)
+			}
+			if !vRep.Clean() {
+				t.Fatalf("cycle %d VerifyDir not clean: %+v", cycle, vRep.AllFindings())
+			}
+		}
+
+		// Final reopen and check model agreement
+		dbFinal, err := Open(dir, cfg)
+		if err != nil {
+			t.Fatalf("final Open: %v", err)
+		}
+		defer func() { _ = dbFinal.Close() }()
+		cmVerifyMulti(t, dbFinal, dir, r, false)
+	})
 }
