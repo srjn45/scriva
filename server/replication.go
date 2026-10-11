@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -20,6 +21,11 @@ import (
 	"github.com/srjn45/scriva/engine"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 )
+
+// replicationMaxRecvMsg is the largest Replicate message a follower accepts. It
+// must exceed engine.DefaultMaxEnvelopeBytes plus protobuf overhead so a maximal
+// transaction envelope is deliverable.
+const replicationMaxRecvMsg = 3 * engine.DefaultMaxEnvelopeBytes
 
 // DefaultReplicationBackoff is how long a follower waits before reconnecting to
 // the leader after the replication stream drops.
@@ -173,6 +179,12 @@ func (f *Follower) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if err != nil {
+			if errors.Is(err, ErrEnvelopeApplyUnsupported) || errors.Is(err, ErrUnknownRecordVersion) ||
+				IsReplicationProtocolError(err) {
+				f.logger.Error("replication stopped: cannot process record; applied LSN not advanced",
+					"err", err, "applied_lsn", f.db.AppliedLSN())
+				return err
+			}
 			if status.Code(err) == codes.FailedPrecondition {
 				f.logger.Error("replication needs re-bootstrap; stopping follower",
 					"err", err, "applied_lsn", f.db.AppliedLSN())
@@ -201,7 +213,9 @@ func (f *Follower) stream(ctx context.Context) error {
 	if st, serr := f.client.ReplicationStatus(authCtx, &pb.ReplicationStatusRequest{}); serr == nil {
 		f.db.NoteLeaderLSN(st.LeaderLsn)
 	}
-	rs, err := f.client.Replicate(authCtx, &pb.ReplicateRequest{FromLsn: from, FollowerId: f.id})
+	rs, err := f.client.Replicate(authCtx,
+		&pb.ReplicateRequest{FromLsn: from, FollowerId: f.id, ProtocolVersions: followerProtocolVersions},
+		grpc.MaxCallRecvMsgSize(replicationMaxRecvMsg))
 	if err != nil {
 		return err
 	}
@@ -222,6 +236,28 @@ func (f *Follower) stream(ctx context.Context) error {
 		// revision idempotency in the engine is the ultimate safety net).
 		if rec.Lsn <= f.db.AppliedLSN() {
 			continue
+		}
+		switch rec.RecordVersion {
+		case 0, engine.ReplicationProtocolV1:
+			if rec.Tx != nil {
+				return fmt.Errorf("%w: legacy record %d carries a transaction payload", engine.ErrEnvelopeInvalid, rec.Lsn)
+			}
+		case engine.ReplicationProtocolV2:
+			env, err := txEnvelopeFromProto(rec)
+			if err != nil {
+				return fmt.Errorf("lsn %d: %w", rec.Lsn, err)
+			}
+			// Atomic apply or nothing: the applied LSN advances only after the
+			// whole transaction is locally committed.
+			if err := f.applyEnvelope(rec.Lsn, env); err != nil {
+				return fmt.Errorf("apply tx %s (lsn %d): %w", env.TxID, rec.Lsn, err)
+			}
+			if err := f.db.SetAppliedLSN(rec.Lsn); err != nil {
+				f.logger.Warn("persist applied lsn failed", "err", err, "lsn", rec.Lsn)
+			}
+			continue
+		default:
+			return fmt.Errorf("%w: %d (lsn %d)", ErrUnknownRecordVersion, rec.RecordVersion, rec.Lsn)
 		}
 		e := replRecordToEntry(rec)
 		if err := f.db.ApplyReplication(rec.Collection, e); err != nil {
