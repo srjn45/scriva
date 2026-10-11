@@ -927,7 +927,7 @@ What each mode means for the other durability-relevant events:
 | After `kill -9` | nothing acknowledged is lost (the data is in the page cache); open trims a torn tail and replays the index from its covered prefix | same |
 | After power loss | the tail since the last OS flush may be lost | loss bounded by the interval (`interval`) or nil for acknowledged writes (`always`) |
 
-A crash or power loss can drop the latest writes, but open never leaves a half-applied one: a torn final line is trimmed, `CommitTx` is all-or-nothing, and the index is validated against the segments rather than trusted.
+A crash or power loss can drop the latest writes, and open rebuilds indexes from validated segments. Torn final lines are trimmed. **Single-record writes and multi-entry batches have different guarantees:** `CommitTx`/`InsertMany` roll back ordinary reported append/sync failures in-process, but their current independent-entry format does not provide all-or-nothing visibility after a crash between complete batch entries. Crash-atomic single-collection batches are specified as follow-up hardening in [database integrity and security hardening](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery); do not rely on them as crash-atomic until implemented.
 
 > Pick the mode that matches your data's value. `none` is appropriate for caches
 > and rebuildable data; `always` for data you cannot afford to lose on power loss.
@@ -948,7 +948,7 @@ cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that windo
 
 ### Partial writes and segment poisoning
 
-A failed `Append` (ENOSPC, EIO, short write) may leave bytes on disk even when it reports zero written. The segment therefore **always truncates back to its last known-good size** after a failed write, and the collection also rolls back an already-appended prefix of a multi-entry write (batch, transaction commit) when a later append or fsync fails. Memory state (index, size) only advances after a write fully succeeded, so a failed write is invisible to readers and to the next reopen.
+A failed `Append` (ENOSPC, EIO, short write) may leave bytes on disk even when it reports zero written. The segment attempts to truncate back to its last known-good size after a failed write, and the collection rolls back an already-appended prefix of a multi-entry write when a later append or sync fails. These in-process rollback paths do not make a batch crash-atomic: a process crash can leave a prefix of complete ordinary entries that recovery replays. Sync failures may also have an indeterminate durable outcome and must be handled according to the hardening contract in [the technical specification](design-database-integrity-hardening.md#32-io-failure-and-commit-state-machine).
 
 If the rollback truncate itself fails, the tail of the file is unknown and appending after it could glue a record onto garbage. The segment is then **poisoned**: every later append returns `engine.ErrSegmentPoisoned` (wrapping the original cause) until the process restarts. Reads and other collections keep working. Poisoning increments `scriva_segment_poisoned_total` and `scriva_append_errors_total{reason="poisoned"}`. The recovery is to fix the underlying fault (disk space, device health), restart so that open re-validates and trims the tail, then run `scriva verify` if you saw it. A record too large to be scanned back is refused up front (`ErrRecordTooLarge`) rather than written.
 
@@ -993,7 +993,7 @@ encode no longer runs every ~25k inserts.
 
 ## Cross-collection transactions
 
-The protocol is specified in [design-cross-collection-transactions.md](design-cross-collection-transactions.md). Its root-level *coordinator journal* and *version gate* live in `engine/xtx_journal.go`, `engine/xtx_format.go` and `engine/xtx_errors.go`; the commit path is `engine/xtx_commit.go`, the engine API is the transaction handle described below, and [Transport](#transport-grpc-rest-cli-façade) covers how it reaches clients. A database that never runs an XTx is byte-identical to before.
+The protocol is specified in [design-cross-collection-transactions.md](design-cross-collection-transactions.md). Its root-level *coordinator journal* and *version gate* live in `engine/xtx_journal.go`, `engine/xtx_format.go` and `engine/xtx_errors.go`; the commit path is `engine/xtx_commit.go`, the engine API is the transaction handle described below, and [Transport](#transport-grpc-rest-cli-façade) covers how it reaches clients. A database that never runs an XTx is byte-identical to before. Additional integrity, batch-atomicity, lifecycle, concurrency, and security fixes are tracked in the [database integrity and security hardening specification](design-database-integrity-hardening.md).
 
 **Files (root of the data directory, reserved `xtx.` prefix).**
 
