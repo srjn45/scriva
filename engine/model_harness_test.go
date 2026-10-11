@@ -682,8 +682,11 @@ func (m *modelRun) opXTxRollback() error {
 				provC2 = append(provC2, id)
 			}
 			rec, gerr := tx.Get(colName, id)
-			if gerr != nil || !sameData(rec.Data, d) {
-				return fmt.Errorf("tx get staged insert mismatch: rec=%v err=%v", rec, gerr)
+			if gerr != nil {
+				return fmt.Errorf("get staged insert: %w", gerr)
+			}
+			if !sameData(rec.Data, d) {
+				return fmt.Errorf("tx get staged insert mismatch: rec=%v", rec)
 			}
 		default:
 			id, ok := m.pickIDFrom(st)
@@ -697,8 +700,11 @@ func (m *modelRun) opXTxRollback() error {
 					return fmt.Errorf("stage update: %w", err)
 				}
 				rec, gerr := tx.Get(colName, id)
-				if gerr != nil || !sameData(rec.Data, d) {
-					return fmt.Errorf("tx get staged update mismatch: rec=%v err=%v", rec, gerr)
+				if gerr != nil {
+					return fmt.Errorf("get staged update: %w", gerr)
+				}
+				if !sameData(rec.Data, d) {
+					return fmt.Errorf("tx get staged update mismatch: rec=%v", rec)
 				}
 			} else {
 				if err := tx.Delete(colName, id); err != nil {

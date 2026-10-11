@@ -1008,25 +1008,6 @@ func (r *cmRunMulti) update(colName string, id uint64, v string) {
 	r.live[colName][id] = d
 }
 
-func (r *cmRunMulti) del(colName string, id uint64) {
-	if r.dead || id == 0 {
-		return
-	}
-	r.pendCol = colName
-	r.pendSingle = &cmPend{kind: "delete", id: id, old: r.live[colName][id]}
-	if err := r.cols[colName].Delete(id); err != nil {
-		if r.definitive {
-			r.pendSingle = nil
-		} else {
-			r.dead = true
-		}
-		return
-	}
-	r.pendSingle = nil
-	delete(r.live[colName], id)
-	r.deleted[colName][id] = true
-}
-
 func (r *cmRunMulti) commitXTx(key string, ops []XTxOp) error {
 	if r.dead {
 		return errCrash

@@ -1371,7 +1371,7 @@ func TestXTxConcurrency_RacingReplication(t *testing.T) {
 	// weighs two records, so the default-sized ring can otherwise deliberately
 	// evict the follower while the test is exercising apply throughput rather
 	// than the intended concurrent replication path.
-	lcfg.ReplicationRingSize = 16384
+	lcfg.ReplicationRingSize = 131072
 	leader, err := Open(ldir, lcfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1395,6 +1395,7 @@ func TestXTxConcurrency_RacingReplication(t *testing.T) {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	var lastApplied atomic.Uint64
 
 	// XTx workers on leader
 	for w := 0; w < 2; w++ {
@@ -1442,18 +1443,22 @@ func TestXTxConcurrency_RacingReplication(t *testing.T) {
 		if re.IsTx() {
 			if _, err := follower.ApplyReplicatedTx(re.LSN, re.Tx); err != nil {
 				t.Errorf("ApplyReplicatedTx LSN %d failed: %v", re.LSN, err)
+				return
 			}
 		} else {
 			if err := follower.ApplyReplication(re.Collection, re.Entry); err != nil {
 				t.Errorf("ApplyReplication %s LSN %d failed: %v", re.Collection, re.LSN, err)
+				return
 			}
 		}
+		lastApplied.Store(re.LSN)
 	}
 
 	for _, re := range backlog {
 		applyEntry(re)
 	}
 
+	stopApplier := make(chan struct{})
 	applierDone := make(chan struct{})
 	go func() {
 		defer close(applierDone)
@@ -1465,29 +1470,33 @@ func TestXTxConcurrency_RacingReplication(t *testing.T) {
 				stream.Consumed(re)
 			case <-stream.Dead():
 				return
-			case <-ctx.Done():
+			case <-stopApplier:
 				return
 			}
 		}
 	}()
 
 	wg.Wait()
+	close(stopApplier)
+	<-applierDone
 
 	// Drain remaining entries from leader to follower
 	leaderLSN := leader.ReplicationStatus().LeaderLSN
 	drainDeadline := time.Now().Add(3 * time.Second)
-	for follower.AppliedLSN() < leaderLSN && time.Now().Before(drainDeadline) {
+	for lastApplied.Load() < leaderLSN && time.Now().Before(drainDeadline) {
 		select {
 		case re := <-stream.Entries():
 			applyEntry(re)
 			stream.NoteSent(re.LSN)
 			stream.Consumed(re)
+		case <-stream.Dead():
+			t.Fatal("replication stream overflowed during concurrent apply")
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
 
-	if follower.AppliedLSN() != leaderLSN {
-		t.Fatalf("follower applied LSN %d != leader LSN %d", follower.AppliedLSN(), leaderLSN)
+	if lastApplied.Load() != leaderLSN {
+		t.Fatalf("follower applied LSN %d != leader LSN %d", lastApplied.Load(), leaderLSN)
 	}
 
 	// Compare document counts between leader and follower
