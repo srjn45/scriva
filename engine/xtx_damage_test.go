@@ -17,6 +17,7 @@ package engine
 // mixture.
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +58,126 @@ func TestXTxJournalZeroedDamageContract(t *testing.T) {
 		if applied != 0 && applied != len(tx.parts) {
 			t.Fatalf("zeroed %s: mixed visible state for %s: %d/%d participants", xtxJournalFile, tx.key, applied, len(tx.parts))
 		}
+	}
+}
+
+func TestXTxJournalDamageAtDecisionBoundary(t *testing.T) {
+	root := t.TempDir()
+	_, img := lcPopulate(t, filepath.Join(root, "live"), root)
+
+	cases := []struct {
+		name    string
+		damage  func(t *testing.T, dir string)
+		wantErr error
+	}{
+		{
+			name: "valid",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+			},
+		},
+		{
+			name: "empty",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.Truncate(filepath.Join(dir, xtxJournalFile), 0); err != nil {
+					t.Fatalf("truncate journal: %v", err)
+				}
+			},
+			wantErr: ErrXTxRecoveryRequired,
+		},
+		{
+			name: "zeroed",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+				journal := filepath.Join(dir, xtxJournalFile)
+				info, err := os.Stat(journal)
+				if err != nil {
+					t.Fatalf("stat journal: %v", err)
+				}
+				if err := os.WriteFile(journal, make([]byte, info.Size()), 0o644); err != nil {
+					t.Fatalf("zero journal: %v", err)
+				}
+			},
+			wantErr: ErrXTxRecoveryRequired,
+		},
+		{
+			name: "missing",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.Remove(filepath.Join(dir, xtxJournalFile)); err != nil {
+					t.Fatalf("remove journal: %v", err)
+				}
+			},
+			wantErr: ErrXTxJournalMissing,
+		},
+		{
+			name: "corrupt-record",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+				journal := filepath.Join(dir, xtxJournalFile)
+				b, err := os.ReadFile(journal)
+				if err != nil {
+					t.Fatalf("read journal: %v", err)
+				}
+				headerEnd := bytes.IndexByte(b, '\n') + 1
+				if headerEnd <= 0 || headerEnd >= len(b) {
+					t.Fatalf("journal lacks a complete record to corrupt")
+				}
+				b[headerEnd] ^= 1
+				if err := os.WriteFile(journal, b, 0o644); err != nil {
+					t.Fatalf("write corrupt journal: %v", err)
+				}
+			},
+			wantErr: ErrXTxJournalCorrupt,
+		},
+		{
+			name: "torn-final-tail",
+			damage: func(t *testing.T, dir string) {
+				t.Helper()
+				f, err := os.OpenFile(filepath.Join(dir, xtxJournalFile), os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					t.Fatalf("open journal append: %v", err)
+				}
+				if _, err := f.WriteString(`{"k":"commit","tx":"torn`); err != nil {
+					_ = f.Close()
+					t.Fatalf("append torn tail: %v", err)
+				}
+				if err := f.Close(); err != nil {
+					t.Fatalf("close journal: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(root, "case-"+tc.name)
+			lcCopyTree(t, img.crash, dir)
+			tc.damage(t, dir)
+
+			sig, err := lcOpenCheck(t, dir, lcCfg(), img.crashModel, tc.name)
+			if tc.wantErr != nil {
+				if err == nil {
+					t.Fatalf("Open accepted damaged journal with signature %s", sig)
+				}
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Open error = %v, want %v", err, tc.wantErr)
+				}
+				if !isJournalDamageRefusal(err) {
+					t.Fatalf("Open error is not a typed journal-damage refusal: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Open rejected recoverable journal: %v", err)
+			}
+			if again, err := lcOpenCheck(t, dir, lcCfg(), img.crashModel, tc.name+" repeat"); err != nil {
+				t.Fatalf("second Open: %v", err)
+			} else if again != sig {
+				t.Fatalf("visibility changed between opens:\n first  %s\n second %s", sig, again)
+			}
+		})
 	}
 }
 

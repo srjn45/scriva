@@ -31,8 +31,15 @@ best-effort visibility.
 | Torn final record or zero-filled final tail | Incomplete final append after a complete prefix | Retain the complete prefix, discard only the tail, then recover by its decision. |
 | Complete record with invalid checksum, malformed header, or corruption in the middle | A decision that may have been durable is no longer trustworthy | Typed fail-closed refusal. |
 | Missing journal with stamped participant runs | Coordinator evidence is absent | Typed fail-closed refusal; never presume abort automatically. |
-| Empty/zeroed journal with stamped participant runs | Destructive journal loss, not a clean new database | Exact PRE if recovery explicitly treats every stamped run as undecided, otherwise typed fail-closed refusal. Never partial visibility. |
+| Empty/zeroed journal with stamped participant runs | Destructive journal loss, not a clean new database | Typed fail-closed refusal with `ErrXTxRecoveryRequired`. Never partial visibility. |
 | Complete COMMIT followed by a torn/garbage tail | The complete COMMIT remains evidence | Exact POST, or a typed refusal if the implementation cannot establish that boundary. |
+
+The implementation chooses fail-closed for destructive journal loss.  Recovery
+does not rewrite an empty or all-zero `xtx.journal` into a fresh coordinator
+when stamped participant runs are present, because non-tail participant runs
+cannot always be safely rolled back into exact PRE.  It does still discard an
+unterminated final append after a complete prefix, including a complete COMMIT
+followed by a torn suffix, and then recovers from that complete prefix.
 
 ## v1.5.0 regression harness
 
