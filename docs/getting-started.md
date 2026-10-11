@@ -1377,6 +1377,32 @@ Exit codes: `0` clean/repaired, `1` repairable (verify, or dry-run would apply c
 
 For the full decision tree and safe stop → backup → repair → reverify sequence, see the [index recovery runbook](runbook-index-recovery.md).
 
+## Collection names
+
+A collection name becomes a directory directly under the data directory, so
+new names are restricted:
+
+- 1–64 ASCII bytes matching `^[A-Za-z0-9][A-Za-z0-9_-]*$` — no dots, spaces,
+  slashes, backslashes, non-ASCII characters or control bytes.
+- Not reserved (case-insensitive): `xtx`, anything starting with `xtx.`,
+  `collections`, `replication`, `LOCK`, and the Windows device names
+  (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`).
+- Unique ignoring ASCII case: creating `Users` while `users` exists returns
+  `ALREADY_EXISTS`. Lookups stay case-exact.
+
+A bad name is rejected with `INVALID_ARGUMENT` (REST `400`) by every API that
+takes a name — create, drop, read/write, index, watch, transactions — and in the
+embedded Go API (`scriva.DB.Collection`, `engine.ErrInvalidName`).
+
+**Existing data is never made unreachable.** A directory that is already in the
+data directory under a name that fails these rules (for example `legacy name`
+or `a.b`) is loaded normally, with one warning per name and the
+`scriva_legacy_collection_names` gauge; it can be read, written and dropped but
+`CreateCollection` of that name is refused. Symlinks in the data directory root
+are never loaded, created over or dropped (logged, counted in
+`scriva_skipped_root_entries`). There is no rename; to move a legacy-named
+collection, copy it to a valid name with a client.
+
 ## Backup & restore
 
 `scriva-cli backup` streams a consistent, gzip-compressed snapshot of the entire
