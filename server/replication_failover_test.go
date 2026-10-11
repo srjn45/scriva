@@ -269,7 +269,6 @@ func TestFailover_FollowerCrashMatrix(t *testing.T) {
 		{"after_writes_before_lsn_persist", engine.XTxHookReplApplied, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			leader, ldb := startLeader(t)
