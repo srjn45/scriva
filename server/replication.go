@@ -145,6 +145,8 @@ type Follower struct {
 	apiKey  string
 	logger  *slog.Logger
 	backoff time.Duration
+
+	applyObserver EnvelopeApplyObserver
 }
 
 // NewFollower builds a Follower that applies the leader's feed into db. id is an

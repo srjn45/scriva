@@ -207,6 +207,19 @@ func (b *replicationBroker) publishTx(env *TxEnvelope) uint64 {
 	return b.appendLocked(ReplicationEntry{Tx: env})
 }
 
+// reserveNext makes the durable LSN watermark cover the LSN the next record
+// will receive. A transaction calls it BEFORE its COMMIT becomes durable: if
+// the process then dies between the COMMIT and publishTx, the restarted
+// leader restores an LSN at or above the one the transaction would have been
+// given, which is above every caught-up follower's resume point, so those
+// followers are told to re-bootstrap (the recovered transaction is never
+// republished) instead of silently resuming past it.
+func (b *replicationBroker) reserveNext() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.reserveLocked(b.lsn + 1)
+}
+
 // resyncBarrier forces every follower to re-bootstrap: it burns one LSN,
 // empties the ring (so no follower's resume point is serveable) and cuts every
 // subscriber. The coordinator uses it when a transaction's durable outcome is
