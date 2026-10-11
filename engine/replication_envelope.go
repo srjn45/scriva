@@ -101,7 +101,7 @@ func prepareEnvelopeOps(ops []TxEnvelopeOp) ([]TxEnvelopeOp, int64, error) {
 	for i, op := range ops {
 		norm, canon, err := canonicalData(op.Entry.Data)
 		if err != nil {
-			return nil, 0, fmt.Errorf("%w: op %d: %v", ErrEnvelopeInvalid, i, err)
+			return nil, 0, fmt.Errorf("%w: op %d: %w", ErrEnvelopeInvalid, i, err)
 		}
 		op.Entry.Data = norm
 		op.dataJSON = canon
@@ -321,7 +321,7 @@ func UnmarshalTxEnvelope(b []byte) (*TxEnvelope, error) {
 	var j envelopeJSON
 	dec := json.NewDecoder(bytes.NewReader(b))
 	if err := dec.Decode(&j); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrEnvelopeInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrEnvelopeInvalid, err)
 	}
 	if j.V != envelopeVersion {
 		return nil, fmt.Errorf("%w: unsupported version %d", ErrEnvelopeInvalid, j.V)
