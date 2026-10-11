@@ -222,10 +222,13 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		}
 	}
 
-	// Check Row 12: xtx.format says enabled, journal is missing, but stamped entries exist.
-	// A present-but-empty journal is legitimate (crash during the first prepare):
-	// undecided runs are then resolved as aborted (presumed abort).
-	if hasFormat && xj == nil && hasAnyStamped {
+	// Check Row 12: the journal is missing but stamped entries exist. This holds
+	// whether or not xtx.format survived: a root that lost both xtx.* files is
+	// not a legacy root, and its stamped runs must never be adopted as ordinary
+	// visible documents. A present-but-empty journal is legitimate (crash during
+	// the first prepare): undecided runs are then resolved as aborted (presumed
+	// abort).
+	if xj == nil && hasAnyStamped {
 		return xtxErr("", ErrXTxJournalMissing, errors.New("stamped entries exist but xtx.journal is missing"))
 	}
 

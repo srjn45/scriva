@@ -41,13 +41,10 @@ const (
 	lcCommitted lcOutcome = iota
 	// lcAborted: no COMMIT record exists. No participant may show it.
 	lcAborted
-	// lcEither: the damage legitimately removed the only evidence that could
-	// tell the two apart (see the shape's comment). All-or-nothing still holds.
-	lcEither
 )
 
 func (o lcOutcome) String() string {
-	return [...]string{"committed", "aborted", "either"}[o]
+	return [...]string{"committed", "aborted"}[o]
 }
 
 // lcPart is one participant's single operation in a model transaction. Each
@@ -577,63 +574,6 @@ func lcLines(t *testing.T, path string) []lcLine {
 		data = data[i+1:]
 	}
 	return out
-}
-
-// lcStampedLines returns the lines of path stamped with txid.
-func lcStampedLines(t *testing.T, path, txid string) []lcLine {
-	t.Helper()
-	var out []lcLine
-	needle := []byte(`"t":"` + txid + `"`)
-	for _, l := range lcLines(t, path) {
-		if bytes.Contains(l.text, needle) {
-			out = append(out, l)
-		}
-	}
-	return out
-}
-
-// lcFindRun locates the segment and lines holding txid's run in col.
-func lcFindRun(t *testing.T, dir, col, txid string) (string, []lcLine) {
-	t.Helper()
-	for _, seg := range lcSegments(t, dir, col) {
-		if ls := lcStampedLines(t, seg, txid); len(ls) > 0 {
-			return seg, ls
-		}
-	}
-	t.Fatalf("no run of %s in %s", txid, col)
-	return "", nil
-}
-
-func lcWriteLines(t *testing.T, path string, lines []lcLine) {
-	t.Helper()
-	var buf bytes.Buffer
-	for _, l := range lines {
-		buf.Write(l.text)
-		buf.WriteByte('\n')
-	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-// lcFlip flips one bit of the byte at off.
-func lcFlip(t *testing.T, path string, off int64) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	data[off] ^= 0x01
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-func lcTruncate(t *testing.T, path string, size int64) {
-	t.Helper()
-	if err := os.Truncate(path, size); err != nil {
-		t.Fatalf("truncate %s: %v", path, err)
-	}
 }
 
 func lcRel(dir, path string) string {

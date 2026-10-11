@@ -121,6 +121,11 @@ full breaking-change and migration notes.
 - [x] LSN watermark persisted before the transaction COMMIT so a recovered-but-unpublished transaction always forces followers to re-bootstrap
 - [x] Metrics (`scriva_replication_tx_*`, `scriva_replication_applied_lsn`, `scriva_replication_lag_lsn`) and operations runbook
 
+### Cross-collection transaction upgrade & operations — shipped
+- [x] v1.4.0-era data directory fixture (`engine/testdata/upgrade/v1.4.0`) opened, upgraded in place by the first transaction, crashed, moved, copied and backup-restored (`TestXTxLifecycle_*`)
+- [x] Downgrade / unsupported-version fences proven: pre-fence entry decoder rejects stamped lines, too-new `xtx.format` and unknown features refused by `Open`/`VerifyDir`/`Repair` without modifying the directory, lost journal never presumes abort (`TestXTxDowngrade_*`)
+- [x] Upgrade, downgrade and recovery playbook in `docs/operations.md`
+
 ### Web admin UI — shipped
 - [x] `clients/web/` — React 18 + TypeScript + Vite + Tailwind CSS browser UI (dark theme)
   - Browse and manage collections (create, drop), full CRUD on records with filter/order/pagination
