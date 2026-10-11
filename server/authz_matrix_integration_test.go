@@ -9,6 +9,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -239,7 +240,6 @@ func authzCases() []authzCase {
 		{collB, authzShape(ok, ok, deny, deny)},
 		{collGhost, authzShape(codes.NotFound, codes.NotFound, deny, deny)},
 	} {
-		c := c
 		cs = append(cs,
 			authzCase{
 				name: "FindById/" + c.coll, want: c.exp,
@@ -320,7 +320,6 @@ func authzCases() []authzCase {
 		{collB, authzShape(ok, deny, deny, deny)},
 		{collGhost, authzShape(codes.NotFound, deny, deny, deny)},
 	} {
-		c := c
 		cs = append(cs,
 			authzCase{
 				name: "Insert/" + c.coll, want: c.exp,
@@ -533,7 +532,7 @@ func authzCases() []authzCase {
 				}
 				// Only the outcome of the first receive matters: a denied stream
 				// must fail before any archive byte is sent.
-				if _, err := st.Recv(); err != nil && err != io.EOF {
+				if _, err := st.Recv(); err != nil && !errors.Is(err, io.EOF) {
 					return err
 				}
 				return nil
@@ -553,7 +552,7 @@ func authzCases() []authzCase {
 				}
 				for {
 					if _, err := st.Recv(); err != nil {
-						if err == io.EOF || status.Code(err) == codes.DeadlineExceeded {
+						if errors.Is(err, io.EOF) || status.Code(err) == codes.DeadlineExceeded {
 							return nil
 						}
 						return err
@@ -584,7 +583,6 @@ func authzCases() []authzCase {
 		{"mixed-foreign-first", []string{collB, collA}, authzShape(ok, deny, deny, deny)},
 		{"ghost", []string{collA, collGhost}, authzShape(codes.NotFound, deny, deny, deny)},
 	} {
-		c := c
 		cs = append(cs, authzCase{
 			name: "BeginXTx/" + c.name, want: c.exp,
 			grpc: func(h *authzHarness, cx context.Context, n int) error {
@@ -604,7 +602,6 @@ func authzCases() []authzCase {
 		{collA, authzShape(ok, deny, ok, deny)},
 		{collB, authzShape(ok, deny, deny, deny)},
 	} {
-		c := c
 		cs = append(cs, authzCase{
 			name: "BeginTx/" + c.coll, want: c.exp,
 			grpc: func(h *authzHarness, cx context.Context, n int) error {
@@ -631,7 +628,7 @@ func authzWithAllowed(m map[string]codes.Code, c codes.Code) map[string]codes.Co
 func authzDrain(recv func() error) error {
 	for {
 		if err := recv(); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

@@ -196,21 +196,11 @@ func (p principal) authorizeMethod(fullMethod string) error {
 		}
 		return nil
 	default: // AccessDenied: unclassified method, db:admin only.
-		if !p.open && !(p.scope == ScopeReadWrite && p.dbCapable()) {
+		if !p.open && (p.scope != ScopeReadWrite || !p.dbCapable()) {
 			return denied("principal %q is not permitted to call %s", p.name, fullMethod)
 		}
 		return nil
 	}
-}
-
-// needsRequestCheck reports whether authorizeRequest has anything to enforce
-// for fullMethod (so a stream can skip wrapping its first message).
-func needsRequestCheck(fullMethod string) bool {
-	switch methodPolicies[fullMethod] {
-	case AccessCollectionRead, AccessCollectionWrite, AccessCreate:
-		return true
-	}
-	return false
 }
 
 // authorizeRequest enforces the collection allow-list against the request
