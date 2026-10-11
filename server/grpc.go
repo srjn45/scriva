@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"github.com/srjn45/scriva/query"
 	"github.com/srjn45/scriva/store"
@@ -26,6 +28,8 @@ type GRPCServer struct {
 	pb.UnimplementedScrivaServer
 	db    *engine.DB
 	txMgr *engine.TxManager
+	// owners binds transaction handles to the credential that created them.
+	owners *handleOwners
 
 	// Slow-query observability (O5). All optional: the zero value disables both
 	// the metric and the log so the embedded/default path is unchanged.
@@ -84,7 +88,7 @@ func WithPromoteMaxLag(maxLag uint64) GRPCOption {
 // how long an idle open transaction is retained before it is reaped (0 disables
 // expiry); see engine.NewTxManager.
 func NewGRPCServer(db *engine.DB, txTimeout time.Duration, opts ...GRPCOption) *GRPCServer {
-	s := &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout)}
+	s := &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout), owners: newHandleOwners()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -140,8 +144,22 @@ func (s *GRPCServer) DropCollection(_ context.Context, req *pb.DropCollectionReq
 	return &pb.DropCollectionResponse{Ok: true}, nil
 }
 
-func (s *GRPCServer) ListCollections(_ context.Context, _ *pb.ListCollectionsRequest) (*pb.ListCollectionsResponse, error) {
-	return &pb.ListCollectionsResponse{Names: s.db.ListCollections()}, nil
+// ListCollections returns every collection to an unrestricted principal and
+// only allow-list ∩ existing, sorted, to a restricted one. Names that do not
+// exist are omitted so the list is no existence oracle; internal xtx.* names
+// never appear.
+func (s *GRPCServer) ListCollections(ctx context.Context, _ *pb.ListCollectionsRequest) (*pb.ListCollectionsResponse, error) {
+	p, _ := auth.PrincipalFromContext(ctx)
+	all := s.db.ListCollections()
+	names := make([]string, 0, len(all))
+	for _, n := range all {
+		if strings.HasPrefix(n, "xtx.") || !p.AllowsCollection(n) {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return &pb.ListCollectionsResponse{Names: names}, nil
 }
 
 // ---- CRUD -----------------------------------------------------------------
@@ -179,9 +197,9 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 		if req.TtlSeconds > 0 {
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
 		}
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -408,9 +426,9 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 		if req.TtlSeconds > 0 {
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
 		}
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -448,9 +466,9 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -992,7 +1010,7 @@ func replOpFromProto(op pb.ReplicationOp) store.Op {
 
 // ---- Transactions ---------------------------------------------------------
 
-func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
+func (s *GRPCServer) BeginTx(ctx context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
 	if req.Collection == "" {
 		return nil, status.Error(codes.InvalidArgument, "collection required")
 	}
@@ -1000,13 +1018,14 @@ func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.Beg
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 	txID := s.txMgr.Begin(req.Collection)
+	s.owners.bind(txID, callerID(ctx), func(id string) bool { _, ok := s.txMgr.Get(id); return ok })
 	return &pb.BeginTxResponse{TxId: txID}, nil
 }
 
-func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
-	tx, ok := s.txMgr.Get(req.TxId)
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+func (s *GRPCServer) CommitTx(ctx context.Context, req *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
+	tx, err := s.ownedTx(ctx, req.TxId)
+	if err != nil {
+		return nil, err
 	}
 	col, err := s.db.Collection(tx.Collection)
 	if err != nil {
@@ -1014,6 +1033,7 @@ func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.C
 	}
 	ops := tx.Snapshot()
 	s.txMgr.Remove(req.TxId)
+	s.owners.forget(req.TxId)
 	if err := col.CommitTx(ops); err != nil {
 		if errors.Is(err, engine.ErrResourceExhausted) {
 			if s.onQuotaReject != nil {
@@ -1026,12 +1046,27 @@ func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.C
 	return &pb.CommitTxResponse{Ok: true}, nil
 }
 
-func (s *GRPCServer) RollbackTx(_ context.Context, req *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
-	if _, ok := s.txMgr.Get(req.TxId); !ok {
-		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+func (s *GRPCServer) RollbackTx(ctx context.Context, req *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
+	if _, err := s.ownedTx(ctx, req.TxId); err != nil {
+		return nil, err
 	}
 	s.txMgr.Remove(req.TxId)
+	s.owners.forget(req.TxId)
 	return &pb.RollbackTxResponse{Ok: true}, nil
+}
+
+// ownedTx resolves a single-collection transaction handle and enforces that
+// the caller is the principal that began it. A foreign handle is refused with
+// PermissionDenied and is not touched.
+func (s *GRPCServer) ownedTx(ctx context.Context, txID string) (*engine.Tx, error) {
+	tx, ok := s.txMgr.Get(txID)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+	}
+	if err := s.owners.check(ctx, txID); err != nil {
+		return nil, err
+	}
+	return tx, nil
 }
 
 // ---- Helpers --------------------------------------------------------------
