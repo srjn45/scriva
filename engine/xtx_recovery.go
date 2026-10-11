@@ -39,6 +39,28 @@ func (c *colDiscovery) close() {
 	}
 }
 
+type xtxJournalDamageState int
+
+const (
+	xtxJournalHealthy xtxJournalDamageState = iota
+	xtxJournalMissingBeforeOpen
+	xtxJournalDestructiveLoss
+)
+
+func classifyXTxJournalBeforeOpen(dir string) (xtxJournalDamageState, error) {
+	b, err := os.ReadFile(filepath.Join(dir, xtxJournalFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return xtxJournalMissingBeforeOpen, nil
+	}
+	if err != nil {
+		return xtxJournalHealthy, fmt.Errorf("xtx journal: read before recovery: %w", err)
+	}
+	if len(b) == 0 || allZero(b) {
+		return xtxJournalDestructiveLoss, nil
+	}
+	return xtxJournalHealthy, nil
+}
+
 // recoverCoordinator implements §7 of docs/design-cross-collection-transactions.md:
 // Phase 0..7 coordinator recovery before collections become writable.
 func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
@@ -48,6 +70,10 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		return err
 	}
 	hasFormat := (f != nil)
+	journalState, err := classifyXTxJournalBeforeOpen(db.dataDir)
+	if err != nil {
+		return err
+	}
 
 	xj, err := gateXTxRoot(db.dataDir, xtxOptions{wrapFile: cfg.wrapFile, renameFn: cfg.renameFn})
 	if err != nil {
@@ -222,14 +248,20 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 		}
 	}
 
-	// Check Row 12: the journal is missing but stamped entries exist. This holds
+	// Check Row 12 and destructive journal loss: the journal is missing or was
+	// empty/zeroed before gate repair, but stamped entries exist. This holds
 	// whether or not xtx.format survived: a root that lost both xtx.* files is
 	// not a legacy root, and its stamped runs must never be adopted as ordinary
-	// visible documents. A present-but-empty journal is legitimate (crash during
-	// the first prepare): undecided runs are then resolved as aborted (presumed
-	// abort).
-	if xj == nil && hasAnyStamped {
-		return xtxErr("", ErrXTxJournalMissing, errors.New("stamped entries exist but xtx.journal is missing"))
+	// visible documents. An empty/zeroed journal with stamped runs is destructive
+	// coordinator loss: fail closed because durable non-tail runs cannot always
+	// be proven safely truncatable into exact PRE.
+	if hasAnyStamped {
+		switch {
+		case xj == nil || journalState == xtxJournalMissingBeforeOpen:
+			return xtxErr("", ErrXTxJournalMissing, errors.New("stamped entries exist but xtx.journal is missing"))
+		case journalState == xtxJournalDestructiveLoss:
+			return xtxErr("", ErrXTxRecoveryRequired, errors.New("stamped entries exist but xtx.journal is empty or zeroed"))
+		}
 	}
 
 	// Seq restore (§5.1)
