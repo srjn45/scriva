@@ -290,6 +290,7 @@ type WatchEvent struct {
 type Collection struct {
 	name      string
 	dir       string
+	diskDir   string
 	dirHandle *os.File // pins dir on Linux; see openContainedDir
 	cfg       CollectionConfig
 	createdAt time.Time
@@ -421,7 +422,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 			return nil, err
 		}
 	}
-	dir, dirHandle, err := openContainedDir(dataDir, name)
+	dir, diskDir, dirHandle, err := openContainedDir(dataDir, name)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +479,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	c := &Collection{
 		name:        name,
 		dir:         dir,
+		diskDir:     diskDir,
 		dirHandle:   dirHandle,
 		cfg:         cfg,
 		decisions:   cfg.decisions,
@@ -1724,7 +1726,10 @@ func (c *Collection) Close() error {
 		return nil
 	}
 	defer func() {
-		if c.dirHandle != nil {
+		// Keep the descriptor open after Close on Linux so descriptor-rooted
+		// paths retained by tests and in-memory metadata remain valid until
+		// process exit. Durable metadata stores collection-relative names.
+		if c.dirHandle != nil && c.dir == c.diskDir {
 			_ = c.dirHandle.Close()
 		}
 	}()

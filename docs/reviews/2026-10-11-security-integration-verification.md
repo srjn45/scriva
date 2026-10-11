@@ -19,10 +19,12 @@
   `go test ./... -race -count=1` passed, as did focused race runs for the
   engine and the security integration tests in `server` and `internal/auth`.
 
-## Deliberate follow-up
+## Post-open containment follow-up
 
-PR #175 records that the engine still uses pathname operations after opening a
-collection.  Its `Lstat`/`SameFile` checks reject the tested swap before drop,
-but they are not an `openat`/descriptor-based guarantee against every later
-post-open symlink swap.  That residual filesystem race is outside this
-integration change and must not be represented as a complete D2 TOCTOU fix.
+PR #177 closes the post-open collection-directory swap gap on Linux by keeping
+the opened collection directory descriptor alive and routing collection I/O
+through that anchored descriptor path.  The regression coverage swaps a live
+collection directory for an outside symlink, then writes and snapshots while
+asserting the outside tree is unchanged.  Crash-recovery manifests store
+collection-relative paths so restart recovery does not persist process-local
+descriptor paths.
