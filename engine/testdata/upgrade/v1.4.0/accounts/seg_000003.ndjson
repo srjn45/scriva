@@ -1,0 +1,3 @@
+{"id":7,"op":"insert","ts":"2026-10-11T11:38:41.209407286Z","rev":1,"data":{"col":"accounts","kind":"legacy","n":6},"crc":511784495}
+{"id":8,"op":"insert","ts":"2026-10-11T11:38:41.209444514Z","rev":1,"data":{"col":"accounts","kind":"legacy","n":7},"crc":1282654490}
+{"id":2,"op":"update","ts":"2026-10-11T11:38:41.209449935Z","rev":2,"data":{"col":"accounts","kind":"legacy-updated","n":2},"crc":2769493473}
