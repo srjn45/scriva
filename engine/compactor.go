@@ -196,7 +196,7 @@ func (c *Collection) compactLocked(force bool) error {
 	if err := discardCompactTemps(c.dir); err != nil {
 		return fmt.Errorf("compactor: %w", err)
 	}
-	tempSegs, err := c.writeCompactEntries(resolved)
+	tempSegs, err := c.writeCompactEntries(resolved, len(toCompact))
 	if err != nil {
 		_ = discardCompactTemps(c.dir)
 		return fmt.Errorf("compactor: write compacted: %w", err)
@@ -615,10 +615,17 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 	for _, e := range entries {
 		compact = append(compact, compactEntry{entry: e})
 	}
-	return c.writeCompactEntries(compact)
+	return c.writeCompactEntries(compact, 0)
 }
 
-func (c *Collection) writeCompactEntries(entries []compactEntry) ([]*Segment, error) {
+// writeCompactEntries writes entries into temp segments, rotating at
+// SegmentMaxSize. maxSegs > 0 caps the number of output segments: once only the
+// last permitted segment remains it is allowed to grow past SegmentMaxSize
+// instead of rotating. Input segments may legitimately exceed the limit (a
+// batch or cross-collection transaction run is appended to one segment whole),
+// and re-packing those entry by entry could otherwise need more output segments
+// than input names exist, which would make the pass fail forever.
+func (c *Collection) writeCompactEntries(entries []compactEntry, maxSegs int) ([]*Segment, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -643,7 +650,7 @@ func (c *Collection) writeCompactEntries(entries []compactEntry) ([]*Segment, er
 	}
 
 	for _, ce := range entries {
-		if current.Size() >= c.cfg.SegmentMaxSize {
+		if current.Size() >= c.cfg.SegmentMaxSize && (maxSegs <= 0 || len(segs)+1 < maxSegs) {
 			if sealErr := current.Seal(); sealErr != nil {
 				return nil, sealErr
 			}
