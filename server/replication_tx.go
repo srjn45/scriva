@@ -34,10 +34,11 @@ var (
 	// ErrUnknownRecordVersion: the leader sent a record_version this follower
 	// does not understand. The stream stops; nothing is applied.
 	ErrUnknownRecordVersion = errors.New("replication: unknown record version")
-	// ErrEnvelopeApplyUnsupported is returned by the follower's envelope apply
-	// seam until atomic apply through the coordinator exists. The envelope was
-	// decoded and verified but NOT applied and the applied LSN did not advance.
-	ErrEnvelopeApplyUnsupported = errors.New("replication: atomic apply of transaction envelopes is not supported by this follower")
+	// ErrEnvelopeApplyFailed wraps any failure to apply a transaction envelope
+	// atomically. Nothing of the transaction is visible and the applied LSN did
+	// not advance. Follower.Run stops and returns it (errors.Is also matches the
+	// engine cause, e.g. engine.ErrReplicationDivergence).
+	ErrEnvelopeApplyFailed = errors.New("replication: failed to apply transaction envelope")
 )
 
 // followerProtocolVersions is what a Follower advertises in ReplicateRequest.
@@ -157,18 +158,19 @@ func txEnvelopeFromProto(rec *pb.ReplicationRecord) (*engine.TxEnvelope, error) 
 	return env, nil
 }
 
-// applyEnvelope is THE follower-side seam for transaction envelopes. It
-// receives a decoded, digest-verified envelope with its single LSN and must
-// apply every operation atomically through the follower's own durable
-// coordinator, returning nil only after the whole transaction is locally
-// committed. The caller advances the applied LSN to lsn only on a nil return.
-//
-// Until the follower-apply task lands it refuses: it applies nothing (so a
-// transaction is never applied non-atomically) and returns
-// ErrEnvelopeApplyUnsupported, which stops the stream with the applied LSN
-// unchanged.
+// applyEnvelope applies a decoded, digest-verified envelope with its single LSN
+// atomically through the follower's durable cross-collection coordinator
+// (engine.DB.ApplyReplicatedTx). It returns nil only after the whole
+// transaction is locally committed and visible — or was already applied
+// (idempotent redelivery). The applied LSN is advanced by the engine in the
+// same step; the caller's SetAppliedLSN is then a no-op.
 func (f *Follower) applyEnvelope(lsn uint64, env *engine.TxEnvelope) error {
-	_ = lsn
-	_ = env
-	return ErrEnvelopeApplyUnsupported
+	applied, err := f.db.ApplyReplicatedTx(lsn, env)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrEnvelopeApplyFailed, err)
+	}
+	if !applied {
+		f.logger.Debug("replicated transaction already applied", "tx_id", env.TxID, "lsn", lsn)
+	}
+	return nil
 }
