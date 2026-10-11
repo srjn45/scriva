@@ -1072,8 +1072,9 @@ func (c *Collection) rollbackBatchLocked(startSize int64, inserted []uint64, bef
 	segs := append(append([]*Segment(nil), c.sealed...), c.active)
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
+	decisions := c.currentDecisions()
 	for _, sidx := range c.sidxMap {
-		if err := sidx.rebuild(segs, false, c.decisions); err != nil {
+		if err := sidx.rebuild(segs, false, decisions); err != nil {
 			return err
 		}
 	}
@@ -1885,7 +1886,7 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 
-	if err := sidx.rebuild(all, false, c.decisions); err != nil {
+	if err := sidx.rebuild(all, false, c.currentDecisions()); err != nil {
 		c.sidxMu.Lock()
 		delete(c.sidxMap, field)
 		c.sidxMu.Unlock()
