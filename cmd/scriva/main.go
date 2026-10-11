@@ -300,6 +300,9 @@ func serve(cfg server.Config, configFile string) error {
 	engineCfg.OnAppend = server.AppendMetricsHook(m)
 	engineCfg.OnSegmentPoisoned = func(collection, _ string, _ error) { m.ObserveSegmentPoisoned(collection) }
 	engineCfg.OnLock = func(_, result string) { m.ObserveDirLock(result) }
+	engineCfg.OnXTx = m.ObserveXTx
+	engineCfg.OnXTxConflict = m.ObserveXTxConflict
+	engineCfg.OnXTxRecovery = m.ObserveXTxRecovery
 	if tracerProvider != nil {
 		// Compose the metrics compaction hook with a tracing span, and add the
 		// scan span hook. The engine stays dependency-free — it only calls these

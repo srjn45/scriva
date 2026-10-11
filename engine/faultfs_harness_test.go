@@ -64,16 +64,17 @@ func TestFaultFS_FailRename(t *testing.T) {
 			}
 		}
 	}
-	// Rotation can kick off background compaction, which may consume the
-	// armed fault instead of CompactNow; arm relative to now and assert on
-	// fs.faults() rather than on which caller saw the error.
-	base := fs.count("rename")
-	fs.failRenameAt(base+1, syscall.EXDEV)
-	if err := col.CompactNow(); err != nil && !errors.Is(err, syscall.EXDEV) {
-		t.Fatalf("unexpected compaction error: %v", err)
+	// The first rename of a pass failing replaces nothing: the pass is
+	// abandoned, the old layout keeps serving and a later pass may run.
+	err := compactWithRenameFault(col, fs, 1, syscall.EXDEV)
+	if !errors.Is(err, syscall.EXDEV) {
+		t.Fatalf("want EXDEV from the armed rename, got %v", err)
 	}
-	if fs.faults() != 1 || fs.count("rename") <= base {
-		t.Fatalf("fault not injected: faults=%d renames=%d base=%d", fs.faults(), fs.count("rename"), base)
+	if fs.faults() != 1 {
+		t.Fatalf("fault not injected exactly once: faults=%d", fs.faults())
+	}
+	if err := col.CompactNow(); err != nil {
+		t.Fatalf("compaction after an abandoned pass: %v", err)
 	}
 }
 

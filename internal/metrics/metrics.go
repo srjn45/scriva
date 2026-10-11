@@ -36,6 +36,11 @@ type Metrics struct {
 	AppendErrorsTotal    *prometheus.CounterVec
 	SegmentPoisonedTotal *prometheus.CounterVec
 	DirLockTotal         *prometheus.CounterVec
+
+	XTxTotal          *prometheus.CounterVec
+	XTxDuration       *prometheus.HistogramVec
+	XTxConflictsTotal *prometheus.CounterVec
+	XTxRecoveryTotal  *prometheus.CounterVec
 }
 
 // New creates a Metrics and registers all instruments with reg.
@@ -122,10 +127,59 @@ func New(reg prometheus.Registerer) *Metrics {
 		Help: "Data-directory lock acquisitions by result (acquired|contended|failed).",
 	}, []string{"result"})
 
+	m.XTxTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_xtx_total",
+		Help: "Total cross-collection transactions by outcome (commit|conflict|abort|canceled|unknown|rollback|expired).",
+	}, []string{"outcome"})
+
+	m.XTxDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "scriva_xtx_duration_seconds",
+		Help:    "Duration of cross-collection transactions from begin to outcome in seconds.",
+		Buckets: []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"outcome"})
+
+	m.XTxConflictsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_xtx_conflicts_total",
+		Help: "Cross-collection transaction conflicts by kind (read|write|constraint).",
+	}, []string{"kind"})
+
+	m.XTxRecoveryTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_xtx_recovery_total",
+		Help: "Cross-collection transactions resolved during startup recovery, by outcome (recovered_committed|presumed_abort).",
+	}, []string{"outcome"})
+
 	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal,
 		m.RecoveryTotal, m.RecoveryDuration, m.RecoveryBytesTotal, m.IntegrityOpenTotal, m.IntegrityFindings,
-		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal)
+		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal,
+		m.XTxTotal, m.XTxDuration, m.XTxConflictsTotal, m.XTxRecoveryTotal)
 	return m
+}
+
+// ObserveXTx records one cross-collection transaction lifecycle outcome and
+// duration. The begin event is ignored (it only marks the start).
+func (m *Metrics) ObserveXTx(event string, dur time.Duration) {
+	if event == "begin" || event == "" {
+		return
+	}
+	m.XTxTotal.WithLabelValues(event).Inc()
+	m.XTxDuration.WithLabelValues(event).Observe(dur.Seconds())
+}
+
+// ObserveXTxConflict records one transaction rejected due to contention,
+// classified by kind (read, write, or constraint).
+func (m *Metrics) ObserveXTxConflict(kind string) {
+	if kind == "" {
+		kind = "constraint"
+	}
+	m.XTxConflictsTotal.WithLabelValues(kind).Inc()
+}
+
+// ObserveXTxRecovery records transactions resolved during startup recovery.
+func (m *Metrics) ObserveXTxRecovery(outcome string, count int) {
+	if outcome == "" || count <= 0 {
+		return
+	}
+	m.XTxRecoveryTotal.WithLabelValues(outcome).Add(float64(count))
 }
 
 // ObserveCompaction records one completed compaction run.

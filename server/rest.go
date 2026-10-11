@@ -8,15 +8,22 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/internal/xtxapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// headerMatcher forwards x-api-key and all default grpc-gateway headers.
+// headerMatcher forwards x-api-key, x-xtx-id and all default grpc-gateway
+// headers. x-xtx-id is forwarded so a REST request that tries to run a plain
+// data RPC "inside" a cross-collection transaction is rejected exactly as it
+// is over gRPC, instead of silently running outside the transaction.
 func headerMatcher(key string) (string, bool) {
-	if strings.ToLower(key) == "x-api-key" {
+	switch strings.ToLower(key) {
+	case "x-api-key":
 		return "x-api-key", true
+	case xtxapi.HeaderXTxID:
+		return xtxapi.HeaderXTxID, true
 	}
 	return runtime.DefaultHeaderMatcher(key)
 }
@@ -27,7 +34,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-api-key")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-api-key, x-xtx-id")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

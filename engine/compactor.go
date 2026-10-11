@@ -116,7 +116,13 @@ func (c *Collection) compact(force bool) error {
 	// never snapshot, remove, and rename the same sealed segments concurrently.
 	c.compactMu.Lock()
 	defer c.compactMu.Unlock()
+	return c.compactLocked(force)
+}
 
+// compactLocked is one compaction pass; the caller holds compactMu. Split out
+// so a test can arm a fault and run the pass it is meant for under one hold of
+// the lock, with no background pass able to slip in between.
+func (c *Collection) compactLocked(force bool) error {
 	// Re-check after acquiring the lock: Close() holds compactMu while it
 	// persists the final index, so a pass that was blocked on the lock during
 	// shutdown must not mutate the segment layout afterwards.

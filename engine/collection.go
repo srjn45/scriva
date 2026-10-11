@@ -195,6 +195,25 @@ type CollectionConfig struct {
 	// exclusive data-directory lock: LockAcquired, LockContended (another
 	// handle/process holds it) or LockFailed. DB-wide.
 	OnLock func(dataDir, result string)
+	// XTxIdleTimeout bounds how long a transaction handle (DB.BeginXTx) may sit
+	// idle before it is reaped and everything it staged is discarded. Zero
+	// selects DefaultXTxIdleTimeout; a negative value disables reaping. DB-wide.
+	XTxIdleTimeout time.Duration
+	// OnXTx, when non-nil, is called once per transaction-handle lifecycle event
+	// (one of the XTxEvent* constants) with the time since the handle began.
+	// It runs without engine locks held. DB-wide.
+	OnXTx func(event string, sinceBegin time.Duration)
+	// OnXTxConflict, when non-nil, is called once per commit rejected with
+	// ErrXTxConflict, next to the XTxEventConflict event, with what was
+	// contended: XTxConflictRead (a point read changed), XTxConflictWrite (the
+	// base revision of a staged update/delete changed) or XTxConflictConstraint
+	// (unique index, missing target, explicit expected revision). DB-wide.
+	OnXTxConflict func(kind string)
+	// OnXTxRecovery, when non-nil, is called at open, once per outcome with a
+	// non-zero count, with how many cross-collection transactions startup
+	// recovery resolved that way (XTxRecoveryCommitted, XTxRecoveryPresumedAbort).
+	// DB-wide.
+	OnXTxRecovery func(outcome string, count int)
 	// Logger, when non-nil, receives structured recovery, integrity and poison
 	// events. nil keeps the engine silent.
 	Logger *slog.Logger
@@ -213,6 +232,10 @@ type CollectionConfig struct {
 	// test hook invoked by a full scan (streamLive) at each scanHookPoint while
 	// the scan holds its shared layout lease.
 	scanHook func(point scanHookPoint, arg uint64)
+
+	// test hook invoked by the cross-collection commit path at each
+	// xtxHookPoint with the idempotency key and, once allocated, the txid.
+	xtxHook func(point xtxHookPoint, key, txid string)
 
 	// test seams (nil in production): decorate segment files and intercept the
 	// compactor's renames. See faultfs_test.go.

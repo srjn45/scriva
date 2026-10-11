@@ -147,6 +147,9 @@ func (s *GRPCServer) ListCollections(_ context.Context, _ *pb.ListCollectionsReq
 // ---- CRUD -----------------------------------------------------------------
 
 func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.InsertResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	if req.TtlSeconds < 0 {
 		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
 	}
@@ -197,7 +200,10 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Rev: 1}, nil
 }
 
-func (s *GRPCServer) InsertMany(_ context.Context, req *pb.InsertManyRequest) (*pb.InsertManyResponse, error) {
+func (s *GRPCServer) InsertMany(ctx context.Context, req *pb.InsertManyRequest) (*pb.InsertManyResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	if req.TtlSeconds < 0 {
 		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
 	}
@@ -219,7 +225,10 @@ func (s *GRPCServer) InsertMany(_ context.Context, req *pb.InsertManyRequest) (*
 	return &pb.InsertManyResponse{Ids: ids}, nil
 }
 
-func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.FindResponse, error) {
+func (s *GRPCServer) FindById(ctx context.Context, req *pb.FindByIdRequest) (*pb.FindResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
@@ -240,6 +249,9 @@ func (s *GRPCServer) FindById(_ context.Context, req *pb.FindByIdRequest) (*pb.F
 }
 
 func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) error {
+	if err := s.rejectXTxHeader(stream.Context(), req.Collection, true); err != nil {
+		return err
+	}
 	start := time.Now()
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
@@ -381,6 +393,9 @@ func joinShapes(filters []*pb.Filter) string {
 }
 
 func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.UpdateResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	if req.TtlSeconds < 0 {
 		return nil, status.Error(codes.InvalidArgument, "ttl_seconds must not be negative")
 	}
@@ -424,6 +439,9 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 }
 
 func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
@@ -452,7 +470,10 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 // Upsert inserts data under req.Key if no live record carries it, or replaces
 // the existing record's data if one does — atomically in the engine. It returns
 // the resulting record with its (incremented on replace) revision.
-func (s *GRPCServer) Upsert(_ context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
+func (s *GRPCServer) Upsert(ctx context.Context, req *pb.UpsertRequest) (*pb.UpsertResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	if req.Key == "" {
 		return nil, status.Error(codes.InvalidArgument, "key required")
 	}
@@ -472,7 +493,10 @@ func (s *GRPCServer) Upsert(_ context.Context, req *pb.UpsertRequest) (*pb.Upser
 }
 
 // FindByKey returns the record carrying req.Key. A missing key is NOT_FOUND.
-func (s *GRPCServer) FindByKey(_ context.Context, req *pb.FindByKeyRequest) (*pb.FindResponse, error) {
+func (s *GRPCServer) FindByKey(ctx context.Context, req *pb.FindByKeyRequest) (*pb.FindResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
@@ -491,7 +515,10 @@ func (s *GRPCServer) FindByKey(_ context.Context, req *pb.FindByKeyRequest) (*pb
 
 // UpdateByKey overwrites the record carrying req.Key, preserving the key. A
 // missing key is NOT_FOUND.
-func (s *GRPCServer) UpdateByKey(_ context.Context, req *pb.UpdateByKeyRequest) (*pb.UpdateResponse, error) {
+func (s *GRPCServer) UpdateByKey(ctx context.Context, req *pb.UpdateByKeyRequest) (*pb.UpdateResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
@@ -509,7 +536,10 @@ func (s *GRPCServer) UpdateByKey(_ context.Context, req *pb.UpdateByKeyRequest) 
 }
 
 // DeleteByKey removes the record carrying req.Key. A missing key is NOT_FOUND.
-func (s *GRPCServer) DeleteByKey(_ context.Context, req *pb.DeleteByKeyRequest) (*pb.DeleteResponse, error) {
+func (s *GRPCServer) DeleteByKey(ctx context.Context, req *pb.DeleteByKeyRequest) (*pb.DeleteResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
@@ -524,7 +554,10 @@ func (s *GRPCServer) DeleteByKey(_ context.Context, req *pb.DeleteByKeyRequest) 
 // current revision equals req.ExpectedRev. A stale revision (or a missing key)
 // is a clean no-op reported as swapped=false — never an error. When the swap
 // applies, the resulting record (with its bumped revision) is returned.
-func (s *GRPCServer) UpdateIfRev(_ context.Context, req *pb.UpdateIfRevRequest) (*pb.UpdateIfRevResponse, error) {
+func (s *GRPCServer) UpdateIfRev(ctx context.Context, req *pb.UpdateIfRevRequest) (*pb.UpdateIfRevResponse, error) {
+	if err := s.rejectXTxHeader(ctx, req.Collection, false); err != nil {
+		return nil, err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
@@ -582,6 +615,9 @@ func (s *GRPCServer) ListIndexes(_ context.Context, req *pb.ListIndexesRequest) 
 // ---- Watch ----------------------------------------------------------------
 
 func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) error {
+	if err := s.rejectXTxHeader(stream.Context(), req.Collection, true); err != nil {
+		return err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "%v", err)
@@ -666,6 +702,9 @@ func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsR
 // per group. It maps straight onto the engine's Aggregate, which folds each record
 // into its group's accumulator without materialising the collection.
 func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_AggregateServer) error {
+	if err := s.rejectXTxHeader(stream.Context(), req.Collection, true); err != nil {
+		return err
+	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return status.Errorf(codes.NotFound, "%v", err)

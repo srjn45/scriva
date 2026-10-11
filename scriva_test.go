@@ -1,6 +1,7 @@
 package scriva_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -244,5 +245,303 @@ func TestOpenFailsClosedOnCorruptionAndReportOptsIn(t *testing.T) {
 	defer db.Close()
 	if outcome != engine.IntegrityOutcomeReported {
 		t.Fatalf("outcome = %q", outcome)
+	}
+}
+
+// xtxStore opens a façade DB with two participant collections.
+func xtxStore(t *testing.T, dir string, opts ...scriva.Option) (*scriva.DB, *engine.Collection, *engine.Collection) {
+	t.Helper()
+	db, err := scriva.Open(dir, opts...)
+	if err != nil {
+		t.Fatalf("scriva.Open: %v", err)
+	}
+	return db, db.MustCollection("accounts"), db.MustCollection("ledger")
+}
+
+func TestXTxCommitIsAtomicAcrossCollections(t *testing.T) {
+	t.Parallel()
+	db, accounts, ledger := xtxStore(t, t.TempDir())
+	defer db.Close()
+	ctx := context.Background()
+
+	acct, _, err := accounts.Insert(map[string]any{"balance": 100.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.BeginXTx(ctx, []string{"ledger", "accounts"}, engine.XTxOptions{Key: "transfer-1"})
+	if err != nil {
+		t.Fatalf("BeginXTx: %v", err)
+	}
+	if got := tx.Participants(); len(got) != 2 || got[0] != "accounts" || got[1] != "ledger" {
+		t.Fatalf("participants = %v, want canonical order", got)
+	}
+	if same, err := db.XTx(tx.ID()); err != nil || same != tx {
+		t.Fatalf("XTx(%q) = %v, %v", tx.ID(), same, err)
+	}
+
+	if err := tx.Update("accounts", acct, map[string]any{"balance": 60.0}); err != nil {
+		t.Fatalf("stage update: %v", err)
+	}
+	entry, err := tx.Insert("ledger", map[string]any{"account": float64(acct), "delta": -40.0})
+	if err != nil {
+		t.Fatalf("stage insert: %v", err)
+	}
+
+	// Read-your-writes: the handle sees its staged data, nobody else does.
+	if r, err := tx.Get("accounts", acct); err != nil || r.Data["balance"] != 60.0 {
+		t.Fatalf("tx.Get accounts = %+v, %v", r, err)
+	}
+	if r, err := tx.Get("ledger", entry); err != nil || r.Data["delta"] != -40.0 {
+		t.Fatalf("tx.Get ledger = %+v, %v", r, err)
+	}
+	if r, err := accounts.Get(acct); err != nil || r.Data["balance"] != 100.0 {
+		t.Fatalf("uncommitted update visible outside the transaction: %+v, %v", r, err)
+	}
+	if _, err := ledger.Get(entry); err == nil {
+		t.Fatal("uncommitted insert visible outside the transaction")
+	}
+	if st, _ := db.XTxStatus("transfer-1"); st != engine.XTxPending {
+		t.Fatalf("status before commit = %s, want PENDING", st)
+	}
+
+	res, err := tx.Commit(ctx)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if res.TxID == "" || len(res.Ops) != 2 || res.Replayed {
+		t.Fatalf("result = %+v", res)
+	}
+	if r, err := accounts.Get(acct); err != nil || r.Data["balance"] != 60.0 {
+		t.Fatalf("committed update: %+v, %v", r, err)
+	}
+	if r, err := ledger.Get(entry); err != nil || r.Data["delta"] != -40.0 {
+		t.Fatalf("committed insert: %+v, %v", r, err)
+	}
+
+	// Outcome lookup by key, by txid and by handle id.
+	for _, ref := range []string{"transfer-1", res.TxID, tx.ID()} {
+		if st, txid := db.XTxStatus(ref); st != engine.XTxCommitted || txid != res.TxID {
+			t.Fatalf("XTxStatus(%q) = %s, %q", ref, st, txid)
+		}
+	}
+
+	// Commit is idempotent on the handle, and a new transaction under the same
+	// key replays the original outcome without applying anything.
+	if again, err := tx.Commit(ctx); err != nil || again.TxID != res.TxID {
+		t.Fatalf("second Commit = %+v, %v", again, err)
+	}
+	retry, err := db.BeginXTx(ctx, []string{"accounts", "ledger"}, engine.XTxOptions{Key: "transfer-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := retry.Update("accounts", acct, map[string]any{"balance": 20.0}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := retry.Commit(ctx)
+	if err != nil || !replay.Replayed || replay.TxID != res.TxID {
+		t.Fatalf("replayed Commit = %+v, %v", replay, err)
+	}
+	if r, _ := accounts.Get(acct); r.Data["balance"] != 60.0 {
+		t.Fatalf("replay applied its writes: %+v", r)
+	}
+}
+
+func TestXTxConflictRollbackAndTypedErrors(t *testing.T) {
+	t.Parallel()
+	db, accounts, ledger := xtxStore(t, t.TempDir())
+	defer db.Close()
+	ctx := context.Background()
+	cols := []string{"accounts", "ledger"}
+
+	acct, _, err := accounts.Insert(map[string]any{"balance": 100.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Conflict: a document the transaction read changes before commit.
+	tx, err := db.BeginXTx(ctx, cols, engine.XTxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Get("accounts", acct); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := tx.Insert("ledger", map[string]any{"delta": -1.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.Update(acct, map[string]any{"balance": 5.0}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Commit(ctx)
+	var conflict *engine.XTxConflictError
+	if !errors.Is(err, engine.ErrXTxConflict) || !errors.As(err, &conflict) {
+		t.Fatalf("Commit after concurrent update = %v, want ErrXTxConflict", err)
+	}
+	if conflict.Collection != "accounts" || conflict.ID != acct || conflict.Write {
+		t.Fatalf("conflict = %+v", conflict)
+	}
+	if !engine.XTxRetrySafe(err) {
+		t.Fatal("a conflict must be retry-safe")
+	}
+	if _, err := ledger.Get(entry); err == nil {
+		t.Fatal("conflicting transaction left a partial write")
+	}
+	if st, _ := db.XTxStatus(tx.ID()); st != engine.XTxAborted {
+		t.Fatalf("status after conflict = %s, want ABORTED", st)
+	}
+
+	// Rollback leaves nothing behind and finishes the handle.
+	tx, err = db.BeginXTx(ctx, cols, engine.XTxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err = tx.Insert("ledger", map[string]any{"delta": -2.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if _, err := ledger.Get(entry); err == nil {
+		t.Fatal("rolled back insert is visible")
+	}
+	if _, err := tx.Insert("ledger", map[string]any{}); !errors.Is(err, engine.ErrXTxFinished) {
+		t.Fatalf("stage after rollback = %v, want ErrXTxFinished", err)
+	}
+
+	// Typed rejections.
+	tx, err = db.BeginXTx(ctx, []string{"accounts"}, engine.XTxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Insert("ledger", map[string]any{}); !errors.Is(err, engine.ErrXTxNotParticipant) {
+		t.Fatalf("stage on undeclared collection = %v, want ErrXTxNotParticipant", err)
+	}
+	if _, err := tx.Scan("accounts", nil); !errors.Is(err, engine.ErrXTxScanUnsupported) {
+		t.Fatalf("Scan = %v, want ErrXTxScanUnsupported", err)
+	}
+	if _, err := tx.IndexLookup("accounts", "balance", "1"); !errors.Is(err, engine.ErrXTxScanUnsupported) {
+		t.Fatalf("IndexLookup = %v, want ErrXTxScanUnsupported", err)
+	}
+	if _, err := tx.Get("accounts", 9999); !errors.Is(err, engine.ErrXTxDocNotFound) {
+		t.Fatalf("Get of a missing document = %v, want ErrXTxDocNotFound", err)
+	}
+	if _, err := db.BeginXTx(ctx, []string{"accounts", "nope"}, engine.XTxOptions{}); !errors.Is(err, engine.ErrCollectionNotFound) {
+		t.Fatalf("BeginXTx with a missing collection = %v, want ErrCollectionNotFound", err)
+	}
+	if _, err := db.BeginXTx(ctx, nil, engine.XTxOptions{}); !errors.Is(err, engine.ErrXTxInvalid) {
+		t.Fatalf("BeginXTx with no collections = %v, want ErrXTxInvalid", err)
+	}
+	if _, err := db.XTx("no-such-handle"); !errors.Is(err, engine.ErrXTxHandleNotFound) {
+		t.Fatalf("XTx(unknown) = %v, want ErrXTxHandleNotFound", err)
+	}
+	if st, _ := db.XTxStatus("no-such-ref"); st != engine.XTxUnknown {
+		t.Fatalf("XTxStatus(unknown) = %s, want UNKNOWN", st)
+	}
+}
+
+func TestTransact(t *testing.T) {
+	t.Parallel()
+	db, accounts, ledger := xtxStore(t, t.TempDir())
+	defer db.Close()
+	ctx := context.Background()
+	cols := []string{"accounts", "ledger"}
+
+	var a, l uint64
+	res, err := db.Transact(ctx, cols, engine.XTxOptions{}, func(tx *engine.XTx) error {
+		var err error
+		if a, err = tx.Insert("accounts", map[string]any{"balance": 1.0}); err != nil {
+			return err
+		}
+		l, err = tx.Insert("ledger", map[string]any{"delta": 1.0})
+		return err
+	})
+	if err != nil || len(res.Ops) != 2 {
+		t.Fatalf("Transact = %+v, %v", res, err)
+	}
+	if _, err := accounts.Get(a); err != nil {
+		t.Fatalf("accounts insert missing: %v", err)
+	}
+	if _, err := ledger.Get(l); err != nil {
+		t.Fatalf("ledger insert missing: %v", err)
+	}
+
+	// An error from fn rolls the transaction back and is returned as is.
+	boom := errors.New("boom")
+	var staged uint64
+	_, err = db.Transact(ctx, cols, engine.XTxOptions{}, func(tx *engine.XTx) error {
+		staged, _ = tx.Insert("ledger", map[string]any{"delta": 2.0})
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Transact error = %v, want boom", err)
+	}
+	if _, err := ledger.Get(staged); err == nil {
+		t.Fatal("Transact wrote the insert of a failed fn")
+	}
+}
+
+func TestXTxIdleTimeoutOptionAndReplayAfterReopen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db, accounts, _ := xtxStore(t, dir, scriva.WithXTxIdleTimeout(20*time.Millisecond))
+	ctx := context.Background()
+
+	// The DB-wide idle timeout discards an untouched handle.
+	idle, err := db.BeginXTx(ctx, []string{"accounts"}, engine.XTxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if _, err := idle.Insert("accounts", map[string]any{}); !errors.Is(err, engine.ErrXTxExpired) {
+		t.Fatalf("stage on an idle handle = %v, want ErrXTxExpired", err)
+	}
+
+	res, err := db.Transact(ctx, []string{"accounts", "ledger"}, engine.XTxOptions{Key: "k-reopen", IdleTimeout: time.Minute}, func(tx *engine.XTx) error {
+		if _, err := tx.Insert("accounts", map[string]any{"balance": 7.0}); err != nil {
+			return err
+		}
+		_, err := tx.Insert("ledger", map[string]any{"delta": 7.0})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+	before, err := accounts.Scan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// After a restart the outcome is still resolvable by key and by txid, and a
+	// retry under the same key replays it instead of applying again.
+	db, accounts, _ = xtxStore(t, dir)
+	defer db.Close()
+	for _, ref := range []string{"k-reopen", res.TxID} {
+		if st, txid := db.XTxStatus(ref); st != engine.XTxCommitted || txid != res.TxID {
+			t.Fatalf("after reopen XTxStatus(%q) = %s, %q", ref, st, txid)
+		}
+	}
+	replay, err := db.Transact(ctx, []string{"accounts", "ledger"}, engine.XTxOptions{Key: "k-reopen"}, func(tx *engine.XTx) error {
+		if _, err := tx.Insert("accounts", map[string]any{"balance": 7.0}); err != nil {
+			return err
+		}
+		_, err := tx.Insert("ledger", map[string]any{"delta": 7.0})
+		return err
+	})
+	if err != nil || !replay.Replayed || replay.TxID != res.TxID {
+		t.Fatalf("replay after reopen = %+v, %v", replay, err)
+	}
+	after, err := accounts.Scan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("replay after reopen applied again: %d records, want %d", len(after), len(before))
 	}
 }

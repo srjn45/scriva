@@ -27,6 +27,8 @@
 package scriva
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -99,6 +101,15 @@ func WithCompactInterval(d time.Duration) Option {
 // WithWatchBufferSize sets the per-subscriber Watch channel buffer.
 func WithWatchBufferSize(n int) Option {
 	return func(c *engine.CollectionConfig) { c.WatchBufferSize = n }
+}
+
+// WithXTxIdleTimeout sets how long a cross-collection transaction (BeginXTx)
+// may sit untouched before it is discarded; nothing it staged is ever written.
+// Zero keeps the engine default (engine.DefaultXTxIdleTimeout); a negative
+// value disables idle expiry. A single transaction can override it with
+// engine.XTxOptions.IdleTimeout.
+func WithXTxIdleTimeout(d time.Duration) Option {
+	return func(c *engine.CollectionConfig) { c.XTxIdleTimeout = d }
 }
 
 // collectionOptions accumulates a per-collection config override plus any unique
@@ -253,6 +264,74 @@ func (db *DB) MustCollection(name string, opts ...CollectionOption) *engine.Coll
 		panic(fmt.Sprintf("scriva: MustCollection(%q): %v", name, err))
 	}
 	return col
+}
+
+// BeginXTx opens a cross-collection transaction over the named participant
+// collections of this database. The collections must already exist (open them
+// with Collection first) and every later operation on the returned handle must
+// name one of them. Beginning takes no lock and writes nothing.
+//
+// The handle stages writes (Insert, Update, Delete, Stage), serves point reads
+// that see its own staged writes (Get), and applies everything atomically at
+// Commit, or nothing at all:
+//
+//	tx, err := db.BeginXTx(ctx, []string{"accounts", "ledger"}, engine.XTxOptions{Key: "transfer-42"})
+//	...
+//	acct, err := tx.Get("accounts", id)
+//	err = tx.Update("accounts", id, debited)
+//	_, err = tx.Insert("ledger", entry)
+//	res, err := tx.Commit(ctx)
+//
+// Isolation is optimistic validation of point reads and writes: each Get and
+// each staged update/delete remembers the revision (or absence) it saw, and
+// Commit re-checks those observations under the participant locks. A changed
+// observation fails the commit with engine.ErrXTxConflict (errors.As to
+// *engine.XTxConflictError for the document) and nothing is applied. There are
+// no predicate reads, so there is no phantom protection: the handle's Scan and
+// IndexLookup return engine.ErrXTxScanUnsupported.
+//
+// Errors are the engine's typed errors, unchanged; match them with errors.Is.
+// engine.XTxRetrySafe reports whether re-running the transaction can never
+// double-apply. The one ambiguous result is engine.ErrXTxOutcomeUnknown: the
+// commit may or may not have been applied, so do not retry — resolve it with
+// XTxStatus, using the idempotency key (opts.Key) the transaction began with.
+func (db *DB) BeginXTx(ctx context.Context, collections []string, opts engine.XTxOptions) (*engine.XTx, error) {
+	return db.edb.BeginXTx(ctx, collections, opts)
+}
+
+// XTx returns the open or recently finished transaction with the given handle
+// id (engine.XTx.ID), or an error matching engine.ErrXTxHandleNotFound. Handle
+// ids are process-local: they do not survive Close.
+func (db *DB) XTx(id string) (*engine.XTx, error) { return db.edb.XTxHandle(id) }
+
+// XTxStatus reports the outcome of a cross-collection transaction by
+// coordinator txid (engine.XTxResult.TxID), idempotency key or handle id,
+// together with the txid when one is known. It is the way to resolve an
+// engine.ErrXTxOutcomeUnknown commit, also after a restart (by key or txid).
+func (db *DB) XTxStatus(ref string) (engine.XTxStatus, string) { return db.edb.XTxStatus(ref) }
+
+// Transact runs fn inside a cross-collection transaction over collections and
+// commits it. If fn returns an error the transaction is rolled back and that
+// error is returned; nothing fn staged is written. If fn itself commits or
+// rolls back the handle, Transact does not do so again.
+//
+// Transact does not retry. On engine.ErrXTxConflict the caller may run it
+// again (fn then re-reads); on engine.ErrXTxOutcomeUnknown it must not — see
+// BeginXTx.
+func (db *DB) Transact(ctx context.Context, collections []string, opts engine.XTxOptions, fn func(tx *engine.XTx) error) (*engine.XTxResult, error) {
+	tx, err := db.edb.BeginXTx(ctx, collections, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(tx); err != nil {
+		// Rollback only fails when the decision is no longer ours to undo
+		// (fn committed, or the outcome is unknown); report that alongside.
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return nil, errors.Join(err, rbErr)
+		}
+		return nil, err
+	}
+	return tx.Commit(ctx)
 }
 
 // Engine returns the underlying engine.DB for operations the façade does not

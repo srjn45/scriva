@@ -183,6 +183,24 @@ func handleREPLLine(input string, collection *string, flags *cliFlags) error {
 		}
 		return runCLICommand([]string{"backup", parts[1]}, flags)
 
+	// Cross-collection transactions name their collections explicitly, so
+	// these ignore the active collection and pass their arguments through.
+	case "begin-xtx":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: begin-xtx <collection>... [--key <key>]")
+		}
+		return runCLICommand(append([]string{cmd}, parts[1:]...), flags)
+
+	case "xtx-insert", "xtx-update", "xtx-delete", "xtx-get", "commit-xtx", "rollback-xtx", "xtx-status":
+		need := map[string]int{
+			"xtx-insert": 3, "xtx-update": 4, "xtx-delete": 3, "xtx-get": 3,
+			"commit-xtx": 1, "rollback-xtx": 1, "xtx-status": 1,
+		}[cmd]
+		if len(parts)-1 < need {
+			return fmt.Errorf("usage: %s — type 'help' for the arguments", cmd)
+		}
+		return runCLICommand(append([]string{cmd}, parts[1:]...), flags)
+
 	default:
 		return fmt.Errorf("unknown command %q — type 'help' for a list", cmd)
 	}
@@ -253,6 +271,14 @@ Commands:
   stats [collection]                  Show collection stats
   compact [collection]                Force a compaction pass
   backup <dest>                       Snapshot the database to a .tar.gz file
+  begin-xtx <collection>... [--key k] Begin a cross-collection transaction (prints its id)
+  xtx-insert <xtx> <collection> <json>       Stage an insert
+  xtx-update <xtx> <collection> <id> <json>  Stage an update
+  xtx-delete <xtx> <collection> <id>         Stage a delete
+  xtx-get <xtx> <collection> <id>            Point read inside the transaction
+  commit-xtx <xtx>                    Apply all staged writes atomically
+  rollback-xtx <xtx>                  Discard the transaction
+  xtx-status <key | tx | xtx>         Outcome of a transaction (use after an unknown commit)
   help                                Show this help
   exit / quit                         Exit
 

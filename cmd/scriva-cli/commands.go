@@ -12,10 +12,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/srjn45/scriva/internal/pb/proto"
+	"github.com/srjn45/scriva/internal/xtxapi"
 )
 
 // ---- Collections ----------------------------------------------------------
@@ -967,6 +971,351 @@ func rollbackTxCmd(flags *cliFlags) *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "rolled back")
+			return nil
+		},
+	}
+}
+
+// ---- Cross-collection transactions ----------------------------------------
+
+// xtxIsolationHelp is the one description of the guarantee every
+// cross-collection command points at. It states what is implemented, no more.
+const xtxIsolationHelp = `A cross-collection transaction stages point writes against several
+collections of one database and applies them atomically at commit.
+
+Isolation is optimistic: every document the transaction read (xtx-get) or
+based a write on is re-checked at commit, and the commit fails with a conflict
+if any of them changed. There is no phantom protection, so scans, filters and
+index lookups are not available inside a transaction.`
+
+// xtxError is a transaction failure decoded for a human: the server's reason
+// and whether a retry is safe, plus what to do when the outcome is unknown.
+type xtxError struct {
+	err       error
+	reason    string
+	retrySafe string
+	statusRef string
+}
+
+func (e *xtxError) Unwrap() error { return e.err }
+
+func (e *xtxError) Error() string {
+	var b strings.Builder
+	b.WriteString(status.Convert(e.err).Message())
+	fmt.Fprintf(&b, "\n  code:       %s", status.Code(e.err))
+	fmt.Fprintf(&b, "\n  reason:     %s", e.reason)
+	if e.retrySafe != "" {
+		fmt.Fprintf(&b, "\n  retry safe: %s", e.retrySafe)
+	}
+	switch e.reason {
+	case xtxapi.ReasonOutcomeUnknown:
+		fmt.Fprintf(&b, "\n\nThe commit may or may not have been applied. Do NOT retry it.\nLook the outcome up first:\n  scriva-cli xtx-status %s", e.statusRef)
+	case xtxapi.ReasonInProgress:
+		fmt.Fprintf(&b, "\n\nA commit with this idempotency key is still running. Do not retry it; check:\n  scriva-cli xtx-status %s", e.statusRef)
+	case xtxapi.ReasonConflict:
+		b.WriteString("\n\nNothing was applied. Begin a new transaction, re-read and try again.")
+	case xtxapi.ReasonScanUnsupported:
+		b.WriteString("\n\nOnly point reads (xtx-get) and staged writes are available inside a transaction.")
+	}
+	return b.String()
+}
+
+// xtxCLIError decodes the ErrorInfo detail of a transaction error. An error
+// without one (a transport failure, an auth rejection) is returned unchanged.
+func xtxCLIError(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, d := range status.Convert(err).Details() {
+		info, ok := d.(*errdetails.ErrorInfo)
+		if !ok || info.Domain != xtxapi.Domain {
+			continue
+		}
+		return &xtxError{
+			err:       err,
+			reason:    info.Reason,
+			retrySafe: info.Metadata[xtxapi.MetaRetrySafe],
+			statusRef: info.Metadata[xtxapi.MetaStatusRef],
+		}
+	}
+	return err
+}
+
+// xtxCommitError is xtxCLIError for a commit. A commit that fails without a
+// typed reason — the connection dropped, a deadline passed, a proxy answered —
+// may still have been applied, so it gets the same "look it up" guidance as a
+// typed unknown outcome.
+func xtxCommitError(err error, xtxID string) error {
+	decoded := xtxCLIError(err)
+	var xe *xtxError
+	if errors.As(decoded, &xe) {
+		return decoded
+	}
+	switch status.Code(err) {
+	case codes.Unknown, codes.Unavailable, codes.DeadlineExceeded, codes.Canceled, codes.Internal:
+		return fmt.Errorf("%w\n\nNo answer was received, so the commit may or may not have been applied. Do NOT retry it.\nLook the outcome up first (by idempotency key if you set one):\n  scriva-cli xtx-status %s", err, xtxID)
+	}
+	return err
+}
+
+func beginXTxCmd(flags *cliFlags) *cobra.Command {
+	var (
+		key         string
+		idleTimeout time.Duration
+		maxLifetime time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "begin-xtx <collection>...",
+		Short: "Begin a cross-collection transaction and print its handle id",
+		Long: xtxIsolationHelp + `
+
+Every collection the transaction will touch must be named here. The printed
+handle id is what the other xtx commands take; treat it as a secret, whoever
+holds it can commit or roll the transaction back.
+
+With --key the commit is idempotent: committing again under the same key
+returns the original outcome instead of applying the writes twice, and
+xtx-status <key> reports the outcome if a commit response is lost.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.BeginXTx(ctxWithAuth(flags), &pb.BeginXTxRequest{
+				Collections:    args,
+				IdempotencyKey: key,
+				IdleTimeoutMs:  idleTimeout.Milliseconds(),
+				MaxLifetimeMs:  maxLifetime.Milliseconds(),
+			})
+			if err != nil {
+				return xtxCLIError(err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", resp.XtxId)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&key, "key", "", "Idempotency key: makes the commit safe to repeat and resolvable with xtx-status")
+	cmd.Flags().DurationVar(&idleTimeout, "idle-timeout", 0, "Discard the transaction after this long without a request (0 = server default)")
+	cmd.Flags().DurationVar(&maxLifetime, "max-lifetime", 0, "Discard the transaction this long after it began (0 = server default)")
+	return cmd
+}
+
+// stageXTx sends one staged operation and prints the document id it targets.
+func stageXTx(cmd *cobra.Command, flags *cliFlags, req *pb.StageXTxRequest) error {
+	_, client, cleanup, err := connect(flags)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	resp, err := client.StageXTx(ctxWithAuth(flags), req)
+	if err != nil {
+		return xtxCLIError(err)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "staged id:%d\n", resp.Id)
+	return nil
+}
+
+func xtxInsertCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "xtx-insert <xtx_id> <collection> <json>",
+		Short: "Stage an insert in a cross-collection transaction",
+		Long:  "Stages an insert and prints the id the document will have. Nothing is\nwritten, and no other client can see it, until commit-xtx succeeds.",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := parseJSONArg(args[2])
+			if err != nil {
+				return err
+			}
+			return stageXTx(cmd, flags, &pb.StageXTxRequest{
+				XtxId: args[0], Collection: args[1], Op: pb.XTxOpKind_XTX_OP_INSERT, Data: data,
+			})
+		},
+	}
+}
+
+func xtxUpdateCmd(flags *cliFlags) *cobra.Command {
+	var expectedRev uint64
+	cmd := &cobra.Command{
+		Use:   "xtx-update <xtx_id> <collection> <id> <json>",
+		Short: "Stage a full-document update in a cross-collection transaction",
+		Long:  "Stages a replacement of the document. The revision it replaces is checked\nagain at commit; a concurrent change fails the commit with a conflict.",
+		Args:  cobra.ExactArgs(4),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseUint(args[2], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid id %q: %w", args[2], err)
+			}
+			data, err := parseJSONArg(args[3])
+			if err != nil {
+				return err
+			}
+			return stageXTx(cmd, flags, &pb.StageXTxRequest{
+				XtxId: args[0], Collection: args[1], Op: pb.XTxOpKind_XTX_OP_UPDATE,
+				Id: id, Data: data, ExpectedRev: expectedRev,
+			})
+		},
+	}
+	cmd.Flags().Uint64Var(&expectedRev, "expected-rev", 0, "Reject the stage unless the transaction currently sees the document at this revision (0 = no check)")
+	return cmd
+}
+
+func xtxDeleteCmd(flags *cliFlags) *cobra.Command {
+	var expectedRev uint64
+	cmd := &cobra.Command{
+		Use:   "xtx-delete <xtx_id> <collection> <id>",
+		Short: "Stage a delete in a cross-collection transaction",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseUint(args[2], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid id %q: %w", args[2], err)
+			}
+			return stageXTx(cmd, flags, &pb.StageXTxRequest{
+				XtxId: args[0], Collection: args[1], Op: pb.XTxOpKind_XTX_OP_DELETE,
+				Id: id, ExpectedRev: expectedRev,
+			})
+		},
+	}
+	cmd.Flags().Uint64Var(&expectedRev, "expected-rev", 0, "Reject the stage unless the transaction currently sees the document at this revision (0 = no check)")
+	return cmd
+}
+
+func xtxGetCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "xtx-get <xtx_id> <collection> <id>",
+		Short: "Read one document inside a cross-collection transaction",
+		Long:  "Reads one document by id as the transaction sees it, including its own\nstaged writes. The read is re-checked at commit: if the document changed in\nbetween, the commit fails with a conflict. Only point reads are available.",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseUint(args[2], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid id %q: %w", args[2], err)
+			}
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.GetXTx(ctxWithAuth(flags), &pb.GetXTxRequest{XtxId: args[0], Collection: args[1], Id: id})
+			if err != nil {
+				return xtxCLIError(err)
+			}
+			printRecord(cmd, resp.Record)
+			return nil
+		},
+	}
+}
+
+func commitXTxCmd(flags *cliFlags) *cobra.Command {
+	var lockTimeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "commit-xtx <xtx_id>",
+		Short: "Commit a cross-collection transaction atomically",
+		Long: `Validates everything the transaction read or based a write on and, if nothing
+changed, applies all staged writes atomically across the participating
+collections. On a conflict nothing is applied.
+
+If the command reports that the outcome is unknown, or the connection drops
+before an answer arrives, do not run it again blindly: use xtx-status with
+the idempotency key (or the handle id) to learn whether it committed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.CommitXTx(ctxWithAuth(flags), &pb.CommitXTxRequest{
+				XtxId: args[0], LockTimeoutMs: lockTimeout.Milliseconds(),
+			})
+			if err != nil {
+				return xtxCommitError(err, args[0])
+			}
+			out := cmd.OutOrStdout()
+			switch {
+			case resp.Replayed:
+				_, _ = fmt.Fprintf(out, "already committed tx:%s (replayed, nothing applied again)\n", resp.TxId)
+			case resp.TxId == "":
+				_, _ = fmt.Fprintln(out, "committed (no writes staged)")
+			default:
+				_, _ = fmt.Fprintf(out, "committed tx:%s\n", resp.TxId)
+			}
+			for _, op := range resp.Ops {
+				_, _ = fmt.Fprintf(out, "  %-6s %s id:%d rev:%d\n", xtxOpName(op.Op), op.Collection, op.Id, op.Rev)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 0, "Give up waiting for collection locks after this long; nothing is written and the transaction stays open (0 = wait)")
+	return cmd
+}
+
+func xtxOpName(op pb.XTxOpKind) string {
+	switch op {
+	case pb.XTxOpKind_XTX_OP_INSERT:
+		return "insert"
+	case pb.XTxOpKind_XTX_OP_UPDATE:
+		return "update"
+	case pb.XTxOpKind_XTX_OP_DELETE:
+		return "delete"
+	default:
+		return "unknown"
+	}
+}
+
+func rollbackXTxCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rollback-xtx <xtx_id>",
+		Short: "Discard a cross-collection transaction; nothing it staged is written",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := client.RollbackXTx(ctxWithAuth(flags), &pb.RollbackXTxRequest{XtxId: args[0]}); err != nil {
+				return xtxCLIError(err)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "rolled back")
+			return nil
+		},
+	}
+}
+
+func xtxStatusCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "xtx-status <idempotency-key | tx_id | xtx_id>",
+		Short: "Report the outcome of a cross-collection transaction",
+		Long: `Reports whether a transaction committed. Accepts an idempotency key, the
+tx id printed by commit-xtx, or a handle id.
+
+  COMMITTED  the writes are durable
+  ABORTED    nothing was applied
+  PENDING    still open or committing: ask again
+  EXPIRED    the handle timed out before committing; nothing was applied
+  UNKNOWN    the server has no record of it
+
+This is the command to run after a commit whose outcome is unknown.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.XTxStatus(ctxWithAuth(flags), &pb.XTxStatusRequest{Ref: args[0]})
+			if err != nil {
+				return xtxCLIError(err)
+			}
+			state := strings.TrimPrefix(resp.Status.String(), "XTX_STATUS_")
+			if resp.TxId != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s tx:%s\n", state, resp.TxId)
+				return nil
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), state)
 			return nil
 		},
 	}

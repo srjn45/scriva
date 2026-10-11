@@ -181,6 +181,7 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		IntegrityPolicy:      engine.IntegrityPolicy(c.IntegrityPolicy),
 		WatchBufferSize:      c.WatchBufferSize,
 		DefaultTTL:           c.DefaultTTL,
+		XTxIdleTimeout:       c.xtxIdleTimeout(),
 
 		ReplicationRingSize: c.ReplicationRingSize,
 		// A node started with --replicate-from opens in the follower role so the
@@ -192,6 +193,17 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		// collections pay nothing.
 		Quotas: c.engineQuotas(),
 	}
+}
+
+// xtxIdleTimeout maps --tx-timeout onto the engine's idle timeout for
+// cross-collection transaction handles, so one flag governs both transaction
+// kinds. The server's "0 = disabled" becomes the engine's negative value (the
+// engine reads zero as "use the default").
+func (c Config) xtxIdleTimeout() time.Duration {
+	if c.TxTimeout <= 0 {
+		return -1
+	}
+	return c.TxTimeout
 }
 
 // engineQuotas converts the server's per-collection quota config into the

@@ -39,6 +39,12 @@ const (
 	Scriva_BeginTx_FullMethodName           = "/scriva.v1.Scriva/BeginTx"
 	Scriva_CommitTx_FullMethodName          = "/scriva.v1.Scriva/CommitTx"
 	Scriva_RollbackTx_FullMethodName        = "/scriva.v1.Scriva/RollbackTx"
+	Scriva_BeginXTx_FullMethodName          = "/scriva.v1.Scriva/BeginXTx"
+	Scriva_StageXTx_FullMethodName          = "/scriva.v1.Scriva/StageXTx"
+	Scriva_GetXTx_FullMethodName            = "/scriva.v1.Scriva/GetXTx"
+	Scriva_CommitXTx_FullMethodName         = "/scriva.v1.Scriva/CommitXTx"
+	Scriva_RollbackXTx_FullMethodName       = "/scriva.v1.Scriva/RollbackXTx"
+	Scriva_XTxStatus_FullMethodName         = "/scriva.v1.Scriva/XTxStatus"
 	Scriva_Watch_FullMethodName             = "/scriva.v1.Scriva/Watch"
 	Scriva_Aggregate_FullMethodName         = "/scriva.v1.Scriva/Aggregate"
 	Scriva_CollectionStats_FullMethodName   = "/scriva.v1.Scriva/CollectionStats"
@@ -87,6 +93,34 @@ type ScrivaClient interface {
 	BeginTx(ctx context.Context, in *BeginTxRequest, opts ...grpc.CallOption) (*BeginTxResponse, error)
 	CommitTx(ctx context.Context, in *CommitTxRequest, opts ...grpc.CallOption) (*CommitTxResponse, error)
 	RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error)
+	// BeginXTx opens a transaction over an explicit list of participant
+	// collections, which must already exist. Nothing is locked or written. The
+	// returned xtx_id is a process-local, unguessable handle id that addresses
+	// every later call; it does not survive a server restart.
+	BeginXTx(ctx context.Context, in *BeginXTxRequest, opts ...grpc.CallOption) (*BeginXTxResponse, error)
+	// StageXTx buffers one insert, update or delete on a participant collection.
+	// Nothing is written and no other reader can see it before CommitXTx.
+	StageXTx(ctx context.Context, in *StageXTxRequest, opts ...grpc.CallOption) (*StageXTxResponse, error)
+	// GetXTx is a point read through the transaction. It returns the
+	// transaction's own staged write when there is one (read-your-writes),
+	// otherwise the committed document, which is added to the read set that
+	// CommitXTx validates. Because it changes the transaction's state it is
+	// classified as a write RPC: it needs a read-write key and is refused on a
+	// read-only follower.
+	GetXTx(ctx context.Context, in *GetXTxRequest, opts ...grpc.CallOption) (*GetXTxResponse, error)
+	// CommitXTx validates the transaction and applies it atomically. It is
+	// idempotent: repeating it on a committed transaction returns the original
+	// result, and a transaction whose idempotency key already committed returns
+	// that outcome with replayed=true and applies nothing.
+	CommitXTx(ctx context.Context, in *CommitXTxRequest, opts ...grpc.CallOption) (*CommitXTxResponse, error)
+	// RollbackXTx discards everything the transaction staged. It is idempotent.
+	// It cannot undo a decision: a committed transaction yields
+	// FAILED_PRECONDITION (XTX_FINISHED).
+	RollbackXTx(ctx context.Context, in *RollbackXTxRequest, opts ...grpc.CallOption) (*RollbackXTxResponse, error)
+	// XTxStatus reports the outcome of a transaction by coordinator tx_id,
+	// idempotency key or xtx_id. It is the only safe way to resolve an
+	// XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+	XTxStatus(ctx context.Context, in *XTxStatusRequest, opts ...grpc.CallOption) (*XTxStatusResponse, error)
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error)
 	// Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
 	// live records matching the same Filter as Find, optionally grouped by a field.
@@ -343,6 +377,66 @@ func (c *scrivaClient) RollbackTx(ctx context.Context, in *RollbackTxRequest, op
 	return out, nil
 }
 
+func (c *scrivaClient) BeginXTx(ctx context.Context, in *BeginXTxRequest, opts ...grpc.CallOption) (*BeginXTxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BeginXTxResponse)
+	err := c.cc.Invoke(ctx, Scriva_BeginXTx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *scrivaClient) StageXTx(ctx context.Context, in *StageXTxRequest, opts ...grpc.CallOption) (*StageXTxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StageXTxResponse)
+	err := c.cc.Invoke(ctx, Scriva_StageXTx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *scrivaClient) GetXTx(ctx context.Context, in *GetXTxRequest, opts ...grpc.CallOption) (*GetXTxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetXTxResponse)
+	err := c.cc.Invoke(ctx, Scriva_GetXTx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *scrivaClient) CommitXTx(ctx context.Context, in *CommitXTxRequest, opts ...grpc.CallOption) (*CommitXTxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitXTxResponse)
+	err := c.cc.Invoke(ctx, Scriva_CommitXTx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *scrivaClient) RollbackXTx(ctx context.Context, in *RollbackXTxRequest, opts ...grpc.CallOption) (*RollbackXTxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackXTxResponse)
+	err := c.cc.Invoke(ctx, Scriva_RollbackXTx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *scrivaClient) XTxStatus(ctx context.Context, in *XTxStatusRequest, opts ...grpc.CallOption) (*XTxStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(XTxStatusResponse)
+	err := c.cc.Invoke(ctx, Scriva_XTxStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *scrivaClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &Scriva_ServiceDesc.Streams[1], Scriva_Watch_FullMethodName, cOpts...)
@@ -497,6 +591,34 @@ type ScrivaServer interface {
 	BeginTx(context.Context, *BeginTxRequest) (*BeginTxResponse, error)
 	CommitTx(context.Context, *CommitTxRequest) (*CommitTxResponse, error)
 	RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error)
+	// BeginXTx opens a transaction over an explicit list of participant
+	// collections, which must already exist. Nothing is locked or written. The
+	// returned xtx_id is a process-local, unguessable handle id that addresses
+	// every later call; it does not survive a server restart.
+	BeginXTx(context.Context, *BeginXTxRequest) (*BeginXTxResponse, error)
+	// StageXTx buffers one insert, update or delete on a participant collection.
+	// Nothing is written and no other reader can see it before CommitXTx.
+	StageXTx(context.Context, *StageXTxRequest) (*StageXTxResponse, error)
+	// GetXTx is a point read through the transaction. It returns the
+	// transaction's own staged write when there is one (read-your-writes),
+	// otherwise the committed document, which is added to the read set that
+	// CommitXTx validates. Because it changes the transaction's state it is
+	// classified as a write RPC: it needs a read-write key and is refused on a
+	// read-only follower.
+	GetXTx(context.Context, *GetXTxRequest) (*GetXTxResponse, error)
+	// CommitXTx validates the transaction and applies it atomically. It is
+	// idempotent: repeating it on a committed transaction returns the original
+	// result, and a transaction whose idempotency key already committed returns
+	// that outcome with replayed=true and applies nothing.
+	CommitXTx(context.Context, *CommitXTxRequest) (*CommitXTxResponse, error)
+	// RollbackXTx discards everything the transaction staged. It is idempotent.
+	// It cannot undo a decision: a committed transaction yields
+	// FAILED_PRECONDITION (XTX_FINISHED).
+	RollbackXTx(context.Context, *RollbackXTxRequest) (*RollbackXTxResponse, error)
+	// XTxStatus reports the outcome of a transaction by coordinator tx_id,
+	// idempotency key or xtx_id. It is the only safe way to resolve an
+	// XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+	XTxStatus(context.Context, *XTxStatusRequest) (*XTxStatusResponse, error)
 	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error
 	// Aggregate computes count and numeric aggregations (sum/avg/min/max) over the
 	// live records matching the same Filter as Find, optionally grouped by a field.
@@ -603,6 +725,24 @@ func (UnimplementedScrivaServer) CommitTx(context.Context, *CommitTxRequest) (*C
 }
 func (UnimplementedScrivaServer) RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RollbackTx not implemented")
+}
+func (UnimplementedScrivaServer) BeginXTx(context.Context, *BeginXTxRequest) (*BeginXTxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BeginXTx not implemented")
+}
+func (UnimplementedScrivaServer) StageXTx(context.Context, *StageXTxRequest) (*StageXTxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StageXTx not implemented")
+}
+func (UnimplementedScrivaServer) GetXTx(context.Context, *GetXTxRequest) (*GetXTxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetXTx not implemented")
+}
+func (UnimplementedScrivaServer) CommitXTx(context.Context, *CommitXTxRequest) (*CommitXTxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CommitXTx not implemented")
+}
+func (UnimplementedScrivaServer) RollbackXTx(context.Context, *RollbackXTxRequest) (*RollbackXTxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RollbackXTx not implemented")
+}
+func (UnimplementedScrivaServer) XTxStatus(context.Context, *XTxStatusRequest) (*XTxStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method XTxStatus not implemented")
 }
 func (UnimplementedScrivaServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchEvent]) error {
 	return status.Error(codes.Unimplemented, "method Watch not implemented")
@@ -1002,6 +1142,114 @@ func _Scriva_RollbackTx_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Scriva_BeginXTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BeginXTxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).BeginXTx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_BeginXTx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).BeginXTx(ctx, req.(*BeginXTxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Scriva_StageXTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StageXTxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).StageXTx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_StageXTx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).StageXTx(ctx, req.(*StageXTxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Scriva_GetXTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetXTxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).GetXTx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_GetXTx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).GetXTx(ctx, req.(*GetXTxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Scriva_CommitXTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitXTxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).CommitXTx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_CommitXTx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).CommitXTx(ctx, req.(*CommitXTxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Scriva_RollbackXTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackXTxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).RollbackXTx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_RollbackXTx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).RollbackXTx(ctx, req.(*RollbackXTxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Scriva_XTxStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(XTxStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ScrivaServer).XTxStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Scriva_XTxStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ScrivaServer).XTxStatus(ctx, req.(*XTxStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Scriva_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1200,6 +1448,30 @@ var Scriva_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RollbackTx",
 			Handler:    _Scriva_RollbackTx_Handler,
+		},
+		{
+			MethodName: "BeginXTx",
+			Handler:    _Scriva_BeginXTx_Handler,
+		},
+		{
+			MethodName: "StageXTx",
+			Handler:    _Scriva_StageXTx_Handler,
+		},
+		{
+			MethodName: "GetXTx",
+			Handler:    _Scriva_GetXTx_Handler,
+		},
+		{
+			MethodName: "CommitXTx",
+			Handler:    _Scriva_CommitXTx_Handler,
+		},
+		{
+			MethodName: "RollbackXTx",
+			Handler:    _Scriva_RollbackXTx_Handler,
+		},
+		{
+			MethodName: "XTxStatus",
+			Handler:    _Scriva_XTxStatus_Handler,
 		},
 		{
 			MethodName: "CollectionStats",
