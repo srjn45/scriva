@@ -68,7 +68,11 @@ typed `FailedPrecondition`, exposing their applied-LSN staleness bound), and
 **R3 — manual failover** (an admin `Promote` RPC/CLI that flips a caught-up
 follower to leader, guarded against promoting a lagging replica — see
 [docs/operations.md](docs/operations.md)). Automatic leader election stays out
-of scope.
+of scope. **Cross-collection transactions replicate atomically**: a `CommitXTx`
+ships as one protocol-v2 envelope with one LSN, and a follower applies it
+all-or-nothing across crashes, reconnects, snapshot bootstraps and promotion
+(see [docs/design-xtx-replication.md](docs/design-xtx-replication.md) and the
+operations runbook).
 
 The **v1.0.0 ScrivaDB rebrand** is complete: the project formerly known as
 FileDB v2 is now **ScrivaDB** (slug `scriva`). The Go module moved to
@@ -109,6 +113,13 @@ full breaking-change and migration notes.
   - Wrong-key detection via a `key_check` in `meta.json` — a wrong key/passphrase fails fast on `Open` with `ErrWrongEncryptionKey`
   - Façade options: `scriva.WithEncryptionKey` / `WithPassphrase` / `WithKeyProvider`, and `WithCollectionEncryption` + `EncryptFields` / `EncryptRecord`; passphrase salt persisted (non-secret) in `meta.json` and re-derived on reopen
   - Docs: `docs/encryption-at-rest.md` (design), `docs/getting-started.md` + `docs/architecture.md` (usage & internals)
+
+### Cross-collection transaction replication — shipped
+- [x] Protocol v2 transaction envelope: one record, one LSN, digest-verified, negotiated (legacy followers get a typed refusal, never a downgrade)
+- [x] Atomic follower apply through the durable coordinator; LSN bound to the journal COMMIT; recovery to the max bound LSN; idempotent redelivery; typed divergence; promotion interlock
+- [x] Crash/failover test matrix (leader and follower crash points, disconnect, ring overflow, snapshot bootstrap, promotion at every boundary) in `server/replication_failover_test.go`
+- [x] LSN watermark persisted before the transaction COMMIT so a recovered-but-unpublished transaction always forces followers to re-bootstrap
+- [x] Metrics (`scriva_replication_tx_*`, `scriva_replication_applied_lsn`, `scriva_replication_lag_lsn`) and operations runbook
 
 ### Web admin UI — shipped
 - [x] `clients/web/` — React 18 + TypeScript + Vite + Tailwind CSS browser UI (dark theme)

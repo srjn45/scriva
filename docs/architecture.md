@@ -1120,6 +1120,11 @@ order. The broker keeps the most recent entries in a bounded in-memory ring
 (default 8192) so a briefly-disconnected follower can resume from memory rather
 than re-fetching a whole snapshot.
 
+Cross-collection transactions travel as one protocol-v2 envelope record (one
+LSN) and are applied atomically by the follower's coordinator; the wire format,
+LSN binding, recovery rules, failover guarantees and metrics are specified in
+[design-xtx-replication.md](design-xtx-replication.md).
+
 The engine exposes this as plain Go types — `ReplicationEntry`,
 `DB.SubscribeReplication`, `DB.ApplyReplication`, `DB.ReplicationStatus` — and
 never imports gRPC/protobuf; the server maps them onto the `Replicate` and

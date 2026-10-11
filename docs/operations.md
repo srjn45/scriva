@@ -141,6 +141,63 @@ leader takes writes at a time:
 
 ---
 
+## Replicating cross-collection transactions (protocol v2)
+
+A cross-collection transaction (`CommitXTx`) is replicated as **one record with
+one LSN**: a follower applies it atomically through its own durable coordinator,
+so a read on a follower sees either none or all of a committed leader
+transaction — including across follower crashes, reconnects and snapshot
+bootstraps. Design: [design-xtx-replication.md](design-xtx-replication.md).
+
+### Upgrade order (protocol negotiation)
+
+Upgrade **followers first, then the leader**. Followers advertise protocol
+`{1, 2}`; the leader never downgrades a transaction to per-entry records. A
+follower that does not speak v2 and would need a transaction envelope is cut off
+with `FAILED_PRECONDITION` / `REPLICATION_PROTOCOL_UNSUPPORTED`
+(`server.IsReplicationProtocolError`): upgrade that follower and restart it.
+Single-entry traffic keeps flowing to old followers until the first transaction.
+
+### Monitoring lag
+
+- `ReplicationStatus` RPC / `GET /v1/replication/status`: on the leader
+  `leader_lsn` and per-follower `lag`; on a follower `applied_lsn`. A transaction
+  is one LSN, and `applied_lsn` never covers a partially applied transaction.
+- Prometheus (follower): `scriva_replication_lag_lsn`,
+  `scriva_replication_applied_lsn`, `scriva_replication_tx_apply_total{outcome}`,
+  `scriva_replication_tx_apply_duration_seconds`, `scriva_replication_tx_ops_total`.
+- Alert on: `scriva_replication_lag_lsn` growing; any
+  `tx_apply_total{outcome="diverged"|"failed"}`; the follower process logging
+  `replication stopped` or `replication needs re-bootstrap`.
+
+### What a follower does when…
+
+| symptom | meaning | action |
+|---|---|---|
+| `FAILED_PRECONDITION` "re-bootstrap" | fell out of the leader's ring, or the leader restarted/crashed (its ring is empty and a recovered transaction is never republished) | wipe the follower's data dir and restart with `--replicate-from`; it snapshot-bootstraps |
+| `ErrEnvelopeApplyFailed` wrapping `ErrReplicationDivergence` | the follower's history and the leader's disagree for an applied LSN/txid | re-bootstrap the follower; investigate how it diverged (e.g. it was promoted, or pointed at a different leader) |
+| `ErrEnvelopeDigest` / `ErrEnvelopeInvalid` / unknown record version | corrupted or newer-protocol record | nothing was applied; check versions and the network path, then restart |
+| `ErrReplicationPromoted` | the node was promoted and refuses replicated writes | expected after failover; stop the old apply loop |
+
+### Failover with transactions
+
+Use the [manual failover runbook](#manual-failover-promoting-a-follower) as is.
+Transaction-specific guarantees:
+
+- `Promote` waits for an in-flight transaction apply; the LSN it reports covers
+  whole transactions only, and the new leader assigns LSNs from `applied + 1`.
+- A follower that crashed between the transaction's journal COMMIT and its
+  `replication.json` write recovers the transaction and its LSN at open;
+  promoting it immediately is safe.
+- Re-pointing surviving followers at the new leader always re-bootstraps them
+  (the new leader's ring is empty), so none can be left with half of a
+  transaction.
+- A leader crash after a transaction's COMMIT but before it reached any follower
+  is not lost: leader startup recovery commits it, and every follower
+  re-bootstraps from a snapshot that contains it.
+
+---
+
 ## Audit log
 
 `--audit-log <path>` turns on a durable, append-only trail of every
