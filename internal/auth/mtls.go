@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -40,7 +42,8 @@ func principalFromPeerCert(ctx context.Context) (Principal, bool) {
 	if len(chains) == 0 || len(chains[0]) == 0 {
 		return Principal{}, false
 	}
-	return Principal{Name: certPrincipalName(chains[0][0]), Scope: certAuthScope}, true
+	sum := sha256.Sum256(chains[0][0].Raw)
+	return Principal{Name: certPrincipalName(chains[0][0]), Scope: certAuthScope, ID: "cert:" + hex.EncodeToString(sum[:8])}, true
 }
 
 // certPrincipalName maps a client certificate to a stable principal name. It

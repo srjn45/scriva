@@ -37,6 +37,9 @@ type Metrics struct {
 	SegmentPoisonedTotal *prometheus.CounterVec
 	DirLockTotal         *prometheus.CounterVec
 
+	LegacyCollectionNames prometheus.Gauge
+	SkippedRootEntries    prometheus.Gauge
+
 	XTxTotal          *prometheus.CounterVec
 	XTxDuration       *prometheus.HistogramVec
 	XTxConflictsTotal *prometheus.CounterVec
@@ -130,6 +133,14 @@ func New(reg prometheus.Registerer) *Metrics {
 		Name: "scriva_dir_lock_total",
 		Help: "Data-directory lock acquisitions by result (acquired|contended|failed).",
 	}, []string{"result"})
+	m.LegacyCollectionNames = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "scriva_legacy_collection_names",
+		Help: "Collections loaded at startup whose names fail the current naming policy (operable, not creatable).",
+	})
+	m.SkippedRootEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "scriva_skipped_root_entries",
+		Help: "Data-directory root entries skipped at startup (symlinks or non-plain names).",
+	})
 
 	m.XTxTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "scriva_xtx_total",
@@ -172,6 +183,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal,
 		m.RecoveryTotal, m.RecoveryDuration, m.RecoveryBytesTotal, m.IntegrityOpenTotal, m.IntegrityFindings,
 		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal,
+		m.LegacyCollectionNames, m.SkippedRootEntries,
 		m.XTxTotal, m.XTxDuration, m.XTxConflictsTotal, m.XTxRecoveryTotal)
 	return m
 }
@@ -356,6 +368,13 @@ func (m *Metrics) ObserveAppend(collection string, bytes int, reason string) {
 // ObserveSegmentPoisoned records a segment poisoning event.
 func (m *Metrics) ObserveSegmentPoisoned(collection string) {
 	m.SegmentPoisonedTotal.WithLabelValues(collection).Inc()
+}
+
+// ObserveRootNames records what startup discovery found: legacy-named
+// collections that were loaded and root entries that were skipped.
+func (m *Metrics) ObserveRootNames(legacy, skipped int) {
+	m.LegacyCollectionNames.Set(float64(legacy))
+	m.SkippedRootEntries.Set(float64(skipped))
 }
 
 // ObserveDirLock records a data-directory lock acquisition attempt.

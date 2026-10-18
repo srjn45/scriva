@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/srjn45/scriva/engine"
+	"github.com/srjn45/scriva/internal/auth"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"github.com/srjn45/scriva/query"
 	"github.com/srjn45/scriva/store"
@@ -26,6 +28,8 @@ type GRPCServer struct {
 	pb.UnimplementedScrivaServer
 	db    *engine.DB
 	txMgr *engine.TxManager
+	// owners binds transaction handles to the credential that created them.
+	owners *handleOwners
 
 	// Slow-query observability (O5). All optional: the zero value disables both
 	// the metric and the log so the embedded/default path is unchanged.
@@ -84,7 +88,7 @@ func WithPromoteMaxLag(maxLag uint64) GRPCOption {
 // how long an idle open transaction is retained before it is reaped (0 disables
 // expiry); see engine.NewTxManager.
 func NewGRPCServer(db *engine.DB, txTimeout time.Duration, opts ...GRPCOption) *GRPCServer {
-	s := &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout)}
+	s := &GRPCServer{db: db, txMgr: engine.NewTxManager(txTimeout), owners: newHandleOwners()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -122,10 +126,10 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 	if req.DefaultTtlSeconds > 0 {
 		ttl := time.Duration(req.DefaultTtlSeconds) * time.Second
 		if _, err := s.db.CreateCollectionWithDefaultTTL(req.Name, ttl); err != nil {
-			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+			return nil, createErr(err)
 		}
 	} else if _, err := s.db.CreateCollection(req.Name); err != nil {
-		return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		return nil, createErr(err)
 	}
 	return &pb.CreateCollectionResponse{
 		Name:      req.Name,
@@ -135,13 +139,27 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 
 func (s *GRPCServer) DropCollection(_ context.Context, req *pb.DropCollectionRequest) (*pb.DropCollectionResponse, error) {
 	if err := s.db.DropCollection(req.Name); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DropCollectionResponse{Ok: true}, nil
 }
 
-func (s *GRPCServer) ListCollections(_ context.Context, _ *pb.ListCollectionsRequest) (*pb.ListCollectionsResponse, error) {
-	return &pb.ListCollectionsResponse{Names: s.db.ListCollections()}, nil
+// ListCollections returns every collection to an unrestricted principal and
+// only allow-list ∩ existing, sorted, to a restricted one. Names that do not
+// exist are omitted so the list is no existence oracle; internal xtx.* names
+// never appear.
+func (s *GRPCServer) ListCollections(ctx context.Context, _ *pb.ListCollectionsRequest) (*pb.ListCollectionsResponse, error) {
+	p, _ := auth.PrincipalFromContext(ctx)
+	all := s.db.ListCollections()
+	names := make([]string, 0, len(all))
+	for _, n := range all {
+		if strings.HasPrefix(n, "xtx.") || !p.AllowsCollection(n) {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return &pb.ListCollectionsResponse{Names: names}, nil
 }
 
 // ---- CRUD -----------------------------------------------------------------
@@ -155,7 +173,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	// Keyed Create (N1): a caller-supplied key routes to the engine's
@@ -179,9 +197,9 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 		if req.TtlSeconds > 0 {
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
 		}
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -209,7 +227,7 @@ func (s *GRPCServer) InsertMany(ctx context.Context, req *pb.InsertManyRequest) 
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	deadline := ttlDeadline(req.TtlSeconds)
 	records := make([]map[string]any, len(req.Records))
@@ -231,14 +249,14 @@ func (s *GRPCServer) FindById(ctx context.Context, req *pb.FindByIdRequest) (*pb
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	r, err := col.Get(req.Id)
 	if err != nil {
 		if errors.Is(err, engine.ErrIndexCorrupt) {
 			return nil, status.Errorf(codes.DataLoss, "%v", err)
 		}
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	// Field projection (N2): id/key/rev are passed separately and always kept.
 	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, engine.ProjectData(r.Data, req.Fields), r.Ts)
@@ -255,7 +273,7 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) erro
 	start := time.Now()
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 
 	f, err := protoFilterToQuery(req.Filter)
@@ -401,16 +419,16 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
 		if req.TtlSeconds > 0 {
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported inside a transaction")
 		}
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -428,7 +446,7 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 		ts, err = col.Update(req.Id, req.Data.AsMap())
 	}
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	resp := &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}
 	// Surface the record's key and post-write revision best-effort.
@@ -444,13 +462,13 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 
 	if txID := txIDFromContext(ctx); txID != "" {
-		tx, ok := s.txMgr.Get(txID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		tx, err := s.ownedTx(ctx, txID)
+		if err != nil {
+			return nil, err
 		}
 		if tx.Collection != req.Collection {
 			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
@@ -460,7 +478,7 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	}
 
 	if err := col.Delete(req.Id); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DeleteResponse{Ok: true}, nil
 }
@@ -479,7 +497,7 @@ func (s *GRPCServer) Upsert(ctx context.Context, req *pb.UpsertRequest) (*pb.Ups
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	rec, err := col.Upsert(req.Key, req.Data.AsMap())
 	if err != nil {
@@ -499,7 +517,7 @@ func (s *GRPCServer) FindByKey(ctx context.Context, req *pb.FindByKeyRequest) (*
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "collection: %v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	rec, err := col.GetByKey(req.Key)
 	if err != nil {
@@ -521,7 +539,7 @@ func (s *GRPCServer) UpdateByKey(ctx context.Context, req *pb.UpdateByKeyRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	ts, err := col.UpdateByKey(req.Key, req.Data.AsMap())
 	if err != nil {
@@ -542,7 +560,7 @@ func (s *GRPCServer) DeleteByKey(ctx context.Context, req *pb.DeleteByKeyRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.DeleteByKey(req.Key); err != nil {
 		return nil, keyedErr(err)
@@ -560,7 +578,7 @@ func (s *GRPCServer) UpdateIfRev(ctx context.Context, req *pb.UpdateIfRevRequest
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	swapped, err := col.UpdateIfRev(req.Key, req.ExpectedRev, req.Data.AsMap())
 	if err != nil {
@@ -585,7 +603,7 @@ func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) 
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.EnsureIndex(req.Field); err != nil {
 		return nil, status.Errorf(codes.Internal, "ensure index: %v", err)
@@ -596,10 +614,10 @@ func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) 
 func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb.DropIndexResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.DropIndex(req.Field); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DropIndexResponse{Ok: true}, nil
 }
@@ -607,7 +625,7 @@ func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb
 func (s *GRPCServer) ListIndexes(_ context.Context, req *pb.ListIndexesRequest) (*pb.ListIndexesResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.ListIndexesResponse{Fields: col.ListIndexes()}, nil
 }
@@ -620,7 +638,7 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) e
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 
 	f, err := protoFilterToQuery(req.Filter)
@@ -683,7 +701,7 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) e
 func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsRequest) (*pb.CollectionStatsResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	st := col.Stats()
 	return &pb.CollectionStatsResponse{
@@ -707,7 +725,7 @@ func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_Aggreg
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return status.Errorf(codes.NotFound, "%v", err)
+		return notFoundOrInvalid(err)
 	}
 	f, err := protoFilterToQuery(req.Filter)
 	if err != nil {
@@ -780,7 +798,7 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 	}
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.CompactNow(); err != nil {
 		if errors.Is(err, engine.ErrCompactionDeferred) {
@@ -992,28 +1010,30 @@ func replOpFromProto(op pb.ReplicationOp) store.Op {
 
 // ---- Transactions ---------------------------------------------------------
 
-func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
+func (s *GRPCServer) BeginTx(ctx context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
 	if req.Collection == "" {
 		return nil, status.Error(codes.InvalidArgument, "collection required")
 	}
 	if _, err := s.db.Collection(req.Collection); err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	txID := s.txMgr.Begin(req.Collection)
+	s.owners.bind(txID, callerID(ctx), func(id string) bool { _, ok := s.txMgr.Get(id); return ok })
 	return &pb.BeginTxResponse{TxId: txID}, nil
 }
 
-func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
-	tx, ok := s.txMgr.Get(req.TxId)
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+func (s *GRPCServer) CommitTx(ctx context.Context, req *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
+	tx, err := s.ownedTx(ctx, req.TxId)
+	if err != nil {
+		return nil, err
 	}
 	col, err := s.db.Collection(tx.Collection)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, notFoundOrInvalid(err)
 	}
 	ops := tx.Snapshot()
 	s.txMgr.Remove(req.TxId)
+	s.owners.forget(req.TxId)
 	if err := col.CommitTx(ops); err != nil {
 		if errors.Is(err, engine.ErrResourceExhausted) {
 			if s.onQuotaReject != nil {
@@ -1026,12 +1046,27 @@ func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.C
 	return &pb.CommitTxResponse{Ok: true}, nil
 }
 
-func (s *GRPCServer) RollbackTx(_ context.Context, req *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
-	if _, ok := s.txMgr.Get(req.TxId); !ok {
-		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+func (s *GRPCServer) RollbackTx(ctx context.Context, req *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
+	if _, err := s.ownedTx(ctx, req.TxId); err != nil {
+		return nil, err
 	}
 	s.txMgr.Remove(req.TxId)
+	s.owners.forget(req.TxId)
 	return &pb.RollbackTxResponse{Ok: true}, nil
+}
+
+// ownedTx resolves a single-collection transaction handle and enforces that
+// the caller is the principal that began it. A foreign handle is refused with
+// PermissionDenied and is not touched.
+func (s *GRPCServer) ownedTx(ctx context.Context, txID string) (*engine.Tx, error) {
+	tx, ok := s.txMgr.Get(txID)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+	}
+	if err := s.owners.check(ctx, txID); err != nil {
+		return nil, err
+	}
+	return tx, nil
 }
 
 // ---- Helpers --------------------------------------------------------------

@@ -90,7 +90,14 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 
 	existingCols := make(map[string]bool)
 	var colNames []string
+	var legacy, skipped []string
 	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 {
+			// A symlinked root entry is never a collection (D2): skip it,
+			// loudly, instead of opening whatever it points at.
+			skipped = append(skipped, e.Name())
+			continue
+		}
 		if !e.IsDir() {
 			continue
 		}
@@ -98,10 +105,18 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 			_ = xj.close()
 			return xtxErr("", ErrReservedName, fmt.Errorf("root directory contains reserved directory %q", e.Name()))
 		}
+		if validateLegacyName(e.Name()) != nil {
+			skipped = append(skipped, e.Name())
+			continue
+		}
+		if ValidateCollectionName(e.Name()) != nil {
+			legacy = append(legacy, e.Name())
+		}
 		existingCols[e.Name()] = true
 		colNames = append(colNames, e.Name())
 	}
 	sort.Strings(colNames)
+	db.reportRootNames(cfg, colNames, legacy, skipped)
 
 	discoveries := make(map[string]*colDiscovery, len(colNames))
 	defer func() {

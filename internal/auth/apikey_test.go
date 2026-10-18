@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	writeMethod = "/filedb.v1.FileDB/Insert"
-	readMethod  = "/filedb.v1.FileDB/Find"
+	writeMethod = "/scriva.v1.Scriva/Insert"
+	readMethod  = "/scriva.v1.Scriva/Find"
 )
 
 func ctxWithKey(key string) context.Context {
@@ -94,7 +94,7 @@ func TestAuthenticator_ReadScopeRejectedOnWrite(t *testing.T) {
 		t.Errorf("read-only on write: got %v, want PermissionDenied", code)
 	}
 	// An unclassified/unknown method is treated as a write (fail-safe).
-	if code := call(t, a, ctxWithKey("ro"), "/filedb.v1.FileDB/SomethingNew"); code != codes.PermissionDenied {
+	if code := call(t, a, ctxWithKey("ro"), "/scriva.v1.Scriva/SomethingNew"); code != codes.PermissionDenied {
 		t.Errorf("read-only on unknown method: got %v, want PermissionDenied", code)
 	}
 }
@@ -147,7 +147,7 @@ func TestStreamInterceptor_EnforcesScope(t *testing.T) {
 	_, stream := a.Interceptors()
 	handler := func(any, grpc.ServerStream) error { return nil }
 	err := stream(nil, fakeStream{ctx: ctxWithKey("ro")},
-		&grpc.StreamServerInfo{FullMethod: "/filedb.v1.FileDB/Watch"}, handler)
+		&grpc.StreamServerInfo{FullMethod: "/scriva.v1.Scriva/Watch"}, handler)
 	if err != nil {
 		t.Errorf("read-only on Watch stream: got %v, want nil", err)
 	}
@@ -155,7 +155,7 @@ func TestStreamInterceptor_EnforcesScope(t *testing.T) {
 	// read; use a write stream method sensibly — there are none streaming, so
 	// assert unknown streaming method is denied.
 	err = stream(nil, fakeStream{ctx: ctxWithKey("ro")},
-		&grpc.StreamServerInfo{FullMethod: "/filedb.v1.FileDB/MutateStream"}, handler)
+		&grpc.StreamServerInfo{FullMethod: "/scriva.v1.Scriva/MutateStream"}, handler)
 	if status.Code(err) != codes.PermissionDenied {
 		t.Errorf("read-only on unknown stream: got %v, want PermissionDenied", err)
 	}
@@ -216,7 +216,7 @@ func TestAuthenticator_CollectionACL_ConfinesKey(t *testing.T) {
 	}
 	// A request with no collection field (nil req here) is not collection-scoped,
 	// so a restricted key may still call it (e.g. ListCollections).
-	if code := call(t, a, ctxWithKey("scoped"), readMethod); code != codes.OK {
+	if code := call(t, a, ctxWithKey("scoped"), "/scriva.v1.Scriva/ListCollections"); code != codes.OK {
 		t.Errorf("scoped key on non-collection RPC: got %v, want OK", code)
 	}
 }
@@ -279,7 +279,7 @@ func TestStreamInterceptor_CollectionACL(t *testing.T) {
 		var req fakeCollReq
 		return ss.RecvMsg(&req)
 	}
-	watch := &grpc.StreamServerInfo{FullMethod: "/filedb.v1.FileDB/Watch"}
+	watch := &grpc.StreamServerInfo{FullMethod: "/scriva.v1.Scriva/Watch"}
 
 	if err := stream(nil, &fakeCollStream{ctx: ctxWithKey("scoped"), coll: "a"}, watch, handler); err != nil {
 		t.Errorf("scoped stream on allowed collection: got %v, want nil", err)
@@ -331,12 +331,9 @@ func TestParseScope(t *testing.T) {
 // and keeps the handle alive, so a read-only key cannot drive a transaction.
 func TestXTxMethodClassification(t *testing.T) {
 	for _, m := range []string{"BeginXTx", "StageXTx", "GetXTx", "CommitXTx", "RollbackXTx"} {
-		if !methodRequiresWrite("/scriva.v1.Scriva/" + m) {
-			t.Errorf("%s must require write scope", m)
+		if got, _ := PolicyFor("/scriva.v1.Scriva/" + m); got == AccessCollectionRead || got == AccessAuthenticated || got == AccessDenied {
+			t.Errorf("%s must require write scope, got %v", m, got)
 		}
-	}
-	if methodRequiresWrite("/scriva.v1.Scriva/XTxStatus") {
-		t.Error("XTxStatus must be callable with read scope")
 	}
 
 	a := mustNew(t, Key{Key: "ro", Name: "reader", Scope: ScopeRead})

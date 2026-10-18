@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -63,25 +65,76 @@ func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 			return
 		}
 
+		// Receive on a single goroutine so the first outcome can be inspected
+		// before the HTTP status line is committed: a stream refused at the
+		// auth layer (or otherwise failing immediately) must surface as the
+		// mapped HTTP status, exactly like every other REST route, rather than
+		// as a 200 with an error envelope.
+		type recvResult struct {
+			ev  *pb.WatchEvent
+			err error
+		}
+		results := make(chan recvResult, 1)
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			for {
+				ev, recvErr := stream.Recv()
+				select {
+				case results <- recvResult{ev, recvErr}:
+				case <-done:
+					return
+				}
+				if recvErr != nil {
+					return
+				}
+			}
+		}()
+
+		var first *recvResult
+		grace := time.NewTimer(watchStartGrace)
+		select {
+		case res := <-results:
+			grace.Stop()
+			first = &res
+			if res.err != nil && !errors.Is(res.err, io.EOF) {
+				writeGatewayError(w, res.err)
+				return
+			}
+		case <-grace.C:
+		}
+
 		flusher, canFlush := w.(http.Flusher)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if present
 		w.WriteHeader(http.StatusOK)
+		if canFlush {
+			flusher.Flush()
+		}
 
 		enc := json.NewEncoder(w)
 		for {
-			event, recvErr := stream.Recv()
-			if recvErr != nil {
-				if errors.Is(recvErr, io.EOF) {
+			var res recvResult
+			if first != nil {
+				res, first = *first, nil
+			} else {
+				select {
+				case res = <-results:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			if res.err != nil {
+				if errors.Is(res.err, io.EOF) {
 					// I4: Normal stream end — return silently.
 					return
 				}
 				// I4: Non-EOF error — write an error envelope before closing.
 				_ = enc.Encode(map[string]any{
 					"error": map[string]any{
-						"message": recvErr.Error(),
-						"code":    int(codes.Internal),
+						"message": res.err.Error(),
+						"code":    int(status.Code(res.err)),
 					},
 				})
 				if canFlush {
@@ -91,7 +144,7 @@ func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 			}
 			// Wrap in the grpc-gateway envelope so the web client can use the
 			// same parsing logic as all other streaming endpoints.
-			if encErr := enc.Encode(map[string]any{"result": event}); encErr != nil {
+			if encErr := enc.Encode(map[string]any{"result": res.ev}); encErr != nil {
 				return
 			}
 			if canFlush {
@@ -99,6 +152,20 @@ func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 			}
 		}
 	})
+}
+
+// watchStartGrace is how long a Watch waits for the stream's first outcome
+// before committing a 200: authorization and validation failures arrive
+// immediately, a healthy idle watch simply produces nothing.
+const watchStartGrace = 200 * time.Millisecond
+
+// writeGatewayError writes err as the grpc-gateway would: the HTTP status
+// mapped from its gRPC code and a {code, message} JSON body.
+func writeGatewayError(w http.ResponseWriter, err error) {
+	st := status.Convert(err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(runtime.HTTPStatusFromCode(st.Code()))
+	_ = json.NewEncoder(w).Encode(map[string]any{"code": int(st.Code()), "message": st.Message()})
 }
 
 // isWatchPath reports whether path matches /v1/<collection>/watch.

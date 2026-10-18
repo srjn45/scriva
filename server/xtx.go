@@ -58,6 +58,10 @@ func (s *GRPCServer) BeginXTx(ctx context.Context, req *pb.BeginXTxRequest) (*pb
 	if err != nil {
 		return nil, xtxStatusErr(err, req.IdempotencyKey)
 	}
+	s.owners.bind(x.ID(), callerID(ctx), func(id string) bool {
+		_, err := s.db.XTxHandle(id)
+		return err == nil
+	})
 	return &pb.BeginXTxResponse{
 		XtxId:          x.ID(),
 		Collections:    x.Participants(),
@@ -65,8 +69,8 @@ func (s *GRPCServer) BeginXTx(ctx context.Context, req *pb.BeginXTxRequest) (*pb
 	}, nil
 }
 
-func (s *GRPCServer) StageXTx(_ context.Context, req *pb.StageXTxRequest) (*pb.StageXTxResponse, error) {
-	x, err := s.xtxHandle(req.XtxId)
+func (s *GRPCServer) StageXTx(ctx context.Context, req *pb.StageXTxRequest) (*pb.StageXTxResponse, error) {
+	x, err := s.xtxHandle(ctx, req.XtxId)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +98,8 @@ func (s *GRPCServer) StageXTx(_ context.Context, req *pb.StageXTxRequest) (*pb.S
 	return &pb.StageXTxResponse{Id: id}, nil
 }
 
-func (s *GRPCServer) GetXTx(_ context.Context, req *pb.GetXTxRequest) (*pb.GetXTxResponse, error) {
-	x, err := s.xtxHandle(req.XtxId)
+func (s *GRPCServer) GetXTx(ctx context.Context, req *pb.GetXTxRequest) (*pb.GetXTxResponse, error) {
+	x, err := s.xtxHandle(ctx, req.XtxId)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +119,7 @@ func (s *GRPCServer) CommitXTx(ctx context.Context, req *pb.CommitXTxRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	x, err := s.xtxHandle(req.XtxId)
+	x, err := s.xtxHandle(ctx, req.XtxId)
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +144,8 @@ func (s *GRPCServer) CommitXTx(ctx context.Context, req *pb.CommitXTxRequest) (*
 	return out, nil
 }
 
-func (s *GRPCServer) RollbackXTx(_ context.Context, req *pb.RollbackXTxRequest) (*pb.RollbackXTxResponse, error) {
-	x, err := s.xtxHandle(req.XtxId)
+func (s *GRPCServer) RollbackXTx(ctx context.Context, req *pb.RollbackXTxRequest) (*pb.RollbackXTxResponse, error) {
+	x, err := s.xtxHandle(ctx, req.XtxId)
 	if err != nil {
 		return nil, err
 	}
@@ -162,14 +166,19 @@ func (s *GRPCServer) XTxStatus(_ context.Context, req *pb.XTxStatusRequest) (*pb
 // ---- Helpers --------------------------------------------------------------
 
 // xtxHandle resolves a handle id to its transaction, mapping a miss onto
-// NOT_FOUND (XTX_NOT_FOUND).
-func (s *GRPCServer) xtxHandle(id string) (*engine.XTx, error) {
+// NOT_FOUND (XTX_NOT_FOUND) and a handle begun by another principal onto
+// PERMISSION_DENIED.
+func (s *GRPCServer) xtxHandle(ctx context.Context, id string) (*engine.XTx, error) {
 	if id == "" {
 		return nil, xtxInvalid("xtx_id is required")
 	}
 	x, err := s.db.XTxHandle(id)
 	if err != nil {
 		return nil, xtxStatusErr(err, id)
+	}
+	// A handle is usable only by the credential that began it.
+	if err := s.owners.check(ctx, id); err != nil {
+		return nil, err
 	}
 	return x, nil
 }
@@ -239,7 +248,7 @@ func (s *GRPCServer) rejectXTxHeader(ctx context.Context, collection string, sca
 	if !scan {
 		return xtxInvalid("this RPC cannot run inside a cross-collection transaction; use StageXTx for writes and GetXTx for point reads")
 	}
-	x, err := s.xtxHandle(id)
+	x, err := s.xtxHandle(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -362,7 +371,7 @@ func xtxStatusErr(err error, ref string) error {
 		return xtxStatus(codes.Unimplemented, xtxapi.ReasonScanUnsupported, msg, meta)
 	case errors.Is(err, engine.ErrXTxTooLarge), errors.Is(err, engine.ErrRecordTooLarge):
 		return xtxStatus(codes.InvalidArgument, xtxapi.ReasonTooLarge, msg, meta)
-	case errors.Is(err, engine.ErrXTxInvalid), errors.Is(err, engine.ErrReservedName),
+	case errors.Is(err, engine.ErrXTxInvalid), errors.Is(err, engine.ErrReservedName), errors.Is(err, engine.ErrInvalidName), errors.Is(err, engine.ErrUnsafePath),
 		errors.Is(err, engine.ErrReservedField), errors.Is(err, engine.ErrXTxDuplicateOp):
 		return xtxStatus(codes.InvalidArgument, xtxapi.ReasonInvalid, msg, meta)
 

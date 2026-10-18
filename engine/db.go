@@ -73,16 +73,23 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("db: mkdir %q: %w", dataDir, err)
 	}
+	// Resolve the root once (D2): it may itself be a symlink, but everything
+	// below it must be real, and later joins start from the resolved path.
+	hookDir := dataDir
+	dataDir, err := resolveRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
 
 	dl, err := lockDir(dataDir)
 	if h := cfg.OnLock; h != nil {
 		switch {
 		case err == nil:
-			h(dataDir, LockAcquired)
+			h(hookDir, LockAcquired)
 		case errors.Is(err, ErrDatabaseLocked):
-			h(dataDir, LockContended)
+			h(hookDir, LockContended)
 		default:
-			h(dataDir, LockFailed)
+			h(hookDir, LockFailed)
 		}
 	}
 	if err != nil {
@@ -124,11 +131,19 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 // CreateCollection creates a new collection with the given name.
 // Returns an error if it already exists.
 func (db *DB) CreateCollection(name string) (*Collection, error) {
+	// Policy is checked before existence, so a legacy-named collection can
+	// never be "created" again (D1).
+	if err := ValidateCollectionName(name); err != nil {
+		return nil, err
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	if _, exists := db.collections[name]; exists {
-		return nil, fmt.Errorf("db: collection %q already exists", name)
+		return nil, fmt.Errorf("db: collection %q already exists: %w", name, ErrCollectionExists)
+	}
+	if other, clash := db.foldCollisionLocked(name); clash {
+		return nil, fmt.Errorf("db: collection %q already exists as %q: %w", name, other, ErrCollectionExists)
 	}
 	colCfg := db.defaultCfg
 	colCfg.decisionsFn = db.decisionsMap
@@ -176,6 +191,14 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	if err := db.checkExistingNameLocked(name); err != nil {
+		return nil, err
+	}
+	if _, open := db.collections[name]; !open {
+		if other, clash := db.foldCollisionLocked(name); clash {
+			return nil, fmt.Errorf("db: collection %q already exists as %q: %w", name, other, ErrCollectionExists)
+		}
+	}
 	if existing, ok := db.collections[name]; ok {
 		// Already open, possibly under a different (default) config. Close and
 		// reopen under the requested config so the override takes effect.
@@ -202,14 +225,29 @@ func (db *DB) DropCollection(name string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	if err := db.checkExistingNameLocked(name); err != nil {
+		return err
+	}
 	col, exists := db.collections[name]
 	if !exists {
 		return fmt.Errorf("db: collection %q not found", name)
 	}
+	// The target must still be a real directory directly below the resolved
+	// root. A symlink (or anything else) is refused, never followed. If it is
+	// swapped for a symlink after this check, RemoveAll unlinks the link
+	// itself and does not descend into its target.
+	dir := filepath.Join(db.dataDir, name)
+	if filepath.Dir(dir) != db.dataDir {
+		return fmt.Errorf("%w: %q escapes the data directory", ErrUnsafePath, name)
+	}
+	if exists, err := realDirExists(dir); err != nil {
+		return err
+	} else if !exists {
+		return fmt.Errorf("%w: %q is missing from the data directory", ErrUnsafePath, name)
+	}
 	_ = col.Close()
 	delete(db.collections, name)
 
-	dir := filepath.Join(db.dataDir, name)
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("db: drop %q: %w", name, err)
 	}
@@ -230,6 +268,9 @@ func (db *DB) Collection(name string) (*Collection, error) {
 	db.mu.RUnlock()
 
 	if !ok {
+		if err := ValidateCollectionName(name); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("db: collection %q not found", name)
 	}
 	return col, nil

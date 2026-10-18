@@ -219,8 +219,8 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 		if op.Collection == "" {
 			return nil, errors.New("engine: operation has empty collection name")
 		}
-		if isReservedXTxName(op.Collection) {
-			return nil, xtxErr("", ErrReservedName, fmt.Errorf("collection %q uses reserved prefix", op.Collection))
+		if err := db.checkParticipantName(op.Collection); err != nil {
+			return nil, xtxErr("", err, nil)
 		}
 		distinctCols[op.Collection] = true
 		colSeen := seenID[op.Collection]

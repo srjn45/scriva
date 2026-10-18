@@ -90,47 +90,172 @@ func Bootstrap(ctx context.Context, client pb.ScrivaClient, dataDir string) (uin
 	return watermark, nil
 }
 
-// extractSnapshot unpacks a gzip-compressed tar snapshot stream into dataDir. The
-// archive lays out one entry per collection file as "<collection>/<file>"; paths
-// are validated so a malformed archive cannot escape dataDir.
-func extractSnapshot(r io.Reader, dataDir string) error {
+// Limits applied to an incoming snapshot archive (D2). They are variables so
+// tests can lower them; defaults are generous for any real archive.
+var (
+	maxSnapshotEntries  = 1 << 20
+	maxSnapshotFileSize = int64(8) << 30
+)
+
+// extractSnapshot unpacks a gzip-compressed tar snapshot stream into dataDir.
+//
+// The archive is untrusted. It is extracted into a new 0700 temporary directory
+// next to dataDir (never into a live root), accepting only regular files at
+// depth 1 (coordinator files) or depth 2 ("<collection>/<engine file>"); every
+// other entry, a duplicate, an unsafe name or a breached limit is an error and
+// the temporary directory is removed. On success the extracted tree is
+// promoted by rename, so a hostile or truncated archive can never leave a
+// half-restored live directory.
+func extractSnapshot(r io.Reader, dataDir string) (err error) {
+	dataDir, err = filepath.Abs(dataDir)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(dataDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("mkdir %q: %w", parent, err)
+	}
+	prefix := "." + filepath.Base(dataDir) + ".restore-"
+	// Remove temp directories a crashed earlier extraction left behind.
+	if stale, gerr := filepath.Glob(filepath.Join(parent, prefix+"*")); gerr == nil {
+		for _, st := range stale {
+			if fi, lerr := os.Lstat(st); lerr == nil && fi.IsDir() {
+				_ = os.RemoveAll(st)
+			}
+		}
+	}
+	tmp, err := os.MkdirTemp(parent, prefix)
+	if err != nil {
+		return fmt.Errorf("create restore dir: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("gzip reader: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
 
+	seen := make(map[string]struct{})
 	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
+	for n := 0; ; n++ {
+		hdr, nerr := tr.Next()
+		if errors.Is(nerr, io.EOF) {
 			break
 		}
-		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
+		if nerr != nil {
+			return fmt.Errorf("tar next: %w", nerr)
+		}
+		if n >= maxSnapshotEntries {
+			return fmt.Errorf("snapshot has more than %d entries", maxSnapshotEntries)
 		}
 		if hdr.Typeflag != tar.TypeReg {
-			continue
+			return fmt.Errorf("unsafe snapshot entry %q: type %q is not a regular file", hdr.Name, hdr.Typeflag)
 		}
-		clean := filepath.Clean(hdr.Name)
-		if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
-			return fmt.Errorf("unsafe snapshot path %q", hdr.Name)
+		if hdr.Size < 0 || hdr.Size > maxSnapshotFileSize {
+			return fmt.Errorf("snapshot entry %q: size %d exceeds the %d byte limit", hdr.Name, hdr.Size, maxSnapshotFileSize)
 		}
-		dest := filepath.Join(dataDir, clean)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		rel, verr := checkSnapshotEntryName(hdr.Name)
+		if verr != nil {
+			return verr
+		}
+		if _, dup := seen[rel]; dup {
+			return fmt.Errorf("duplicate snapshot entry %q", hdr.Name)
+		}
+		seen[rel] = struct{}{}
+
+		dest := filepath.Join(tmp, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return fmt.Errorf("mkdir %q: %w", filepath.Dir(dest), err)
 		}
-		f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			return fmt.Errorf("create %q: %w", dest, err)
+		f, oerr := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if oerr != nil {
+			return fmt.Errorf("create %q: %w", dest, oerr)
 		}
-		if _, err := io.CopyN(f, tr, hdr.Size); err != nil {
+		if _, cerr := io.CopyN(f, tr, hdr.Size); cerr != nil {
 			_ = f.Close()
-			return fmt.Errorf("write %q: %w", dest, err)
+			return fmt.Errorf("write %q: %w", dest, cerr)
 		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("close %q: %w", dest, err)
+		if cerr := f.Close(); cerr != nil {
+			return fmt.Errorf("close %q: %w", dest, cerr)
 		}
+	}
+
+	return promoteRestore(tmp, dataDir)
+}
+
+// checkSnapshotEntryName validates a tar entry name and returns it in
+// slash-separated form: "<root file>" or "<collection>/<file>".
+func checkSnapshotEntryName(name string) (string, error) {
+	bad := func(why string) error { return fmt.Errorf("unsafe snapshot path %q: %s", name, why) }
+	if name == "" || strings.ContainsAny(name, "\\\x00") || strings.HasPrefix(name, "/") {
+		return "", bad("not a relative slash-separated path")
+	}
+	parts := strings.Split(name, "/")
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." {
+			return "", bad("empty, '.' or '..' component")
+		}
+	}
+	switch len(parts) {
+	case 1:
+		if !engine.SnapshotRootFileAllowed(parts[0]) {
+			return "", bad("unknown root file")
+		}
+	case 2:
+		if err := engine.ValidateLegacyCollectionName(parts[0]); err != nil {
+			return "", bad(err.Error())
+		}
+		if !engine.SnapshotFileAllowed(parts[1]) {
+			return "", bad("unknown collection file")
+		}
+	default:
+		return "", bad("deeper than <collection>/<file>")
+	}
+	return name, nil
+}
+
+// promoteRestore moves the extracted tree from tmp into dataDir. An absent or
+// empty dataDir is replaced wholesale by one rename; otherwise each top-level
+// entry is renamed in, refusing to overwrite anything that exists.
+func promoteRestore(tmp, dataDir string) error {
+	entries, err := os.ReadDir(dataDir)
+	switch {
+	case errors.Is(err, os.ErrNotExist) || (err == nil && len(entries) == 0):
+		if err == nil {
+			if rerr := os.Remove(dataDir); rerr != nil {
+				return fmt.Errorf("replace empty %q: %w", dataDir, rerr)
+			}
+		}
+		if rerr := os.Rename(tmp, dataDir); rerr != nil {
+			return fmt.Errorf("promote restore: %w", rerr)
+		}
+	case err != nil:
+		return fmt.Errorf("read %q: %w", dataDir, err)
+	default:
+		moved, rerr := os.ReadDir(tmp)
+		if rerr != nil {
+			return rerr
+		}
+		for _, e := range moved {
+			if _, serr := os.Lstat(filepath.Join(dataDir, e.Name())); serr == nil {
+				return fmt.Errorf("restore target %q already contains %q", dataDir, e.Name())
+			}
+		}
+		for _, e := range moved {
+			if rerr := os.Rename(filepath.Join(tmp, e.Name()), filepath.Join(dataDir, e.Name())); rerr != nil {
+				return fmt.Errorf("promote %q: %w", e.Name(), rerr)
+			}
+		}
+		_ = os.Remove(tmp)
+	}
+	if d, oerr := os.Open(filepath.Dir(dataDir)); oerr == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

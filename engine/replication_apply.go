@@ -102,8 +102,10 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 	for i, p := range parts {
 		names[i] = p.Collection
 	}
-	if isReservedXTxName(names[0]) {
-		return false, xtxErr(env.TxID, ErrReservedName, fmt.Errorf("collection %q uses reserved prefix", names[0]))
+	for _, n := range names {
+		if err := db.checkParticipantName(n); err != nil {
+			return false, xtxErr(env.TxID, err, nil)
+		}
 	}
 
 	// Create missing participants and any mandatory _key index before taking

@@ -195,6 +195,10 @@ type CollectionConfig struct {
 	// exclusive data-directory lock: LockAcquired, LockContended (another
 	// handle/process holds it) or LockFailed. DB-wide.
 	OnLock func(dataDir, result string)
+	// OnRootNames, when non-nil, is called once by Open with the number of
+	// legacy-named collections it loaded and the number of root entries it
+	// skipped (symlinks, non-plain names). DB-wide.
+	OnRootNames func(legacy, skipped int)
 	// XTxIdleTimeout bounds how long a transaction handle (DB.BeginXTx) may sit
 	// idle before it is reaped and everything it staged is discarded. Zero
 	// selects DefaultXTxIdleTimeout; a negative value disables reaping. DB-wide.
@@ -286,6 +290,8 @@ type WatchEvent struct {
 type Collection struct {
 	name      string
 	dir       string
+	diskDir   string
+	dirHandle *os.File // pins dir on Linux; see openContainedDir
 	cfg       CollectionConfig
 	createdAt time.Time
 	mu        sync.RWMutex
@@ -402,12 +408,23 @@ type Collection struct {
 // It loads the persisted index (rebuilding from segments if stale),
 // and starts the background compactor goroutine.
 func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, error) {
-	if isReservedXTxName(name) {
-		return nil, fmt.Errorf("collection %q: %w", name, ErrReservedName)
+	if real, err := resolveRoot(dataDir); err == nil {
+		dataDir = real
 	}
-	dir := filepath.Join(dataDir, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("collection: mkdir %q: %w", dir, err)
+	if err := ValidateCollectionName(name); err != nil {
+		// A name that fails the strict grammar may still be opened when it is
+		// already a real directory on disk (legacy-named, D1); it is never
+		// created.
+		if validateLegacyName(name) != nil {
+			return nil, err
+		}
+		if exists, uerr := realDirExists(filepath.Join(dataDir, name)); uerr != nil || !exists {
+			return nil, err
+		}
+	}
+	dir, diskDir, dirHandle, err := openContainedDir(dataDir, name)
+	if err != nil {
+		return nil, err
 	}
 
 	// Normalize config so a zero-valued CollectionConfig is safe to use.
@@ -460,17 +477,19 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	c := &Collection{
-		name:      name,
-		dir:       dir,
-		cfg:       cfg,
+		name:        name,
+		dir:         dir,
+		diskDir:     diskDir,
+		dirHandle:   dirHandle,
+		cfg:         cfg,
 		decisions:   cfg.decisions,
 		decisionsFn: cfg.decisionsFn,
-		index:     newIndex(),
-		sidxMap:   make(map[string]*SecondaryIndex),
-		watchers:  make(map[uint64]*watcher),
-		compactC:  make(chan struct{}, 1),
-		closed:    make(chan struct{}),
-		persistC:  make(chan struct{}, 1),
+		index:       newIndex(),
+		sidxMap:     make(map[string]*SecondaryIndex),
+		watchers:    make(map[uint64]*watcher),
+		compactC:    make(chan struct{}, 1),
+		closed:      make(chan struct{}),
+		persistC:    make(chan struct{}, 1),
 
 		sealedCov: make(map[string]SegmentCoverage),
 	}
@@ -479,6 +498,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		if c.active != nil {
 			_ = c.active.Close()
 		}
+		_ = c.dirHandle.Close()
 		return nil, err
 	}
 
@@ -486,6 +506,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	// key-check for an already-encrypted collection, or enable and persist a new
 	// policy. A wrong key/passphrase fails fast here rather than on first read.
 	if err := c.initEncryption(cfg); err != nil {
+		_ = c.dirHandle.Close()
 		return nil, err
 	}
 
@@ -1704,6 +1725,14 @@ func (c *Collection) Close() error {
 	if c == nil {
 		return nil
 	}
+	defer func() {
+		// Keep the descriptor open after Close on Linux so descriptor-rooted
+		// paths retained by tests and in-memory metadata remain valid until
+		// process exit. Durable metadata stores collection-relative names.
+		if c.dirHandle != nil && c.dir == c.diskDir {
+			_ = c.dirHandle.Close()
+		}
+	}()
 	c.closeOnce.Do(func() { close(c.closed) })
 	// Wait for any in-flight compaction pass to complete (segment swap and
 	// index persist included) before writing the final index. Closing c.closed
