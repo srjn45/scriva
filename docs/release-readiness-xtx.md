@@ -106,3 +106,9 @@ passes under `make test` with the race detector. An earlier attempt hit the
 before tagging, on an idle machine:
 `SCRIVA_KILL_SOAK=1 go test ./engine -race -count=1 -run TestKill9 -timeout 3h`.
 
+## Journal damage recovery contract hardening (v1.5.1)
+
+Follow-up hardening addressed destructive transaction journal loss (Warden PR #917 regression contract `TestJournalDamage`):
+* PR #179: Deterministic regression reproducer and damage state taxonomy in `docs/journal-damage-contract.md` and `engine/xtx_damage_test.go`.
+* PR #180: Fail-closed recovery in `engine/xtx_recovery.go` (`classifyXTxJournalBeforeOpen`) returning `ErrXTxRecoveryRequired` or `ErrXTxJournalMissing` on empty, zeroed, or missing journals when stamped runs exist.
+* Validation: `make test`, `make vet`, `make lint`, `make deps-check`, repeated XTx tests (`-count=3`), and model harness soaks all green.
