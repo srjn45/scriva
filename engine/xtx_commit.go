@@ -19,6 +19,10 @@ type XTxOp struct {
 	Data        map[string]any `json:"data,omitempty"`
 	ExpectedRev uint64         `json:"expected_rev,omitempty"`
 	ExpiresAt   int64          `json:"expires_at,omitempty"`
+
+	// ts, when non-zero, is the shared record timestamp of a single-collection
+	// batch (InsertMany returns it to the caller). Zero means "now".
+	ts time.Time
 }
 
 // XTxOpResult is the committed outcome of one operation.
@@ -474,7 +478,11 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 	// With replication enabled the transaction is published as one envelope.
 	// Normalizing the payload and enforcing its size bound happens here, before
 	// any byte is written, so a transaction that commits can always be published.
-	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
+	if len(ops) > 0 && !ops[0].ts.IsZero() {
+		now = ops[0].ts.UTC()
+	}
+	nowStr := now.Format(time.RFC3339Nano)
 	var envOps []TxEnvelopeOp
 	if db.broker != nil {
 		nowTs, _ := time.Parse(time.RFC3339Nano, nowStr)

@@ -449,6 +449,7 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 			return fmt.Errorf("db: open collection %q: %w", name, err)
 		}
 		col.broker = db.broker
+		col.db = db
 		db.collections[name] = col
 	}
 
