@@ -305,3 +305,95 @@ a follower that cannot speak protocol v2 is refused with
 `REPLICATION_PROTOCOL_UNSUPPORTED` when the first transaction would reach it,
 never fed per-entry records.
 
+---
+
+## Segment rotation errors and fenced collections
+
+This section provides operator guidance and a runbook for managing segment rotation failures, post-commit rotation warnings, and fenced collections.
+
+### Understanding rotation errors vs. fencing
+
+Segment rotation is an ancillary step executed *after* a write has durably committed and updated indexes:
+- **Ancillary Warning (`*PostCommitError` / `Scriva-Post-Commit-Warning`)**:
+  - The write was **durable and committed**.
+  - If new segment creation fails but fallback reopen of the old segment succeeds, or if `meta.json` persist fails, the collection is **NOT fenced**. It continues accepting subsequent reads and writes.
+  - Clients observe `codes.OK` with the `scriva-post-commit-warning` trailer (REST: HTTP 200 with `Scriva-Post-Commit-Warning` header; CLI: exit 0 with stderr warning).
+  - Operator action: investigate disk space, file permissions, or OS limits before an unrecoverable failure occurs.
+- **Fail-Stop Fencing (`COLLECTION_FENCED`)**:
+  - Occurs when rotation hits an unrecoverable state:
+    1. Active segment seal sync failure (`Sync()` error).
+    2. Unrecoverable rotation failure (new segment creation failed AND fallback reopen failed).
+    3. Directory fsync failure (`fsyncDir` failed after installing new segment).
+  - The collection transitions to **fenced**: all subsequent reads and writes on that collection fail closed with `FAILED_PRECONDITION` / `COLLECTION_FENCED` (`retry_safe: false`).
+  - Read-only admin operations (`Close`, `Stats`, `Verify`) remain permitted; compaction, index changes, and snapshot are refused.
+  - Other unaffected collections continue operating normally.
+
+### Monitoring & alerts
+
+| Metric / Symptom | Severity | Meaning | Operator Action |
+|---|---|---|---|
+| `scriva_write_outcome_unknown_total{op="seal"}` | High / Alert | Segment seal sync failed; collection fenced | Trigger failover or run restart runbook below |
+| `scriva_write_outcome_unknown_total{op="rotate"}` | High / Alert | Directory fsync failed or fallback reopen failed; collection fenced | Resolve disk/system error and restart |
+| `Scriva-Post-Commit-Warning` header / trailer | Warning | Ancillary rotation failure (fallback or meta persist) | Check disk capacity and file permissions |
+| Client receives `COLLECTION_FENCED` (exit code 4) | High / Alert | Traffic to collection is blocked fail-stop | Restart server after remediating storage |
+
+### Operator Runbook: Recovering a Fenced Collection
+
+When a collection is fenced due to a rotation or seal failure (`op="seal"` or `op="rotate"`):
+
+**1. Identify the failing collection and error cause:**
+Check the server log for the initial fence event:
+```
+level=ERROR msg="collection fenced" collection=users op=seal err="input/output error"
+# or
+level=ERROR msg="collection fenced" collection=orders op=rotate err="no space left on device"
+```
+
+**2. Inspect storage health and host resources:**
+Inspect the storage volume housing the ScrivaDB data directory:
+```bash
+# Check disk space
+df -h /var/lib/scriva/data
+
+# Check inode usage
+df -i /var/lib/scriva/data
+
+# Check kernel dmesg for hardware / filesystem errors
+dmesg -T | grep -E "I/O error|EXT4|XFS|btrfs"
+
+# Check open file descriptor counts and ulimits
+lsof -p $(pgrep scriva) | wc -l
+ulimit -n
+```
+
+**3. Remediate the underlying system fault:**
+- **No space left on device (`ENOSPC`):** Expand the storage volume or purge non-essential files on the volume.
+- **Permission denied / read-only filesystem:** Restore write permissions or remount the volume read-write (`mount -o remount,rw ...`).
+- **File descriptor exhaustion (`EMFILE`):** Raise `LimitNOFILE` in the systemd unit or container spec.
+- **I/O hardware error (`EIO`):** If running a replicated cluster, initiate [manual failover](#manual-failover-promoting-a-follower) to a healthy follower.
+
+**4. Restart ScrivaDB:**
+Once the underlying storage fault is resolved, restart the ScrivaDB process:
+```bash
+systemctl restart scriva
+# or
+docker restart scriva
+```
+During startup:
+- ScrivaDB validates all segment files and verifies CRC32C checksums.
+- Any incomplete or torn final lines from un-synced writes are trimmed.
+- The highest segment is reopened as the active segment.
+- Even if `meta.json` was missing or stale, startup recovery scans segment tails to restore `maxID`, preventing ID counter reuse.
+- The fail-stop fence is cleared, restoring full read/write availability.
+
+**5. Post-restart verification:**
+Run `scriva verify` offline or against the active data directory to confirm segment and index integrity:
+```bash
+scriva-cli --data /var/lib/scriva/data --collection <collection-name> verify --mode full
+```
+Confirm the collection serves reads and writes:
+```bash
+scriva-cli --host 127.0.0.1:5433 collection stats <collection-name>
+```
+
+

@@ -1130,6 +1130,15 @@ func TestRotation_AncillaryBoundary_MetadataPersistFailure(t *testing.T) {
 			t.Fatalf("record %d missing on reopen: %v", recID, err)
 		}
 	}
+
+	// Verify reopen recovers maxID: next insert must strictly advance without ID reuse.
+	id3, _, err := col2.Insert(map[string]any{"v": 3})
+	if err != nil {
+		t.Fatalf("insert on reopened collection after meta persist failure: %v", err)
+	}
+	if id3 <= id2 {
+		t.Fatalf("id counter not recovered from segments: id3=%d, want > id2=%d", id3, id2)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -1216,3 +1225,215 @@ func TestRotation_LiveStateAndRepeatedReopen_CrashAndPowerLoss(t *testing.T) {
 		_ = reopenedDB.Close()
 	}
 }
+
+func TestRotation_SubsequentWrites_RotationSuccess_CleanCrashPowerLoss(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fs := newFaultFS()
+	cfg := CollectionConfig{
+		SyncMode:            SyncModeAlways,
+		SegmentMaxSize:      1,
+		ReplicationRingSize: 64,
+	}
+
+	db, col := openFaulty(t, dir, fs, cfg)
+	t.Cleanup(func() { _ = db.Close() })
+
+	col.mu.RLock()
+	seg1Path := col.active.Path()
+	col.mu.RUnlock()
+
+	id1, _, err := col.InsertWithKey("k1", map[string]any{"v": 10})
+	if err != nil {
+		t.Fatalf("insert k1: %v", err)
+	}
+
+	// Active segment must have rotated to seg_000002.
+	col.mu.RLock()
+	seg2Path := col.active.Path()
+	col.mu.RUnlock()
+	if seg2Path == seg1Path {
+		t.Fatalf("active segment did not rotate: %s == %s", seg2Path, seg1Path)
+	}
+
+	// Subsequent write succeeds on the new segment:
+	id2, _, err := col.InsertWithKey("k2", map[string]any{"v": 20})
+	if err != nil {
+		t.Fatalf("subsequent insert k2: %v", err)
+	}
+	if id2 <= id1 {
+		t.Fatalf("id2 %d not greater than id1 %d", id2, id1)
+	}
+
+	// Verify recovery across clean, crash, and power loss with repeated passes:
+	for _, powerLoss := range []bool{false, true} {
+		img := t.TempDir()
+		if powerLoss {
+			powerLossImage(t, fs, dir, img)
+		} else {
+			copyTree(t, dir, img)
+		}
+
+		var views [2]imageView
+		for pass := 0; pass < 2; pass++ {
+			views[pass] = openImage(t, img, id2, "k2")
+			if views[pass].OpenErr != nil {
+				t.Fatalf("powerLoss=%v pass=%d openErr = %v", powerLoss, pass, views[pass].OpenErr)
+			}
+			if views[pass].BadLines != 0 {
+				t.Fatalf("powerLoss=%v pass=%d BadLines = %d, want 0", powerLoss, pass, views[pass].BadLines)
+			}
+			if !views[pass].State.Visible || views[pass].State.V != 20 {
+				t.Fatalf("powerLoss=%v pass=%d state = %+v, want v=20", powerLoss, pass, views[pass].State)
+			}
+		}
+		if views[0].State != views[1].State {
+			t.Fatalf("powerLoss=%v recovery not idempotent: %+v vs %+v", powerLoss, views[0].State, views[1].State)
+		}
+
+		// Reopen and verify subsequent insert works and advances ID without reuse:
+		reopenedDB, err := Open(img, CollectionConfig{})
+		if err != nil {
+			t.Fatalf("reopen for writing: %v", err)
+		}
+		reopenedCol, err := reopenedDB.Collection("c")
+		if err != nil {
+			t.Fatalf("reopened collection: %v", err)
+		}
+		newID, _, err := reopenedCol.Insert(map[string]any{"v": 30})
+		if err != nil {
+			t.Fatalf("insert on reopened collection: %v", err)
+		}
+		if newID <= id2 {
+			t.Fatalf("newID %d not greater than id2 %d", newID, id2)
+		}
+		_ = reopenedDB.Close()
+	}
+}
+
+func TestRotation_SubsequentWrites_FallbackActiveSegment_CleanCrashPowerLoss(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fs := newFaultFS()
+	var failCreate atomic.Bool
+	cfg := CollectionConfig{
+		SyncMode:            SyncModeAlways,
+		SegmentMaxSize:      1,
+		ReplicationRingSize: 64,
+		CompactInterval:     24 * time.Hour,
+		renameFn:            fs.rename,
+		wrapFile: func(path string, real segFile) segFile {
+			f := fs.wrap(path, real)
+			return &faultySegFile{
+				segFile: f,
+				onStat: func() (os.FileInfo, error) {
+					if failCreate.Load() && strings.Contains(path, "seg_000002") {
+						return nil, syscall.EIO
+					}
+					return f.Stat()
+				},
+			}
+		},
+	}
+
+	db, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	col, err := db.CreateCollection("c")
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	col.mu.RLock()
+	seg1Path := col.active.Path()
+	col.mu.RUnlock()
+
+	// Arm creation failure for the next segment:
+	failCreate.Store(true)
+	id1, _, opErr := col.InsertWithKey("k1", map[string]any{"v": 100})
+	var pce *PostCommitError
+	if !errors.Is(opErr, ErrPostCommit) || !errors.As(opErr, &pce) {
+		t.Fatalf("opErr = %v, want *PostCommitError", opErr)
+	}
+
+	// Collection remains unfenced:
+	if col.Fenced() != nil {
+		t.Fatalf("collection fenced after fallback: %v", col.Fenced())
+	}
+
+	// Active segment remains on old segment, unsealed:
+	col.mu.RLock()
+	activeSeg := col.active
+	activePath := activeSeg.Path()
+	isSealed := activeSeg.IsSealed()
+	col.mu.RUnlock()
+	if activePath != seg1Path {
+		t.Fatalf("active segment path = %s, want %s", activePath, seg1Path)
+	}
+	if isSealed {
+		t.Fatal("fallback active segment must not be sealed")
+	}
+
+	// Disarm fault so subsequent write can operate cleanly:
+	failCreate.Store(false)
+
+	// Subsequent write succeeds on the fallback active segment:
+	id2, _, err := col.InsertWithKey("k2", map[string]any{"v": 200})
+	if err != nil {
+		t.Fatalf("subsequent insert on fallback active segment failed: %v", err)
+	}
+	if id2 <= id1 {
+		t.Fatalf("id2 %d not greater than id1 %d", id2, id1)
+	}
+
+	// Verify recovery across clean, crash, and power loss with repeated passes:
+	for _, powerLoss := range []bool{false, true} {
+		img := t.TempDir()
+		if powerLoss {
+			powerLossImage(t, fs, dir, img)
+		} else {
+			copyTree(t, dir, img)
+		}
+
+		var views [2]imageView
+		for pass := 0; pass < 2; pass++ {
+			views[pass] = openImage(t, img, id2, "k2")
+			if views[pass].OpenErr != nil {
+				t.Fatalf("powerLoss=%v pass=%d openErr = %v", powerLoss, pass, views[pass].OpenErr)
+			}
+			if views[pass].BadLines != 0 {
+				t.Fatalf("powerLoss=%v pass=%d BadLines = %d, want 0", powerLoss, pass, views[pass].BadLines)
+			}
+			if !views[pass].State.Visible || views[pass].State.V != 200 {
+				t.Fatalf("powerLoss=%v pass=%d state = %+v, want v=200", powerLoss, pass, views[pass].State)
+			}
+		}
+		if views[0].State != views[1].State {
+			t.Fatalf("powerLoss=%v recovery not idempotent: %+v vs %+v", powerLoss, views[0].State, views[1].State)
+		}
+
+		// Reopen and verify subsequent insert works and advances ID without reuse:
+		reopenedDB, err := Open(img, CollectionConfig{})
+		if err != nil {
+			t.Fatalf("reopen for writing: %v", err)
+		}
+		reopenedCol, err := reopenedDB.Collection("c")
+		if err != nil {
+			t.Fatalf("reopened collection: %v", err)
+		}
+		newID, _, err := reopenedCol.Insert(map[string]any{"v": 300})
+		if err != nil {
+			t.Fatalf("insert on reopened collection: %v", err)
+		}
+		if newID <= id2 {
+			t.Fatalf("newID %d not greater than id2 %d", newID, id2)
+		}
+		_ = reopenedDB.Close()
+	}
+}
+
