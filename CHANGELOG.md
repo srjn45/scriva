@@ -40,6 +40,14 @@ embedding-specific contract.
 
 ## [Unreleased]
 
+## v1.5.1 — 2026-10-18
+
+### Fixed
+
+- **Engine (cross-collection transactions):** fail closed on destructive XTx journal loss (`xtx.journal` empty, zeroed, or missing when stamped runs are present). Returns typed `ErrXTxRecoveryRequired` or `ErrXTxJournalMissing` on `Open` instead of attempting incomplete recovery that could expose mixed visible state across collections. Preserves atomicity guarantees (exact PRE, exact POST, or typed refusal). Documented in `docs/journal-damage-contract.md` (#179, #180).
+
+## v1.5.0 — 2026-10-11
+
 - **Cross-collection transactions (additive, v1.5 candidate):** atomic, durable, crash-recoverable writes across several collections of one database — `BeginXTx` / `StageXTx` / `GetXTx` / `CommitXTx` / `RollbackXTx` / `XTxStatus` (gRPC + REST), `scriva-cli begin-xtx …`, `db.Transact` when embedded; optimistic point-read/write validation with typed conflicts, idempotency keys, and `XTX_OUTCOME_UNKNOWN` resolved via `XTxStatus` (an unknown outcome is never converted to an abort). Replicated as one protocol-v2 record with one LSN; legacy followers get a typed `REPLICATION_PROTOCOL_UNSUPPORTED` refusal. Metrics `scriva_xtx_*` and `scriva_replication_tx_*`. A database that never runs an XTx is byte-identical to before. **Not downgradable** once a root holds transaction state — see the playbook in [`docs/operations.md`](docs/operations.md#upgrade-downgrade-and-recovery-playbook) and the release-readiness report [`docs/release-readiness-xtx.md`](docs/release-readiness-xtx.md).
 - **Engine (cross-collection transactions):** `Open` now refuses a root that has stamped transaction runs but neither `xtx.journal` nor `xtx.format` (`ErrXTxJournalMissing`) instead of adopting the stamped entries as an ordinary legacy root; `Repair` returns the precise `ErrFormatTooNew` / `ErrXTxUnsupported` / `ErrXTxFormatCorrupt` for a root whose `xtx.format` it cannot interpret. Added upgrade (v1.4.0 fixture) and downgrade/unsupported-version tests; see the new upgrade, downgrade and recovery playbook in `docs/operations.md`.
 - **Engine (fix):** compaction no longer aborts (`compacted output … exceeds input`) when a sealed segment is larger than `SegmentMaxSize` because a transaction batch was appended to it whole; the last permitted output segment absorbs the overflow. Found by the randomized soak (seed 5003).
