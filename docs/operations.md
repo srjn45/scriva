@@ -307,6 +307,39 @@ never fed per-entry records.
 
 ---
 
+### Runbook: `DropCollection` returns `PARTICIPANT_RETAINED`
+
+**Symptom.** `DropCollection` fails with gRPC `FAILED_PRECONDITION`, reason
+`PARTICIPANT_RETAINED` (embedded: `engine.ErrParticipantRetained`), with the
+blocking transaction ids in the error details.
+
+**What it means.** The coordinator journal (`xtx.journal`) holds committed
+cross-collection transactions that name this collection and are not retired. The
+journal needs the collection's files as recovery evidence: deleting them would
+make the database fail to reopen. The refusal is a fail-safe, taken under the
+exclusive DB lock before any side effect.
+
+**What is preserved.** Everything. Nothing is closed, renamed, removed or
+journaled; the collection stays open, readable and writable, the directory is
+byte-identical, and the refusal persists across restart and in restored
+snapshots.
+
+**What is not available yet.** Retirement of journal decisions at drop (which
+would let the drop proceed) is not implemented, and there is deliberately no
+force flag. Do **not** delete the directory by hand or edit `xtx.journal`; the
+root will fail to reopen (`ErrXTxRecoveryRequired` / `OpenIntegrityError`).
+
+**Safe options.**
+1. Keep the collection (empty or delete its records with normal deletes if the
+   data must go; the collection itself remains).
+2. If space is the concern, run compaction after deleting records.
+3. To discard the whole database, take it offline and remove the entire data
+   directory; do not remove individual participants.
+4. If a different collection that never took part in an XTx must go, drop it
+   normally; the refusal is per collection.
+
+Verify the root any time with `scriva verify`.
+
 ## Segment rotation errors and fenced collections
 
 This section provides operator guidance and a runbook for managing segment rotation failures, post-commit rotation warnings, and fenced collections.

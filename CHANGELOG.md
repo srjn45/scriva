@@ -42,6 +42,8 @@ embedding-specific contract.
 
 ### Added
 
+- **`DropCollection` refuses to drop XTx participants (hardening H6, interim fail-safe):** returns `ErrParticipantRetained` (gRPC `FAILED_PRECONDITION`, reason `PARTICIPANT_RETAINED`) while a non-retired committed cross-collection transaction names the collection; nothing is modified. Retirement at drop is not yet available, so there is no way to drop such a collection. See the "`PARTICIPANT_RETAINED`" runbook in `docs/operations.md`.
+- Documented lock hierarchy and drop/XTx/snapshot serialization (`docs/architecture.md`), with deterministic concurrency, snapshot, reopen and SIGKILL tests (`engine/drop_concurrency_test.go`).
 - **Write outcome durability contract & fail-stop collection fencing (hardening §2.3 / SR-D1):**
   - Typed engine write outcomes: `ErrWriteOutcomeUnknown`, `ErrCollectionFenced`, and `*PostCommitError` (`ErrPostCommit`).
   - Fail-stop collection fencing: on an active-segment `fsync` failure or poisoned segment rollback failure, the collection is fenced. Future reads and writes on that collection fail closed until server restart. Reopen recovers fully flushed entries and trims incomplete tails.
@@ -69,6 +71,7 @@ embedding-specific contract.
 
 ### Fixed
 
+- Data race on the lazily created cross-collection transaction journal pointer: `DropCollection`, `CreateCollection`, `SnapshotTo` and `Close` now read it under its leaf mutex while a first `CommitXTx` creates it.
 - **Engine (cross-collection transactions):** fail closed on destructive XTx journal loss (`xtx.journal` empty, zeroed, or missing when stamped runs are present). Returns typed `ErrXTxRecoveryRequired` or `ErrXTxJournalMissing` on `Open` instead of attempting incomplete recovery that could expose mixed visible state across collections. Preserves atomicity guarantees (exact PRE, exact POST, or typed refusal). Documented in `docs/journal-damage-contract.md` (#179, #180).
 
 ## v1.5.0 — 2026-10-11
