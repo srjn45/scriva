@@ -68,6 +68,9 @@ func TestXTxStatusErrMapping(t *testing.T) {
 		{"quota", fmt.Errorf("%w: docs", engine.ErrResourceExhausted), codes.ResourceExhausted, xtxapi.ReasonResourceExhausted, "true"},
 		{"duplicate key", fmt.Errorf("%w", engine.ErrDuplicateKey), codes.AlreadyExists, xtxapi.ReasonDuplicateKey, "false"},
 		{"integrity", fmt.Errorf("%w", engine.ErrIntegrity), codes.DataLoss, xtxapi.ReasonDataLoss, "false"},
+		// A fenced participant aborts pre-decision (ErrXTxDurability wrapping
+		// ErrCollectionFenced) but must not read as the retry-safe UNAVAILABLE.
+		{"fenced participant", wrap(engine.ErrXTxDurability, fmt.Errorf("%w: collection \"a\"", engine.ErrCollectionFenced)), codes.FailedPrecondition, xtxapi.ReasonCollectionFenced, "false"},
 		{"other", errors.New("boom"), codes.Internal, xtxapi.ReasonInternal, "false"},
 	}
 	for _, tc := range cases {

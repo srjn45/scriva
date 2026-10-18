@@ -296,6 +296,7 @@ func xtxStatus(code codes.Code, reason, msg string, meta map[string]string) erro
 //	handle finished          FAILED_PRECONDITION  XTX_FINISHED
 //	read-only follower       FAILED_PRECONDITION  XTX_READ_ONLY
 //	unsupported XTx state    FAILED_PRECONDITION  XTX_UNSUPPORTED
+//	fenced participant       FAILED_PRECONDITION  COLLECTION_FENCED            NOT retry-safe until reopen
 //	quota                    RESOURCE_EXHAUSTED   XTX_RESOURCE_EXHAUSTED       retry-safe
 //	unique index             ALREADY_EXISTS       XTX_DUPLICATE_KEY
 //	integrity                DATA_LOSS            XTX_DATA_LOSS
@@ -332,6 +333,13 @@ func xtxStatusErr(err error, ref string) error {
 	case errors.Is(err, engine.ErrXTxExpired):
 		meta[xtxapi.MetaRetrySafe] = "true" // nothing it staged was ever written
 		return xtxStatus(codes.FailedPrecondition, xtxapi.ReasonExpired, msg, meta)
+
+	// A fenced participant (§2.3) aborts before any byte, but re-running the
+	// transaction cannot succeed until the server reopens the collection, so it
+	// is checked ahead of the retry-safe durability abort that wraps it.
+	case errors.Is(err, engine.ErrCollectionFenced):
+		meta[xtxapi.MetaRetrySafe] = "false"
+		return xtxStatus(codes.FailedPrecondition, xtxapi.ReasonCollectionFenced, msg, meta)
 
 	case errors.Is(err, engine.ErrXTxConflict):
 		var ce *engine.XTxConflictError

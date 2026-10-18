@@ -187,7 +187,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 			return nil, status.Error(codes.InvalidArgument, "per-record ttl_seconds is not supported with a keyed insert")
 		}
 		id, ts, err := col.InsertWithKey(req.Key, req.Data.AsMap())
-		if err != nil {
+		if err = committed(ctx, err); err != nil {
 			return nil, s.keyedWriteErr(req.Collection, err)
 		}
 		return &pb.InsertResponse{Id: id, DateAdded: ts.Format(time.RFC3339), Key: req.Key, Rev: 1}, nil
@@ -211,7 +211,7 @@ func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.Ins
 
 	data := req.Data.AsMap()
 	id, ts, err := col.InsertWithExpiry(data, ttlDeadline(req.TtlSeconds))
-	if err != nil {
+	if err = committed(ctx, err); err != nil {
 		return nil, s.writeErr(req.Collection, "insert", err)
 	}
 	// A fresh, keyless insert always starts at revision 1 and carries no key.
@@ -237,7 +237,7 @@ func (s *GRPCServer) InsertMany(ctx context.Context, req *pb.InsertManyRequest) 
 	// InsertMany is atomic: the batch is quota-checked as a whole, so a batch
 	// that would breach the collection's budget is refused with nothing written.
 	ids, _, err := col.InsertMany(records, deadline)
-	if err != nil {
+	if err = committed(ctx, err); err != nil {
 		return nil, s.writeErr(req.Collection, "insertMany", err)
 	}
 	return &pb.InsertManyResponse{Ids: ids}, nil
@@ -256,7 +256,7 @@ func (s *GRPCServer) FindById(ctx context.Context, req *pb.FindByIdRequest) (*pb
 		if errors.Is(err, engine.ErrIndexCorrupt) {
 			return nil, status.Errorf(codes.DataLoss, "%v", err)
 		}
-		return nil, notFoundOrInvalid(err)
+		return nil, opErr(req.Collection, err)
 	}
 	// Field projection (N2): id/key/rev are passed separately and always kept.
 	rec, err := toProtoRecord(r.ID, r.Key, r.Rev, engine.ProjectData(r.Data, req.Fields), r.Ts)
@@ -327,6 +327,9 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.Scriva_FindServer) erro
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return status.FromContextError(err).Err()
+		}
+		if st := outcomeStatus(req.Collection, err); st != nil {
+			return st
 		}
 		if errors.Is(err, engine.ErrInvalidPageToken) {
 			return status.Errorf(codes.InvalidArgument, "%v", err)
@@ -445,8 +448,8 @@ func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.Upd
 	} else {
 		ts, err = col.Update(req.Id, req.Data.AsMap())
 	}
-	if err != nil {
-		return nil, notFoundOrInvalid(err)
+	if err = committed(ctx, err); err != nil {
+		return nil, opErr(req.Collection, err)
 	}
 	resp := &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}
 	// Surface the record's key and post-write revision best-effort.
@@ -477,8 +480,8 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 		return &pb.DeleteResponse{Ok: true}, nil
 	}
 
-	if err := col.Delete(req.Id); err != nil {
-		return nil, notFoundOrInvalid(err)
+	if err := committed(ctx, col.Delete(req.Id)); err != nil {
+		return nil, opErr(req.Collection, err)
 	}
 	return &pb.DeleteResponse{Ok: true}, nil
 }
@@ -500,7 +503,7 @@ func (s *GRPCServer) Upsert(ctx context.Context, req *pb.UpsertRequest) (*pb.Ups
 		return nil, notFoundOrInvalid(err)
 	}
 	rec, err := col.Upsert(req.Key, req.Data.AsMap())
-	if err != nil {
+	if err = committed(ctx, err); err != nil {
 		return nil, s.keyedWriteErr(req.Collection, err)
 	}
 	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, rec.Data, rec.Ts)
@@ -521,7 +524,7 @@ func (s *GRPCServer) FindByKey(ctx context.Context, req *pb.FindByKeyRequest) (*
 	}
 	rec, err := col.GetByKey(req.Key)
 	if err != nil {
-		return nil, keyedErr(err)
+		return nil, keyedErr(req.Collection, err)
 	}
 	// Field projection (N2): id/key/rev are passed separately and always kept.
 	prec, err := toProtoRecord(rec.ID, rec.Key, rec.Rev, engine.ProjectData(rec.Data, req.Fields), rec.Ts)
@@ -542,8 +545,8 @@ func (s *GRPCServer) UpdateByKey(ctx context.Context, req *pb.UpdateByKeyRequest
 		return nil, notFoundOrInvalid(err)
 	}
 	ts, err := col.UpdateByKey(req.Key, req.Data.AsMap())
-	if err != nil {
-		return nil, keyedErr(err)
+	if err = committed(ctx, err); err != nil {
+		return nil, keyedErr(req.Collection, err)
 	}
 	resp := &pb.UpdateResponse{DateModified: ts.Format(time.RFC3339), Key: req.Key}
 	// Surface the record's id and post-write revision best-effort.
@@ -562,8 +565,8 @@ func (s *GRPCServer) DeleteByKey(ctx context.Context, req *pb.DeleteByKeyRequest
 	if err != nil {
 		return nil, notFoundOrInvalid(err)
 	}
-	if err := col.DeleteByKey(req.Key); err != nil {
-		return nil, keyedErr(err)
+	if err := committed(ctx, col.DeleteByKey(req.Key)); err != nil {
+		return nil, keyedErr(req.Collection, err)
 	}
 	return &pb.DeleteResponse{Ok: true}, nil
 }
@@ -581,8 +584,8 @@ func (s *GRPCServer) UpdateIfRev(ctx context.Context, req *pb.UpdateIfRevRequest
 		return nil, notFoundOrInvalid(err)
 	}
 	swapped, err := col.UpdateIfRev(req.Key, req.ExpectedRev, req.Data.AsMap())
-	if err != nil {
-		return nil, keyedErr(err)
+	if err = committed(ctx, err); err != nil {
+		return nil, keyedErr(req.Collection, err)
 	}
 	resp := &pb.UpdateIfRevResponse{Swapped: swapped}
 	if swapped {
@@ -606,6 +609,9 @@ func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) 
 		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.EnsureIndex(req.Field); err != nil {
+		if st := outcomeStatus(req.Collection, err); st != nil {
+			return nil, st
+		}
 		return nil, status.Errorf(codes.Internal, "ensure index: %v", err)
 	}
 	return &pb.EnsureIndexResponse{Collection: req.Collection, Field: req.Field}, nil
@@ -617,7 +623,7 @@ func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb
 		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.DropIndex(req.Field); err != nil {
-		return nil, notFoundOrInvalid(err)
+		return nil, opErr(req.Collection, err)
 	}
 	return &pb.DropIndexResponse{Ok: true}, nil
 }
@@ -644,6 +650,12 @@ func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.Scriva_WatchServer) e
 	f, err := protoFilterToQuery(req.Filter)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "filter: %v", err)
+	}
+
+	// A fenced collection publishes nothing until it is reopened; refuse the
+	// subscription rather than hold a stream that can never deliver.
+	if st := outcomeStatus(req.Collection, col.Fenced()); st != nil {
+		return st
 	}
 
 	_, ch, cancel := col.Subscribe()
@@ -756,6 +768,9 @@ func (s *GRPCServer) Aggregate(req *pb.AggregateRequest, stream pb.Scriva_Aggreg
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return status.FromContextError(err).Err()
 		}
+		if st := outcomeStatus(req.Collection, err); st != nil {
+			return st
+		}
 		if errors.Is(err, engine.ErrIndexCorrupt) {
 			return status.Errorf(codes.DataLoss, "%v", err)
 		}
@@ -801,6 +816,9 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 		return nil, notFoundOrInvalid(err)
 	}
 	if err := col.CompactNow(); err != nil {
+		if st := outcomeStatus(req.Collection, err); st != nil {
+			return nil, st
+		}
 		if errors.Is(err, engine.ErrCompactionDeferred) {
 			return nil, status.Error(codes.Unavailable, "compaction deferred by active scan; retry shortly")
 		}
@@ -815,6 +833,9 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.Scriva_SnapshotServer) error {
 	bw := bufio.NewWriterSize(&snapshotChunkWriter{stream: stream}, 64*1024)
 	if err := s.db.SnapshotTo(bw); err != nil {
+		if st := outcomeStatus("", err); st != nil {
+			return st
+		}
 		return status.Errorf(codes.Internal, "snapshot: %v", err)
 	}
 	if err := bw.Flush(); err != nil {
@@ -1034,7 +1055,12 @@ func (s *GRPCServer) CommitTx(ctx context.Context, req *pb.CommitTxRequest) (*pb
 	ops := tx.Snapshot()
 	s.txMgr.Remove(req.TxId)
 	s.owners.forget(req.TxId)
-	if err := col.CommitTx(ops); err != nil {
+	if err := committed(ctx, col.CommitTx(ops)); err != nil {
+		// Checked first: a fenced collection or an unknown outcome must never
+		// read as the retry-safe ABORTED below.
+		if st := outcomeStatus(tx.Collection, err); st != nil {
+			return nil, st
+		}
 		if errors.Is(err, engine.ErrResourceExhausted) {
 			if s.onQuotaReject != nil {
 				s.onQuotaReject(tx.Collection)
@@ -1109,6 +1135,9 @@ func keyOf(data map[string]any) string {
 // other error falls back to Internal, tagged with action for context. Used by
 // the keyless write paths (Insert/InsertMany/tx commit).
 func (s *GRPCServer) writeErr(collection, action string, err error) error {
+	if st := outcomeStatus(collection, err); st != nil {
+		return st
+	}
 	if errors.Is(err, engine.ErrResourceExhausted) {
 		if s.onQuotaReject != nil {
 			s.onQuotaReject(collection)
@@ -1125,7 +1154,10 @@ func (s *GRPCServer) writeErr(collection, action string, err error) error {
 // gRPC status codes: a missing key is NOT_FOUND, a duplicate key is
 // ALREADY_EXISTS, and an attempt to set the reserved _key field via data or an
 // oversized record is INVALID_ARGUMENT. Anything else is Internal.
-func keyedErr(err error) error {
+func keyedErr(collection string, err error) error {
+	if st := outcomeStatus(collection, err); st != nil {
+		return st
+	}
 	switch {
 	case errors.Is(err, engine.ErrIndexCorrupt):
 		return status.Error(codes.DataLoss, err.Error())
@@ -1151,7 +1183,17 @@ func (s *GRPCServer) keyedWriteErr(collection string, err error) error {
 	if errors.Is(err, engine.ErrResourceExhausted) && s.onQuotaReject != nil {
 		s.onQuotaReject(collection)
 	}
-	return keyedErr(err)
+	return keyedErr(collection, err)
+}
+
+// opErr maps the error of an id-addressed engine operation (Get, Update,
+// Delete, DropIndex): an outcome-unknown or fenced error first, then
+// notFoundOrInvalid.
+func opErr(collection string, err error) error {
+	if st := outcomeStatus(collection, err); st != nil {
+		return st
+	}
+	return notFoundOrInvalid(err)
 }
 
 func protoFilterToQuery(f *pb.Filter) (query.Filter, error) {

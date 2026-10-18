@@ -318,6 +318,85 @@ before the OS flushes. Use `interval` or `always` when that matters. See
 [architecture.md](architecture.md#durability) for details. Benchmark the
 trade-off on your own hardware with `make bench`.
 
+### Write errors and safe retries
+
+Every write ends in one of four outcomes. Three of them you can act on
+mechanically; only one needs a decision:
+
+| Outcome | gRPC | REST | `scriva-cli` | What to do |
+|---|---|---|---|---|
+| **Success** | `OK` | 2xx | exit 0 | nothing |
+| **Not applied** — validation, not-found, duplicate key, quota, a write that failed and was cleanly rolled back | the usual code (`INVALID_ARGUMENT`, `NOT_FOUND`, `ALREADY_EXISTS`, `RESOURCE_EXHAUSTED`, …) | 4xx/5xx | exit 1 | nothing was written; fix the request or retry |
+| **Committed with a warning** — the write is durable, but the segment rotation after it failed | `OK` plus header/trailer `scriva-post-commit-warning` | 2xx plus header `Scriva-Post-Commit-Warning` | exit 0, warning on stderr | treat as success; **do not retry**; check the server log and disk |
+| **Outcome unknown** — the write reached the disk but its `fsync` failed (or a failed write could not be rolled back) | `UNKNOWN`, reason `WRITE_OUTCOME_UNKNOWN` | 500 | exit 3 | **do not blind-retry**; resolve it as below |
+
+After an unknown outcome the server **fences** the collection: every later read
+and write on it returns `FAILED_PRECONDITION`, reason `COLLECTION_FENCED` (REST
+400, CLI exit 4) — including a cross-collection transaction that names it —
+until the server is restarted. Other collections keep working; `CollectionStats`
+still answers. The engine never retries an `fsync` (after a failed `fsync` a
+later successful one proves nothing), so the only recovery is a restart:
+
+1. Fix the cause (disk full, failing device — see the server log and
+   `scriva_write_outcome_unknown_total{collection,op}`).
+2. Restart the server. Recovery keeps a write whose bytes fully reached the
+   file — *even though its caller got an error* — and trims a torn one. Under
+   `--sync always` a power loss may also drop it.
+3. Resolve each unknown write (below), then resume.
+
+Both reasons ride in a `google.rpc.ErrorInfo` detail (domain `scriva.write`,
+metadata `collection`, `retry_safe: "false"`); over REST it is in the `details`
+array of the error body:
+
+```json
+{"code": 2, "message": "collection: insert: engine: write outcome unknown: …",
+ "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+   "reason": "WRITE_OUTCOME_UNKNOWN", "domain": "scriva.write",
+   "metadata": {"collection": "orders", "retry_safe": "false"}}]}
+```
+
+**Resolving an unknown outcome.** Single-record writes have no operation id, so
+they are at-least-once: decide by reading back once the collection is open again.
+
+| The write was | Recipe |
+|---|---|
+| keyed insert (`Insert` with `key`) | `FindByKey`: present → it applied. Or just `Upsert` the same data — repeating it is harmless |
+| update | read the record's `rev` before writing and use `UpdateIfRev(key, rev, data)`; if the first attempt applied, the retry is a clean `swapped=false` no-op |
+| delete | `FindById` / `FindByKey`: `NOT_FOUND` → it applied; deleting again is harmless either way |
+| id-less insert | at-least-once: retrying may create a duplicate. Give records a natural key (keyed insert) when that matters, or deduplicate on read |
+| `InsertMany` / `CommitTx` | not yet covered by this contract (see [architecture](architecture.md#mutation-semantics-at-a-glance)); for a batch that must be all-or-nothing and resolvable after a failure, use a [cross-collection transaction](#cross-collection-transactions) with an idempotency key and `XTxStatus` |
+
+A response that never arrives (timeout, connection reset, a proxy's bare
+`UNKNOWN`/`UNAVAILABLE`) is the same situation and gets the same recipe.
+
+**Go clients** (`github.com/srjn45/scriva/writeoutcome`) decode the status
+without parsing text:
+
+```go
+var trailer metadata.MD
+_, err := client.Insert(ctx, req, grpc.Trailer(&trailer))
+switch {
+case writeoutcome.IsOutcomeUnknown(err):   // errors.Is(writeoutcome.FromError(err), writeoutcome.ErrOutcomeUnknown)
+	// do not retry; read back after the server restarts
+case writeoutcome.IsCollectionFenced(err): // nothing applied; wait for a restart
+case err != nil:                          // ordinary error
+default:
+	if w, ok := writeoutcome.PostCommitWarning(trailer); ok {
+		log.Printf("committed with warning: %s", w)
+	}
+}
+```
+
+**Embedded** (`scriva.Open` / `engine`), the same outcomes are the engine
+sentinels: `errors.Is(err, engine.ErrWriteOutcomeUnknown)`,
+`errors.Is(err, engine.ErrCollectionFenced)`, and
+`errors.Is(err, engine.ErrPostCommit)` (a `*engine.PostCommitError`, returned
+together with the normal results — treat it as success). Reopen the database to
+recover a fenced collection.
+
+The other language SDKs surface these as their ordinary status errors with the
+code and reason above; they do not have typed helpers yet.
+
 ### Corruption at open: `--integrity-policy`
 
 After a crash, open replays the bytes appended since the last persisted index
@@ -706,6 +785,11 @@ cat users_backup.ndjson | scriva-cli import users
 | `--socket` | `/tmp/scriva.sock` | Unix socket path (used automatically when the file exists) |
 | `--api-key` | `$SCRIVA_API_KEY` | API key |
 | `--tls-ca` | *(none)* | Path to CA certificate PEM for TLS (enables TLS on TCP) |
+
+Exit codes: `0` success (a [post-commit warning](#write-errors-and-safe-retries)
+goes to stderr and still exits 0), `1` any ordinary error, `3` write outcome
+unknown (do not blind-retry), `4` collection fenced (nothing applied; restart
+the server).
 
 ---
 
@@ -1249,6 +1333,7 @@ it is in the `details` array of the error body.
 | `XTX_FINISHED` | `FAILED_PRECONDITION` | handle already committed, rolled back or failed | begin a new one |
 | `XTX_READ_ONLY` | `FAILED_PRECONDITION` | this node is a follower | on the leader |
 | `XTX_UNSUPPORTED` | `FAILED_PRECONDITION` | on-disk transaction state this binary cannot operate on | no |
+| `COLLECTION_FENCED` | `FAILED_PRECONDITION` | a participant is [fenced](#write-errors-and-safe-retries) by an earlier unknown write outcome; nothing applied | not until the server restarts |
 | `XTX_RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` | a collection quota would be exceeded; nothing applied | yes, once there is room |
 | `XTX_DUPLICATE_KEY` | `ALREADY_EXISTS` | a unique index would be violated; nothing applied | fix the data |
 | `XTX_DATA_LOSS` | `DATA_LOSS` | integrity failure | no |
