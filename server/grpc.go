@@ -139,6 +139,10 @@ func (s *GRPCServer) CreateCollection(_ context.Context, req *pb.CreateCollectio
 
 func (s *GRPCServer) DropCollection(_ context.Context, req *pb.DropCollectionRequest) (*pb.DropCollectionResponse, error) {
 	if err := s.db.DropCollection(req.Name); err != nil {
+		var pr *engine.ParticipantRetainedError
+		if errors.As(err, &pr) {
+			return nil, participantRetainedStatus(pr)
+		}
 		return nil, notFoundOrInvalid(err)
 	}
 	return &pb.DropCollectionResponse{Ok: true}, nil
