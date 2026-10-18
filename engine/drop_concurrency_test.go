@@ -599,7 +599,6 @@ func TestLockOrder_CommitDropSnapshotCompactConcurrent(t *testing.T) {
 	}
 
 	for w := int64(0); w < 2; w++ {
-		w := w
 		worker(w, func(rng *rand.Rand, i int) error {
 			s1, _ := db.Collection("s1")
 			s2, _ := db.Collection("s2")
@@ -637,7 +636,7 @@ func TestLockOrder_CommitDropSnapshotCompactConcurrent(t *testing.T) {
 		mu.Unlock()
 		if have {
 			if err := db.DropCollection("s1"); !errors.Is(err, ErrParticipantRetained) {
-				return fmt.Errorf("drop(s1) = %v, want ErrParticipantRetained", err)
+				return fmt.Errorf("drop(s1) = %w, want ErrParticipantRetained", err)
 			}
 		}
 		return nil
