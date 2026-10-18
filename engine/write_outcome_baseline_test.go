@@ -12,9 +12,11 @@ import (
 // ratified `want`; the rest against `today`, with the gap logged:
 //
 //	ratified: Insert, InsertWithKey, Update, Delete, Upsert, UpdateIfRev,
-//	  UpdateIfMatch, and UpdateByKey/DeleteByKey (shared update/Delete paths),
-//	  plus the SyncModeInterval syncLoop.
-//	TODO(background-and-replication-writes): reapExpired, applyEntry.
+//	  UpdateIfMatch, UpdateByKey/DeleteByKey (shared update/Delete paths),
+//	  reapExpired, applyEntry, plus the SyncModeInterval syncLoop.
+//
+// Every op is ratified now; the `today` column records the pre-fencing
+// behavior for reference and is no longer asserted.
 
 // writeOutcomeCase is one fault class with its current and ratified outcome.
 type writeOutcomeCase struct {

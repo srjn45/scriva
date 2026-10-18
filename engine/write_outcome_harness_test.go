@@ -180,15 +180,16 @@ func writeOutcomeOps() []writeOutcomeOp {
 			}},
 		{name: "DeleteByKey", followUp: bg, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(gone, -1), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.DeleteByKey("k1") }},
-		// The reaper publishes nothing to replication today (followers reap on
-		// their own clock); its delete is observable through the raw index.
-		{name: "reapExpired", followUp: bg, key: "k1", expired: true,
+		// The reaper's tombstone is committed like a Delete: synced, then
+		// dropped from the indexes, published and emitted. The expired base
+		// record is hidden before the pass; the delete shows in the raw index.
+		{name: "reapExpired", followUp: bg, ratified: true, key: "k1", expired: true,
 			old:    recState{Indexed: true, Rev: 1, Tag: "old", ByKey: -1},
 			new:    keyed(gone, -1),
-			events: 1, lsn: 0,
+			events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.reapExpired() }},
 		// A follower apply writes verbatim and never re-publishes.
-		{name: "applyEntry", followUp: bg, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 0,
+		{name: "applyEntry", followUp: bg, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 0,
 			run: func(e *woEnv) (uint64, error) {
 				en := store.NewUpdate(e.base, stampKey(woData(), "k1"))
 				en.Rev = 2

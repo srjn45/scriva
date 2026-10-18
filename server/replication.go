@@ -295,7 +295,9 @@ func NewFollower(db *engine.DB, client pb.ScrivaClient, id, apiKey string, logge
 // reconnects with backoff, resuming from the last applied LSN. It returns when
 // ctx is done, or without retrying when the leader reports FAILED_PRECONDITION
 // (the follower has fallen out of the leader's buffer and must be re-bootstrapped
-// from a fresh snapshot by the operator).
+// from a fresh snapshot by the operator), or when a local apply left a
+// collection fenced (outcome unknown: the follower must be restarted, and then
+// resumes from its applied LSN).
 func (f *Follower) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
@@ -308,7 +310,8 @@ func (f *Follower) Run(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, ErrEnvelopeApplyFailed) || errors.Is(err, ErrUnknownRecordVersion) ||
 				errors.Is(err, engine.ErrEnvelopeInvalid) || errors.Is(err, engine.ErrEnvelopeDigest) ||
-				IsReplicationProtocolError(err) {
+				IsReplicationProtocolError(err) ||
+				errors.Is(err, engine.ErrWriteOutcomeUnknown) || errors.Is(err, engine.ErrCollectionFenced) {
 				f.logger.Error("replication stopped: cannot process record; applied LSN not advanced",
 					"err", err, "applied_lsn", f.db.AppliedLSN())
 				return err
@@ -389,7 +392,13 @@ func (f *Follower) stream(ctx context.Context) error {
 		}
 		e := replRecordToEntry(rec)
 		if err := f.db.ApplyReplication(rec.Collection, e); err != nil {
-			return fmt.Errorf("apply lsn %d (%s): %w", rec.Lsn, rec.Collection, err)
+			// A post-commit failure (rotation) means the entry is applied: advance
+			// past it. Anything else leaves the applied LSN where it is.
+			if !errors.Is(err, engine.ErrPostCommit) {
+				return fmt.Errorf("apply lsn %d (%s): %w", rec.Lsn, rec.Collection, err)
+			}
+			f.logger.Warn("replicated entry applied; post-commit step failed",
+				"err", err, "lsn", rec.Lsn, "collection", rec.Collection)
 		}
 		if err := f.db.SetAppliedLSN(rec.Lsn); err != nil {
 			f.logger.Warn("persist applied lsn failed", "err", err, "lsn", rec.Lsn)
