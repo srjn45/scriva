@@ -1181,11 +1181,15 @@ func TestRotation_LiveStateAndRepeatedReopen_CrashAndPowerLoss(t *testing.T) {
 
 	for _, powerLoss := range []bool{false, true} {
 		img := t.TempDir()
+		// Rotation signals background compaction; hold compactMu so a pass
+		// cannot create/remove .compact_* files while the tree is copied.
+		col.compactMu.Lock()
 		if powerLoss {
 			powerLossImage(t, fs, dir, img)
 		} else {
 			copyTree(t, dir, img)
 		}
+		col.compactMu.Unlock()
 
 		// Open twice to prove idempotence and verify that recovery truncates
 		// no valid lines and introduces no corruption.
