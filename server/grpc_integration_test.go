@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -16,8 +17,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +39,7 @@ import (
 	"github.com/srjn45/scriva/internal/auth"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"github.com/srjn45/scriva/server"
+	"github.com/srjn45/scriva/writeoutcome"
 )
 
 // newTestServer spins up an in-process gRPC server backed by a real engine.DB
@@ -2266,4 +2270,650 @@ func TestIntegration_CollectionACL_ConfinesScopedKey(t *testing.T) {
 	if _, err := c.Insert(keyCtx("admin"), &pb.InsertRequest{Collection: "forbidden", Data: data}); err != nil {
 		t.Fatalf("admin Insert on forbidden: %v", err)
 	}
+}
+
+// ---- Write outcomes under injected I/O failure (hardening §2.3) ------------
+//
+// These tests run a real server over a real engine whose active-segment fsync
+// is failed on demand (engine.FaultInjector), and correlate the RPC result with
+// what every other observer sees: immediate reads, secondary-index queries,
+// Watch, the replication LSN, a follower, and the state after reopen.
+
+// woServer is an in-process server over a DB opened with a fault injector,
+// reopenable (without faults) on the same directory.
+type woServer struct {
+	t       *testing.T
+	dir     string
+	cfg     engine.CollectionConfig
+	fi      *engine.FaultInjector
+	db      *engine.DB
+	client  pb.ScrivaClient
+	addr    string
+	stop    func()
+	unknown atomic.Int32 // OnWriteOutcomeUnknown calls
+}
+
+// woConfig is SyncModeAlways (an acknowledged write is fsynced) with segments
+// of segMax bytes; segMax 1 rotates after every write.
+func woConfig(segMax int64) engine.CollectionConfig {
+	return engine.CollectionConfig{
+		SegmentMaxSize:      segMax,
+		CompactInterval:     time.Hour,
+		CompactDirtyPct:     0.99,
+		SyncMode:            engine.SyncModeAlways,
+		ReplicationRingSize: 1024,
+	}
+}
+
+func startWOServer(t *testing.T, cfg engine.CollectionConfig) *woServer {
+	t.Helper()
+	s := &woServer{t: t, dir: t.TempDir(), fi: engine.NewFaultInjector()}
+	cfg.OnWriteOutcomeUnknown = func(string, string) { s.unknown.Add(1) }
+	s.cfg = cfg
+	s.open(s.fi.Install(cfg))
+	return s
+}
+
+func (s *woServer) open(cfg engine.CollectionConfig) {
+	t := s.t
+	t.Helper()
+	db, err := engine.Open(s.dir, cfg)
+	if err != nil {
+		t.Fatalf("engine.Open: %v", err)
+	}
+	gs := server.NewGRPCServer(db, 5*time.Minute)
+	srv := grpc.NewServer()
+	pb.RegisterScrivaServer(srv, gs)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go srv.Serve(lis)
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			conn.Close()
+			srv.Stop()
+			gs.Close()
+			db.Close()
+		})
+	}
+	t.Cleanup(stop)
+	s.db, s.client, s.addr, s.stop = db, pb.NewScrivaClient(conn), lis.Addr().String(), stop
+}
+
+// reopen closes the server and the DB (Close is allowed on a fenced
+// collection) and reopens the directory with no fault injector: the recovery
+// a process restart performs. The page cache survives, so bytes a failed
+// fsync left in the file are visible to recovery.
+func (s *woServer) reopen() {
+	s.t.Helper()
+	s.stop()
+	s.open(s.cfg)
+}
+
+func (s *woServer) collection(name string) *engine.Collection {
+	s.t.Helper()
+	c, err := s.db.Collection(name)
+	if err != nil {
+		s.t.Fatalf("Collection(%q): %v", name, err)
+	}
+	return c
+}
+
+// woWatch opens a Watch on coll and returns a channel of its events. It
+// returns only once the subscription is live (a probe insert was observed).
+func woWatch(t *testing.T, c pb.ScrivaClient, coll string) <-chan *pb.WatchEvent {
+	t.Helper()
+	wctx, cancel := context.WithCancel(ctx())
+	t.Cleanup(cancel)
+	stream, err := c.Watch(wctx, &pb.WatchRequest{Collection: coll})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	ch := make(chan *pb.WatchEvent, 64)
+	go func() {
+		defer close(ch)
+		for {
+			ev, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			ch <- ev
+		}
+	}()
+	deadline := time.After(5 * time.Second)
+	for {
+		if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: coll, Data: mustStruct(t, map[string]any{"probe": true})}); err != nil {
+			t.Fatalf("probe insert: %v", err)
+		}
+		select {
+		case ev := <-ch:
+			if ev.GetRecord().GetData().AsMap()["probe"] == true {
+				for len(ch) > 0 { // drop further probes
+					<-ch
+				}
+				return ch
+			}
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("watch subscription never became live")
+		}
+	}
+}
+
+// assertNoEvent fails if ch delivers a record event within a short window.
+func assertNoEvent(t *testing.T, ch <-chan *pb.WatchEvent) {
+	t.Helper()
+	select {
+	case ev, ok := <-ch:
+		if ok {
+			t.Errorf("unexpected watch event after an unknown outcome: %v", ev)
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// assertOutcomeStatus checks code, ErrorInfo reason and the writeoutcome
+// decoding of err, and that it is not a retry-safe code.
+func assertOutcomeStatus(t *testing.T, what string, err error, code codes.Code, reason string) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: succeeded, want %v/%s", what, code, reason)
+		return
+	}
+	switch got := status.Code(err); got {
+	case codes.Aborted, codes.Unavailable, codes.ResourceExhausted:
+		t.Errorf("%s: retry-safe code %v for an outcome error: %v", what, got, err)
+	case code:
+	default:
+		t.Errorf("%s: code %v, want %v (%v)", what, got, code, err)
+	}
+	var we *writeoutcome.Error
+	switch {
+	case reason == writeoutcome.ReasonOutcomeUnknown && !writeoutcome.IsOutcomeUnknown(err):
+		t.Errorf("%s: writeoutcome.IsOutcomeUnknown = false for %v", what, err)
+	case reason == writeoutcome.ReasonCollectionFenced && !writeoutcome.IsCollectionFenced(err):
+		t.Errorf("%s: writeoutcome.IsCollectionFenced = false for %v", what, err)
+	case !errors.As(writeoutcome.FromError(err), &we) || we.Reason != reason:
+		t.Errorf("%s: decoded reason %+v, want %s", what, we, reason)
+	}
+}
+
+// woSeed creates coll with a secondary index on n, an id-addressed record
+// {n:1} (returned id) and a keyed record k1 {n:2}.
+func woSeed(t *testing.T, c pb.ScrivaClient, coll string) uint64 {
+	t.Helper()
+	mustCreate(t, c, coll)
+	if _, err := c.EnsureIndex(ctx(), &pb.EnsureIndexRequest{Collection: coll, Field: "n"}); err != nil {
+		t.Fatalf("EnsureIndex: %v", err)
+	}
+	r, err := c.Insert(ctx(), &pb.InsertRequest{Collection: coll, Data: mustStruct(t, map[string]any{"n": 1})})
+	if err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	if _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: coll, Key: "k1", Data: mustStruct(t, map[string]any{"n": 2})}); err != nil {
+		t.Fatalf("seed keyed insert: %v", err)
+	}
+	return r.Id
+}
+
+// countN returns how many records of coll have n == v, through the secondary
+// index (Find with an eq filter on the indexed field).
+func countN(t *testing.T, c pb.ScrivaClient, coll string, v float64) int {
+	t.Helper()
+	f := &pb.Filter{Kind: &pb.Filter_Field{Field: &pb.FieldFilter{Field: "n", Op: pb.FilterOp_EQ, Value: strconv.FormatFloat(v, 'f', -1, 64)}}}
+	stream, err := c.Find(ctx(), &pb.FindRequest{Collection: coll, Filter: f})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	n := 0
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return n
+		}
+		if err != nil {
+			t.Fatalf("Find recv: %v", err)
+		}
+		n++
+	}
+}
+
+// TestIntegration_WriteOutcome_SyncFailure injects an fsync failure into each
+// single-record write RPC under SyncModeAlways and asserts the whole contract:
+// UNKNOWN/WRITE_OUTCOME_UNKNOWN; the next read and write are fenced; no watch
+// event; the replication LSN does not move; the unknown-outcome hook fires
+// once; and after reopen the record — fully written before the failed fsync —
+// recovers as committed exactly once, consistently through id, key and
+// secondary-index reads, with the collection writable again.
+func TestIntegration_WriteOutcome_SyncFailure(t *testing.T) {
+	type check func(t *testing.T, c pb.ScrivaClient, seedID uint64)
+	byKeyN := func(key string, want float64) check {
+		return func(t *testing.T, c pb.ScrivaClient, _ uint64) {
+			r, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "c", Key: key})
+			if err != nil {
+				t.Fatalf("FindByKey(%s) after reopen: %v", key, err)
+			}
+			if got := r.Record.Data.AsMap()["n"]; got != want {
+				t.Errorf("FindByKey(%s).n = %v, want %v", key, got, want)
+			}
+			if got := countN(t, c, "c", want); got != 1 {
+				t.Errorf("index n=%v: %d records, want 1", want, got)
+			}
+		}
+	}
+	byIDN := func(want float64) check {
+		return func(t *testing.T, c pb.ScrivaClient, id uint64) {
+			r, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: id})
+			if err != nil {
+				t.Fatalf("FindById after reopen: %v", err)
+			}
+			if got := r.Record.Data.AsMap()["n"]; got != want {
+				t.Errorf("FindById.n = %v, want %v", got, want)
+			}
+			if got := countN(t, c, "c", want); got != 1 {
+				t.Errorf("index n=%v: %d records, want 1", want, got)
+			}
+		}
+	}
+	idGone := func(t *testing.T, c pb.ScrivaClient, id uint64) {
+		if _, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: id}); status.Code(err) != codes.NotFound {
+			t.Errorf("FindById after reopen: %v, want NotFound", err)
+		}
+		if got := countN(t, c, "c", 1); got != 0 {
+			t.Errorf("index still holds the deleted record (%d)", got)
+		}
+	}
+	keyGone := func(t *testing.T, c pb.ScrivaClient, _ uint64) {
+		if _, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "c", Key: "k1"}); status.Code(err) != codes.NotFound {
+			t.Errorf("FindByKey after reopen: %v, want NotFound", err)
+		}
+	}
+
+	cases := []struct {
+		name  string
+		write func(t *testing.T, c pb.ScrivaClient, id uint64) error
+		after check
+	}{
+		{"Insert", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: mustStruct(t, map[string]any{"n": 10})})
+			return err
+		}, func(t *testing.T, c pb.ScrivaClient, _ uint64) {
+			if got := countN(t, c, "c", 10); got != 1 {
+				t.Errorf("inserted record recovered %d times, want exactly once", got)
+			}
+		}},
+		{"InsertWithKey", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "c", Key: "k9", Data: mustStruct(t, map[string]any{"n": 11})})
+			return err
+		}, byKeyN("k9", 11)},
+		{"Update", func(t *testing.T, c pb.ScrivaClient, id uint64) error {
+			_, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "c", Id: id, Data: mustStruct(t, map[string]any{"n": 12})})
+			return err
+		}, byIDN(12)},
+		{"Delete", func(t *testing.T, c pb.ScrivaClient, id uint64) error {
+			_, err := c.Delete(ctx(), &pb.DeleteRequest{Collection: "c", Id: id})
+			return err
+		}, idGone},
+		{"Upsert", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.Upsert(ctx(), &pb.UpsertRequest{Collection: "c", Key: "k1", Data: mustStruct(t, map[string]any{"n": 13})})
+			return err
+		}, byKeyN("k1", 13)},
+		{"UpdateByKey", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.UpdateByKey(ctx(), &pb.UpdateByKeyRequest{Collection: "c", Key: "k1", Data: mustStruct(t, map[string]any{"n": 14})})
+			return err
+		}, byKeyN("k1", 14)},
+		{"DeleteByKey", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.DeleteByKey(ctx(), &pb.DeleteByKeyRequest{Collection: "c", Key: "k1"})
+			return err
+		}, keyGone},
+		{"UpdateIfRev", func(t *testing.T, c pb.ScrivaClient, _ uint64) error {
+			_, err := c.UpdateIfRev(ctx(), &pb.UpdateIfRevRequest{Collection: "c", Key: "k1", ExpectedRev: 1, Data: mustStruct(t, map[string]any{"n": 15})})
+			return err
+		}, byKeyN("k1", 15)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := startWOServer(t, woConfig(4<<20))
+			id := woSeed(t, s.client, "c")
+			events := woWatch(t, s.client, "c")
+			lsn := s.db.CurrentLSN()
+
+			s.fi.FailSync(s.collection("c"), 1, nil)
+			assertOutcomeStatus(t, tc.name, tc.write(t, s.client, id), codes.Unknown, writeoutcome.ReasonOutcomeUnknown)
+
+			// The next read and write are fenced, not served from untrusted memory.
+			_, err := s.client.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: id})
+			assertOutcomeStatus(t, "FindById after unknown", err, codes.FailedPrecondition, writeoutcome.ReasonCollectionFenced)
+			_, err = s.client.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: mustStruct(t, map[string]any{"n": 99})})
+			assertOutcomeStatus(t, "Insert after unknown", err, codes.FailedPrecondition, writeoutcome.ReasonCollectionFenced)
+
+			assertNoEvent(t, events)
+			if got := s.db.CurrentLSN(); got != lsn {
+				t.Errorf("replication LSN moved %d → %d for an unpublished write", lsn, got)
+			}
+			if got := s.unknown.Load(); got != 1 {
+				t.Errorf("OnWriteOutcomeUnknown fired %d times, want 1", got)
+			}
+
+			s.reopen()
+			tc.after(t, s.client, id)
+			if got := countN(t, s.client, "c", 99); got != 0 {
+				t.Errorf("a write refused by the fence is visible after reopen (%d)", got)
+			}
+			if _, err := s.client.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: mustStruct(t, map[string]any{"n": 100})}); err != nil {
+				t.Errorf("collection still refuses writes after reopen: %v", err)
+			}
+		})
+	}
+}
+
+// TestIntegration_WriteOutcome_FencedStatusGolden is the status-mapping golden
+// test: once a collection is fenced, every write RPC — and every read — that
+// touches it answers FAILED_PRECONDITION / COLLECTION_FENCED, never a
+// retry-safe code (CommitTx used to map every failure to ABORTED).
+func TestIntegration_WriteOutcome_FencedStatusGolden(t *testing.T) {
+	s := startWOServer(t, woConfig(4<<20))
+	id := woSeed(t, s.client, "c")
+	c := s.client
+	data := mustStruct(t, map[string]any{"n": 7})
+
+	// A transaction staged before the fence and committed after it.
+	tx, err := c.BeginTx(ctx(), &pb.BeginTxRequest{Collection: "c"})
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if _, err := c.Insert(txCtx(tx.TxId), &pb.InsertRequest{Collection: "c", Data: data}); err != nil {
+		t.Fatalf("staged insert: %v", err)
+	}
+	xtx, err := c.BeginXTx(ctx(), &pb.BeginXTxRequest{Collections: []string{"c"}})
+	if err != nil {
+		t.Fatalf("BeginXTx: %v", err)
+	}
+	if _, err := c.StageXTx(ctx(), &pb.StageXTxRequest{XtxId: xtx.XtxId, Collection: "c", Op: pb.XTxOpKind_XTX_OP_INSERT, Data: data}); err != nil {
+		t.Fatalf("StageXTx: %v", err)
+	}
+
+	s.fi.FailSync(s.collection("c"), 1, nil)
+	_, err = c.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: data})
+	assertOutcomeStatus(t, "Insert (sync fails)", err, codes.Unknown, writeoutcome.ReasonOutcomeUnknown)
+
+	stream := func(open func() (interface{ RecvMsg(any) error }, error)) error {
+		st, err := open()
+		if err != nil {
+			return err
+		}
+		var m any
+		switch st.(type) {
+		case pb.Scriva_FindClient:
+			m = &pb.FindResponse{}
+		case pb.Scriva_AggregateClient:
+			m = &pb.AggregateResponse{}
+		case pb.Scriva_WatchClient:
+			m = &pb.WatchEvent{}
+		}
+		return st.RecvMsg(m)
+	}
+	golden := []struct {
+		rpc  string
+		call func() error
+	}{
+		{"Insert", func() error { _, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: data}); return err }},
+		{"Insert(key)", func() error {
+			_, err := c.Insert(ctx(), &pb.InsertRequest{Collection: "c", Key: "k7", Data: data})
+			return err
+		}},
+		{"InsertMany", func() error {
+			_, err := c.InsertMany(ctx(), &pb.InsertManyRequest{Collection: "c", Records: []*structpb.Struct{data, data}})
+			return err
+		}},
+		{"Update", func() error { _, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "c", Id: id, Data: data}); return err }},
+		{"Delete", func() error { _, err := c.Delete(ctx(), &pb.DeleteRequest{Collection: "c", Id: id}); return err }},
+		{"Upsert", func() error { _, err := c.Upsert(ctx(), &pb.UpsertRequest{Collection: "c", Key: "k1", Data: data}); return err }},
+		{"UpdateByKey", func() error {
+			_, err := c.UpdateByKey(ctx(), &pb.UpdateByKeyRequest{Collection: "c", Key: "k1", Data: data})
+			return err
+		}},
+		{"DeleteByKey", func() error { _, err := c.DeleteByKey(ctx(), &pb.DeleteByKeyRequest{Collection: "c", Key: "k1"}); return err }},
+		{"UpdateIfRev", func() error {
+			_, err := c.UpdateIfRev(ctx(), &pb.UpdateIfRevRequest{Collection: "c", Key: "k1", ExpectedRev: 1, Data: data})
+			return err
+		}},
+		{"CommitTx", func() error { _, err := c.CommitTx(ctx(), &pb.CommitTxRequest{TxId: tx.TxId}); return err }},
+		{"CommitXTx", func() error { _, err := c.CommitXTx(ctx(), &pb.CommitXTxRequest{XtxId: xtx.XtxId}); return err }},
+		{"Compact", func() error { _, err := c.Compact(ctx(), &pb.CompactRequest{Collection: "c"}); return err }},
+		{"FindById", func() error { _, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: id}); return err }},
+		{"FindByKey", func() error { _, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "c", Key: "k1"}); return err }},
+		{"Find", func() error {
+			return stream(func() (interface{ RecvMsg(any) error }, error) {
+				return c.Find(ctx(), &pb.FindRequest{Collection: "c"})
+			})
+		}},
+		{"Aggregate", func() error {
+			return stream(func() (interface{ RecvMsg(any) error }, error) {
+				return c.Aggregate(ctx(), &pb.AggregateRequest{Collection: "c", Aggregations: []pb.AggregateOp{pb.AggregateOp_AGG_COUNT}})
+			})
+		}},
+		{"Watch", func() error {
+			return stream(func() (interface{ RecvMsg(any) error }, error) {
+				return c.Watch(ctx(), &pb.WatchRequest{Collection: "c"})
+			})
+		}},
+	}
+	for _, g := range golden {
+		assertOutcomeStatus(t, g.rpc, g.call(), codes.FailedPrecondition, writeoutcome.ReasonCollectionFenced)
+	}
+
+	// The XTx surface reports the same reason in its own domain.
+	if _, err := c.CommitXTx(ctx(), &pb.CommitXTxRequest{XtxId: xtx.XtxId}); status.Code(err) == codes.Aborted || status.Code(err) == codes.Unavailable {
+		t.Errorf("CommitXTx retry: retry-safe code %v", status.Code(err))
+	}
+	// Stats stay available on a fenced collection (§2.3 item 3).
+	if _, err := c.CollectionStats(ctx(), &pb.CollectionStatsRequest{Collection: "c"}); err != nil {
+		t.Errorf("CollectionStats on a fenced collection: %v", err)
+	}
+	if got := s.unknown.Load(); got != 1 {
+		t.Errorf("OnWriteOutcomeUnknown fired %d times, want 1", got)
+	}
+}
+
+// TestIntegration_WriteOutcome_PostCommitWarning: a write commits, then the
+// segment rotation it triggers fails its seal fsync. The RPC is OK — the
+// write is durable — and carries the scriva-post-commit-warning header and
+// trailer; the watch event is delivered and the LSN advances; the failed seal
+// fences the collection, so the next write is refused; after reopen the
+// record is present.
+func TestIntegration_WriteOutcome_PostCommitWarning(t *testing.T) {
+	s := startWOServer(t, woConfig(1)) // every write rotates
+	woSeed(t, s.client, "c")
+	events := woWatch(t, s.client, "c")
+	lsn := s.db.CurrentLSN()
+
+	s.fi.FailSync(s.collection("c"), 2, nil) // 1 = commit sync, 2 = seal sync
+	var header, trailer metadata.MD
+	resp, err := s.client.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: mustStruct(t, map[string]any{"n": 20})},
+		grpc.Header(&header), grpc.Trailer(&trailer))
+	if err != nil {
+		t.Fatalf("Insert with a failed post-commit rotation: %v, want OK", err)
+	}
+	if s.fi.Injected() != 1 {
+		t.Fatalf("seal-sync fault did not fire (%d)", s.fi.Injected())
+	}
+	for name, md := range map[string]metadata.MD{"trailer": trailer, "header": header} {
+		if w, ok := writeoutcome.PostCommitWarning(md); !ok || !strings.Contains(w, "rotate") {
+			t.Errorf("%s %s = %q, %v; want a rotate warning", name, writeoutcome.TrailerPostCommit, w, ok)
+		}
+	}
+	select {
+	case ev := <-events:
+		if ev.Op != pb.WatchOp_INSERTED || ev.GetRecord().GetId() != resp.Id {
+			t.Errorf("watch event = %v, want INSERTED id %d", ev, resp.Id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("no watch event for a committed write whose rotation failed")
+	}
+	if got := s.db.CurrentLSN(); got != lsn+1 {
+		t.Errorf("replication LSN = %d, want %d (the committed write is published)", got, lsn+1)
+	}
+	_, err = s.client.Insert(ctx(), &pb.InsertRequest{Collection: "c", Data: mustStruct(t, map[string]any{"n": 21})})
+	assertOutcomeStatus(t, "Insert after failed seal", err, codes.FailedPrecondition, writeoutcome.ReasonCollectionFenced)
+
+	s.reopen()
+	r, err := s.client.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: resp.Id})
+	if err != nil || r.Record.Data.AsMap()["n"] != float64(20) {
+		t.Fatalf("committed record after reopen = %v, %v", r, err)
+	}
+}
+
+// TestIntegration_WriteOutcome_REST: through the grpc-gateway an unknown
+// outcome is HTTP 500 and a fenced collection HTTP 400, each with the reason
+// in the JSON error body; a post-commit warning is the response header
+// Scriva-Post-Commit-Warning on a 200.
+func TestIntegration_WriteOutcome_REST(t *testing.T) {
+	gateway := func(s *woServer) string {
+		gwCtx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		h, err := server.NewRESTGateway(gwCtx, s.addr, insecure.NewCredentials(), nil)
+		if err != nil {
+			t.Fatalf("NewRESTGateway: %v", err)
+		}
+		ts := httptest.NewServer(h)
+		t.Cleanup(ts.Close)
+		return ts.URL
+	}
+
+	t.Run("unknown then fenced", func(t *testing.T) {
+		s := startWOServer(t, woConfig(4<<20))
+		id := woSeed(t, s.client, "c")
+		base := gateway(s)
+
+		s.fi.FailSync(s.collection("c"), 1, nil)
+		code, body := restCall(t, http.MethodPost, base+"/v1/c/records", map[string]any{"data": map[string]any{"n": 1}}, nil)
+		if code != http.StatusInternalServerError {
+			t.Errorf("insert: HTTP %d, want 500 (%v)", code, body)
+		}
+		if reason, meta := restReason(t, body); reason != writeoutcome.ReasonOutcomeUnknown || meta[writeoutcome.MetaCollection] != "c" {
+			t.Errorf("insert: reason %q meta %v, want %s for c", reason, meta, writeoutcome.ReasonOutcomeUnknown)
+		}
+
+		code, body = restCall(t, http.MethodGet, fmt.Sprintf("%s/v1/c/records/%d", base, id), nil, nil)
+		if code != http.StatusBadRequest {
+			t.Errorf("get: HTTP %d, want 400 (%v)", code, body)
+		}
+		if reason, _ := restReason(t, body); reason != writeoutcome.ReasonCollectionFenced {
+			t.Errorf("get: reason %q, want %s", reason, writeoutcome.ReasonCollectionFenced)
+		}
+	})
+
+	t.Run("post-commit header", func(t *testing.T) {
+		s := startWOServer(t, woConfig(1))
+		mustCreate(t, s.client, "c")
+		base := gateway(s)
+
+		s.fi.FailSync(s.collection("c"), 2, nil)
+		resp, err := http.Post(base+"/v1/c/records", "application/json", strings.NewReader(`{"data":{"n":1}}`))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("HTTP %d, want 200: %s", resp.StatusCode, raw)
+		}
+		if w := resp.Header.Get(writeoutcome.HeaderPostCommit); !strings.Contains(w, "rotate") {
+			t.Errorf("%s = %q, want a rotate warning", writeoutcome.HeaderPostCommit, w)
+		}
+	})
+}
+
+// TestIntegration_WriteOutcome_Follower covers the follower's handling of a
+// local apply outcome (server/replication.go): an unknown outcome stops the
+// follower with the applied LSN not advanced; a post-commit failure advances
+// it, and the fence it leaves stops the follower at the next record; after a
+// restart the follower converges with every record exactly once.
+func TestIntegration_WriteOutcome_Follower(t *testing.T) {
+	setup := func(t *testing.T, segMax int64) (pb.ScrivaClient, *engine.DB, *woServer) {
+		leader, ldb := startLeader(t)
+		mustCreate(t, leader, "c")
+		mustInsert(t, leader, "c", map[string]any{"n": 1})
+		cfg := followerEngineConfig()
+		cfg.SyncMode = engine.SyncModeAlways
+		cfg.SegmentMaxSize = segMax
+		f := &woServer{t: t, dir: t.TempDir(), fi: engine.NewFaultInjector(), cfg: cfg}
+		f.open(f.fi.Install(cfg))
+		return leader, ldb, f
+	}
+	waitDone := func(t *testing.T, done <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Fatal("follower did not stop")
+		}
+	}
+	restart := func(t *testing.T, leader pb.ScrivaClient, ldb *engine.DB, f *woServer) {
+		t.Helper()
+		f.reopen()
+		stop, _, _ := runFollower(f.db, leader)
+		defer stop()
+		waitConverged(t, ldb, f.db, "c")
+	}
+
+	t.Run("unknown outcome stops without advancing", func(t *testing.T) {
+		leader, ldb, f := setup(t, 4<<20)
+		stop, done, result := runFollower(f.db, leader)
+		defer stop()
+		waitConverged(t, ldb, f.db, "c")
+		applied := f.db.AppliedLSN()
+
+		f.fi.FailSync(f.collection("c"), 1, nil)
+		mustInsert(t, leader, "c", map[string]any{"n": 2})
+		waitDone(t, done)
+		if err := result(); !errors.Is(err, engine.ErrWriteOutcomeUnknown) {
+			t.Fatalf("follower stopped with %v, want ErrWriteOutcomeUnknown", err)
+		}
+		if got := f.db.AppliedLSN(); got != applied {
+			t.Errorf("applied LSN %d → %d past an unknown outcome", applied, got)
+		}
+		if f.collection("c").Fenced() == nil {
+			t.Error("follower collection not fenced")
+		}
+		restart(t, leader, ldb, f)
+	})
+
+	t.Run("post-commit advances, then the fence stops", func(t *testing.T) {
+		leader, ldb, f := setup(t, 1)
+		stop, done, result := runFollower(f.db, leader)
+		defer stop()
+		waitConverged(t, ldb, f.db, "c")
+
+		f.fi.FailSync(f.collection("c"), 2, nil) // the apply's seal sync
+		mustInsert(t, leader, "c", map[string]any{"n": 2})
+		committed := ldb.CurrentLSN()
+		deadline := time.Now().Add(15 * time.Second)
+		for f.db.AppliedLSN() < committed {
+			if time.Now().After(deadline) {
+				t.Fatalf("applied LSN %d never reached %d after a post-commit failure", f.db.AppliedLSN(), committed)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if f.collection("c").Fenced() == nil {
+			t.Fatal("a failed seal sync must fence the follower collection")
+		}
+
+		mustInsert(t, leader, "c", map[string]any{"n": 3})
+		waitDone(t, done)
+		if err := result(); !errors.Is(err, engine.ErrCollectionFenced) {
+			t.Fatalf("follower stopped with %v, want ErrCollectionFenced", err)
+		}
+		if got := f.db.AppliedLSN(); got != committed {
+			t.Errorf("applied LSN = %d, want %d (not past the fenced record)", got, committed)
+		}
+		restart(t, leader, ldb, f)
+	})
 }

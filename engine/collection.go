@@ -1056,6 +1056,9 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	if len(records) == 0 {
 		return nil, time.Time{}, nil
 	}
+	if err := c.checkFenced(); err != nil {
+		return nil, time.Time{}, err
+	}
 	for _, d := range records {
 		if _, ok := d[KeyField]; ok {
 			return nil, time.Time{}, reservedFieldErr()
@@ -1089,6 +1092,11 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	}
 
 	c.mu.Lock()
+	// A fenced collection (§2.3) refuses the batch before any byte.
+	if err := c.checkFenced(); err != nil {
+		c.mu.Unlock()
+		return nil, time.Time{}, err
+	}
 	startSize := c.active.Size()
 	// Atomic budget gate for the whole batch — refuse before any append.
 	if err := c.checkQuotaLocked(uint64(len(records)), newBytes); err != nil {
@@ -1130,7 +1138,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 
 	if needRotate {
 		if err := c.rotateSegment(); err != nil {
-			return ids, ts, fmt.Errorf("collection: rotate after insertMany: %w", err)
+			return ids, ts, &PostCommitError{Op: "insertMany", Stage: "rotate", Err: err}
 		}
 	}
 
@@ -1624,6 +1632,11 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	}
 
 	c.mu.Lock()
+	// A fenced collection (§2.3) refuses the commit before any byte.
+	if err := c.checkFenced(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	startSize := c.active.Size()
 	// Save the first pre-commit primary-index state for every ID. Operations in
 	// a transaction may touch an ID more than once, so recording state per-op
@@ -1806,7 +1819,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 
 	if needRotate {
 		if err := c.rotateSegment(); err != nil {
-			return fmt.Errorf("collection: rotate after commit: %w", err)
+			return &PostCommitError{Op: "commitTx", Stage: "rotate", Err: err}
 		}
 	}
 

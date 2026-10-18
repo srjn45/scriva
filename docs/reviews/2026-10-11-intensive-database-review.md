@@ -109,7 +109,9 @@ Review identified additional conditional exposure areas: replication transport w
 
 ## Status and resolution
 
-All findings above are **open**; ratified fixes and their acceptance criteria are in the [hardening specification](../design-database-integrity-hardening.md) (decisions in §6.1, deliberate deferrals in §6.2). When a fix lands, add the fixing revision and test evidence here; do not rewrite the finding as though the gap never existed.
+- **H1, H3 (PR #182 / revision `ae4b4e8`):** Collection-name path traversal closed and exhaustive fail-closed RPC authorization matrix implemented. Test evidence in `server/names_integration_test.go`, `server/authz_matrix_integration_test.go`, `engine/names_test.go`, `internal/auth/policy_test.go`, and `docs/reviews/2026-10-11-security-integration-verification.md`.
+- **H5, H9 (PR #184, #185, #186, and single-record write durability outcome mapping):** Fail-stop collection fencing on sync failure (`ErrWriteOutcomeUnknown`, `ErrCollectionFenced`), segment seal ordering and typed `PostCommitError`, mapped through gRPC, REST, CLI, and Go client SDK (`writeoutcome`). Injected fault harness (`engine/faultfs.go`) and tests covering all mutation paths, replication and follower apply, watch events, and reopen recovery in `engine/write_outcome_baseline_test.go`, `engine/background_outcome_test.go`, `engine/fence_test.go`, and `server/grpc_integration_test.go`.
+- Other findings remain tracked against the [hardening specification](../design-database-integrity-hardening.md) (decisions in §6.1, deliberate deferrals in §6.2).
 
 ## Prioritized test additions
 
