@@ -46,6 +46,11 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 		names = append(names, n)
 	}
 	sort.Strings(names) // deterministic archive ordering
+	for _, name := range names {
+		if err := db.collections[name].checkFenced(); err != nil {
+			return fmt.Errorf("snapshot: %w", err)
+		}
+	}
 
 	// Coordinator metadata is authoritative for stamped entries. A legacy root
 	// has no coordinator files and remains byte-format compatible.
@@ -89,6 +94,11 @@ func (db *DB) writeXTxSnapshot(tw *tar.Writer) error {
 // collection's read lock, so writes, rotation, and compaction are all excluded
 // for the (brief) duration of the copy.
 func (c *Collection) writeSnapshot(tw *tar.Writer) error {
+	// A fenced collection's files may hold a write of unknown outcome; an
+	// archive of it would silently pick one (§2.3). Refuse; reopen first.
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

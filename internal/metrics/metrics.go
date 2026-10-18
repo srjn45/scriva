@@ -35,7 +35,10 @@ type Metrics struct {
 	AppendBytesTotal     *prometheus.CounterVec
 	AppendErrorsTotal    *prometheus.CounterVec
 	SegmentPoisonedTotal *prometheus.CounterVec
-	DirLockTotal         *prometheus.CounterVec
+	// WriteOutcomeUnknownTotal counts collections fenced by a write whose
+	// outcome could not be proven (kept apart from proven aborts).
+	WriteOutcomeUnknownTotal *prometheus.CounterVec
+	DirLockTotal             *prometheus.CounterVec
 
 	LegacyCollectionNames prometheus.Gauge
 	SkippedRootEntries    prometheus.Gauge
@@ -129,6 +132,10 @@ func New(reg prometheus.Registerer) *Metrics {
 		Name: "scriva_segment_poisoned_total",
 		Help: "Active segments poisoned by a write that could not be rolled back.",
 	}, []string{"collection"})
+	m.WriteOutcomeUnknownTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "scriva_write_outcome_unknown_total",
+		Help: "Writes whose outcome could not be proven (fsync, truncate or seal-sync failure); each fences its collection until reopen.",
+	}, []string{"collection", "op"})
 	m.DirLockTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "scriva_dir_lock_total",
 		Help: "Data-directory lock acquisitions by result (acquired|contended|failed).",
@@ -182,7 +189,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	reg.MustRegister(m.ReplTxApplyTotal, m.ReplTxApplyDuration, m.ReplTxOpsTotal)
 	reg.MustRegister(m.CompactionTotal, m.CompactionDuration, m.GRPCDuration, m.ScanRowsScanned, m.QuotaRejectedTotal,
 		m.RecoveryTotal, m.RecoveryDuration, m.RecoveryBytesTotal, m.IntegrityOpenTotal, m.IntegrityFindings,
-		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.DirLockTotal,
+		m.AppendTotal, m.AppendBytesTotal, m.AppendErrorsTotal, m.SegmentPoisonedTotal, m.WriteOutcomeUnknownTotal, m.DirLockTotal,
 		m.LegacyCollectionNames, m.SkippedRootEntries,
 		m.XTxTotal, m.XTxDuration, m.XTxConflictsTotal, m.XTxRecoveryTotal)
 	return m
@@ -368,6 +375,12 @@ func (m *Metrics) ObserveAppend(collection string, bytes int, reason string) {
 // ObserveSegmentPoisoned records a segment poisoning event.
 func (m *Metrics) ObserveSegmentPoisoned(collection string) {
 	m.SegmentPoisonedTotal.WithLabelValues(collection).Inc()
+}
+
+// ObserveWriteOutcomeUnknown records a write of unknown outcome that fenced
+// collection (engine.CollectionConfig.OnWriteOutcomeUnknown).
+func (m *Metrics) ObserveWriteOutcomeUnknown(collection, op string) {
+	m.WriteOutcomeUnknownTotal.WithLabelValues(collection, op).Inc()
 }
 
 // ObserveRootNames records what startup discovery found: legacy-named

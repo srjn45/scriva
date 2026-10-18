@@ -21,6 +21,9 @@ import (
 // The result equals len(Scan(f)) for every filter; Count merely avoids the
 // allocation of the result set (and, for the fast paths above, the reads).
 func (c *Collection) Count(f query.Filter) (uint64, error) {
+	if err := c.checkFenced(); err != nil {
+		return 0, err
+	}
 	// Whole-collection count: the primary index is exactly the set of live
 	// records, so its length is the answer without touching a segment.
 	if f == nil || f == query.MatchAll {
@@ -32,7 +35,7 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	// membership is exactly the records the filter would accept (see the eq case
 	// in indexCandidates), so this is scan-identical without any segment read.
 	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
-		if ids, hit := c.IndexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
+		if ids, hit := c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
 			return uint64(len(ids)), nil
 		}
 	}
@@ -58,8 +61,12 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 // reads a segment, so it is safe on a dashboard hot path regardless of how large
 // the collection is. A collection that has never taken a keyed write has no _key
 // index, so Exists reports false for every key. It returns an error only to keep
-// the signature stable for future implementations; today it never fails.
+// the signature stable for future implementations; today it fails only on a
+// fenced collection (ErrCollectionFenced).
 func (c *Collection) Exists(key string) (bool, error) {
-	ids, ok := c.IndexLookup(KeyField, key)
+	if err := c.checkFenced(); err != nil {
+		return false, err
+	}
+	ids, ok := c.indexLookup(KeyField, key)
 	return ok && len(ids) > 0, nil
 }

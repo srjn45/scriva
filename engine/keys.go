@@ -105,10 +105,13 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 	stamped := stampKey(data, key)
 	ts := time.Now().UTC()
 
+	if err := c.checkFenced(); err != nil {
+		return Record{}, err
+	}
 	c.mu.Lock()
 
 	// Resolve the key under the write lock so the present/absent decision and the
-	// append are atomic with respect to every other writer. IndexLookup takes
+	// append are atomic with respect to every other writer. indexLookup takes
 	// sidxMu (read) after c.mu (write), matching the insert/update lock order, so
 	// there is no deadlock.
 	var (
@@ -118,7 +121,7 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		e   store.Entry
 		exp int64
 	)
-	if ids, hit := c.IndexLookup(KeyField, key); hit && len(ids) > 0 {
+	if ids, hit := c.indexLookup(KeyField, key); hit && len(ids) > 0 {
 		if cur, ok := c.index.Get(ids[0]); ok {
 			id, rev, op = ids[0], cur.Rev+1, store.OpUpdate
 			e = store.NewUpdate(id, stamped)
@@ -161,10 +164,14 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		c.mu.Unlock()
 		return Record{}, err
 	}
-	offset, err := c.active.Append(e)
+	offset, err := c.appendLocked("upsert", e)
 	if err != nil {
 		c.mu.Unlock()
-		return Record{}, fmt.Errorf("collection: upsert: %w", err)
+		return Record{}, err
+	}
+	if err := c.syncCommitLocked("upsert"); err != nil {
+		c.mu.Unlock()
+		return Record{}, err
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev, ExpiresAt: exp, Epoch: e.Epoch})
 	if op == store.OpInsert {
@@ -172,23 +179,12 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 	} else {
 		c.sidxUpdateEntry(id, stamped)
 	}
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return Record{}, fmt.Errorf("collection: upsert: %w", err)
-	}
 	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
 	rec := Record{ID: id, Key: key, Rev: rev, Ts: ts, Data: stamped}
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return rec, fmt.Errorf("collection: rotate after upsert: %w", err)
-		}
-	}
-
-	c.emit(WatchEvent{Op: op, ID: id, Data: stamped, Ts: ts})
-	return rec, nil
+	return rec, c.afterCommit("upsert", WatchEvent{Op: op, ID: id, Data: stamped, Ts: ts}, needRotate)
 }
 
 // ensureKeyIndex lazily creates the mandatory unique index on the reserved _key
@@ -202,7 +198,10 @@ func (c *Collection) ensureKeyIndex() error {
 // O(1). A missing key (or an index that does not exist because no keyed write
 // has happened yet) yields ErrKeyNotFound.
 func (c *Collection) resolveKey(key string) (uint64, error) {
-	ids, ok := c.IndexLookup(KeyField, key)
+	if err := c.checkFenced(); err != nil {
+		return 0, err
+	}
+	ids, ok := c.indexLookup(KeyField, key)
 	if !ok || len(ids) == 0 {
 		return 0, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
 	}

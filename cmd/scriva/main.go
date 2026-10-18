@@ -299,6 +299,7 @@ func serve(cfg server.Config, configFile string) error {
 	engineCfg.OnIntegrity = server.IntegrityMetricsHook(m)
 	engineCfg.OnAppend = server.AppendMetricsHook(m)
 	engineCfg.OnSegmentPoisoned = func(collection, _ string, _ error) { m.ObserveSegmentPoisoned(collection) }
+	engineCfg.OnWriteOutcomeUnknown = m.ObserveWriteOutcomeUnknown
 	engineCfg.OnLock = func(_, result string) { m.ObserveDirLock(result) }
 	engineCfg.OnRootNames = m.ObserveRootNames
 	engineCfg.OnXTx = m.ObserveXTx

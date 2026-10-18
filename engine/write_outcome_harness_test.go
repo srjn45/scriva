@@ -25,10 +25,10 @@ package engine
 //     file cut back to its last fsync (power loss: unsynced tail dropped).
 //
 // Expectations are outcomeExpect values. Baseline tables keep a `today` and a
-// `want` (ratified) expectation per case; the follow-up tasks implement the
-// behavior and replace `today` with `want`. Errors and states that do not
-// exist yet (ErrWriteOutcomeUnknown, ErrCollectionFenced) appear in `want` as
-// the label "fenced"; extend classifyReadErr / classifyProbe when they land.
+// `want` (ratified) expectation per case; an op whose path implements the
+// contract sets ratified and is asserted against `want`, the rest against
+// `today` with the gap logged. ErrCollectionFenced on a read or the probe is
+// the label "fenced" (classifyReadErr / classifyProbe).
 //
 // To cover a new mutation path (TTL reap, key mutation, replication apply,
 // ...) add a writeOutcomeOp with its run func and its old/new recState.
@@ -63,6 +63,7 @@ type recState struct {
 type writeOutcomeOp struct {
 	name     string
 	followUp string // TODO tag of the task that ratifies this path
+	ratified bool   // the path implements §2.3: assert `want`, not `today`
 	key      string // key observed with FindByKey ("" = none)
 	expired  bool   // seed the base record already expired (reaper)
 	old, new recState
@@ -85,7 +86,7 @@ type writeFault struct {
 	name   string
 	faults int // armed faults the scenario must consume
 	arm    func(fs *faultFS)
-	settle func(t *testing.T, fs *faultFS)
+	settle func(t *testing.T, fs *faultFS, col *Collection)
 }
 
 // writeObservation is everything observeWriteOutcome captured for one call.
@@ -134,48 +135,50 @@ func writeOutcomeOps() []writeOutcomeOp {
 	gone := recState{Tag: "none"}
 	const core, bg = "core-mutation-outcomes", "background-and-replication-writes"
 	return []writeOutcomeOp{
-		{name: "Insert", followUp: core, old: gone,
+		{name: "Insert", followUp: core, ratified: true, old: gone,
 			new: recState{Indexed: true, Rev: 1, Visible: true, V: 2, Tag: "new"}, events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				next := e.col.idSeq.Load() + 1
 				_, _, err := e.col.Insert(woData())
 				return next, err
 			}},
-		{name: "InsertWithKey", followUp: core, key: "k2", old: keyed(gone, -1),
+		{name: "InsertWithKey", followUp: core, ratified: true, key: "k2", old: keyed(gone, -1),
 			new: recState{Indexed: true, Rev: 1, Visible: true, V: 2, Tag: "new", ByKey: 2}, events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				next := e.col.idSeq.Load() + 1
 				_, _, err := e.col.InsertWithKey("k2", woData())
 				return next, err
 			}},
-		{name: "Update", followUp: core, old: base, new: updated, events: 1, lsn: 1,
+		{name: "Update", followUp: core, ratified: true, old: base, new: updated, events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				_, err := e.col.Update(e.base, woData())
 				return e.base, err
 			}},
-		{name: "Delete", followUp: core, old: base, new: gone, events: 1, lsn: 1,
+		{name: "Delete", followUp: core, ratified: true, old: base, new: gone, events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.Delete(e.base) }},
-		{name: "Upsert", followUp: core, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
+		{name: "Upsert", followUp: core, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				_, err := e.col.Upsert("k1", woData())
 				return e.base, err
 			}},
-		{name: "UpdateIfRev", followUp: core, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
+		{name: "UpdateIfRev", followUp: core, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				_, err := e.col.UpdateIfRev("k1", 1, woData())
 				return e.base, err
 			}},
-		{name: "UpdateIfMatch", followUp: core, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
+		{name: "UpdateIfMatch", followUp: core, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				_, err := e.col.UpdateIfMatch("k1", func(map[string]any) bool { return true }, woData())
 				return e.base, err
 			}},
-		{name: "UpdateByKey", followUp: bg, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
+		// UpdateByKey and DeleteByKey run through update/Delete, so they inherit
+		// the contract; their own key-level work stays with the follow-up task.
+		{name: "UpdateByKey", followUp: bg, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(updated, 2), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) {
 				_, err := e.col.UpdateByKey("k1", woData())
 				return e.base, err
 			}},
-		{name: "DeleteByKey", followUp: bg, key: "k1", old: keyed(base, 1), new: keyed(gone, -1), events: 1, lsn: 1,
+		{name: "DeleteByKey", followUp: bg, ratified: true, key: "k1", old: keyed(base, 1), new: keyed(gone, -1), events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.DeleteByKey("k1") }},
 		// The reaper publishes nothing to replication today (followers reap on
 		// their own clock); its delete is observable through the raw index.
@@ -212,13 +215,18 @@ var (
 		fs.failSyncAt(fs.scopedCount("sync")+1, syscall.EIO)
 	}}
 	// SyncModeInterval: the op succeeds unsynced, then one syncLoop fsync
-	// fails; settle waits for that failure and for the loop's next fsync.
-	faultSyncLoop = writeFault{name: "syncloop-fail", faults: 1, arm: func(*faultFS) {}, settle: func(t *testing.T, fs *faultFS) {
+	// fails; settle waits for that failure and the fence, then checks the loop
+	// never retries the fsync.
+	faultSyncLoop = writeFault{name: "syncloop-fail", faults: 1, arm: func(*faultFS) {}, settle: func(t *testing.T, fs *faultFS, col *Collection) {
 		before := fs.faults()
 		fs.failNextSync(syscall.EIO)
 		waitFor(t, "syncLoop fsync failure", func() bool { return fs.faults() > before })
+		waitFor(t, "fence after syncLoop failure", func() bool { return col.Fenced() != nil })
 		failed := fs.scopedCount("sync")
-		waitFor(t, "next syncLoop fsync", func() bool { return fs.scopedCount("sync") > failed })
+		time.Sleep(10 * col.cfg.SyncInterval)
+		if n := fs.scopedCount("sync"); n != failed {
+			t.Errorf("syncLoop retried fsync after failure: %d syncs, want %d", n, failed)
+		}
 	}}
 )
 
@@ -278,7 +286,7 @@ func observeWriteOutcome(t *testing.T, op writeOutcomeOp, fault writeFault, cfg 
 	var obs writeObservation
 	obs.Target, obs.Err = op.run(env)
 	if fault.settle != nil {
-		fault.settle(t, fs)
+		fault.settle(t, fs, col)
 	}
 	obs.Faults = fs.faults() - faults0
 	if obs.Faults != fault.faults {
@@ -439,16 +447,21 @@ func stateLabel(op writeOutcomeOp, s recState, readErr error) string {
 	return fmt.Sprintf("other(%+v)", s)
 }
 
-// classifyReadErr maps a read failure to a label. Extend with "fenced" when
-// ErrCollectionFenced exists.
-func classifyReadErr(error) string { return "error" }
+// classifyReadErr maps a read failure to a label.
+func classifyReadErr(err error) string {
+	if errors.Is(err, ErrCollectionFenced) {
+		return "fenced"
+	}
+	return "error"
+}
 
-// classifyProbe maps the probe write's result to a label. Extend with
-// "fenced" when ErrCollectionFenced exists.
+// classifyProbe maps the probe write's result to a label.
 func classifyProbe(err error) string {
 	switch {
 	case err == nil:
 		return "ok"
+	case errors.Is(err, ErrCollectionFenced):
+		return "fenced"
 	case errors.Is(err, ErrSegmentPoisoned):
 		return "poisoned"
 	}

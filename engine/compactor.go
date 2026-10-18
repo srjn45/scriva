@@ -98,6 +98,9 @@ func (c *Collection) isClosed() bool {
 // serializes with the background compactor via compactMu, so a concurrent
 // automatic pass cannot race the on-demand one.
 func (c *Collection) CompactNow() error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	if c.isClosed() {
 		return fmt.Errorf("compactor: collection %q is closed", c.name)
 	}
@@ -116,6 +119,10 @@ func (c *Collection) compact(force bool) error {
 	// never snapshot, remove, and rename the same sealed segments concurrently.
 	c.compactMu.Lock()
 	defer c.compactMu.Unlock()
+	// Never rewrite segments from a fenced collection's untrusted state.
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	return c.compactLocked(force)
 }
 
@@ -427,6 +434,9 @@ func (c *Collection) MigrateNow(ctx context.Context) error {
 	}
 	if c.enc.Load() == nil {
 		return nil // nothing to migrate
+	}
+	if err := c.checkFenced(); err != nil {
+		return err
 	}
 	if c.isClosed() {
 		return fmt.Errorf("compactor: collection %q is closed", c.name)
