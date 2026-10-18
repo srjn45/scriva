@@ -209,8 +209,15 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	}
 	colCfg := db.defaultCfg
 	colCfg.decisionsFn = db.decisionsMap
+	colCfg.journalEpochFn = func() string {
+		if j := db.journalOrNil(); j != nil {
+			return j.epoch()
+		}
+		return ""
+	}
 	if j := db.journalOrNil(); j != nil {
 		colCfg.decisions = j.decisionsMap()
+		colCfg.journalEpoch = j.epoch()
 	}
 	col, err := OpenCollection(name, db.dataDir, colCfg)
 	if err != nil {
@@ -273,6 +280,13 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 	if j := db.journalOrNil(); j != nil {
 		cfg.decisions = j.decisionsMap()
 		cfg.decisionsFn = db.decisionsMap
+		cfg.journalEpoch = j.epoch()
+		cfg.journalEpochFn = func() string {
+			if j := db.journalOrNil(); j != nil {
+				return j.epoch()
+			}
+			return ""
+		}
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
 	if err != nil {

@@ -350,7 +350,7 @@ func (c *Collection) compactLocked(force bool) error {
 		c.mu.Unlock()
 		return fmt.Errorf("compactor: rebuild index: %w", err)
 	}
-	snap, err := c.index.Snapshot(all)
+	snap, err := c.index.Snapshot(all, decisions, c.journalEpoch())
 	if err != nil {
 		c.swapFailed = true
 		c.mu.Unlock()
