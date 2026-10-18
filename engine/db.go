@@ -16,8 +16,14 @@ import (
 // DB is the top-level database handle. It owns a registry of collections and
 // is the entry point for all engine operations.
 type DB struct {
-	dataDir     string
-	defaultCfg  CollectionConfig
+	dataDir    string
+	defaultCfg CollectionConfig
+	// mu is the DB lifecycle barrier. Lock order (hardening §3.3):
+	//   DB.mu (DropCollection/Close/snapshot: exclusive; commitXTx and handle
+	//   begin: shared for their whole duration) → participants' c.mu in
+	//   canonical name order → xtxJournal.mu (leaf; never held while taking a
+	//   c.mu) → released before col.Close (compactMu → persistMu → c.mu).
+	// Never take a sibling's compactMu while holding another lock.
 	mu          sync.RWMutex
 	collections map[string]*Collection
 
@@ -147,8 +153,8 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	}
 	colCfg := db.defaultCfg
 	colCfg.decisionsFn = db.decisionsMap
-	if db.xtxJournal != nil {
-		colCfg.decisions = db.xtxJournal.decisionsMap()
+	if j := db.journalOrNil(); j != nil {
+		colCfg.decisions = j.decisionsMap()
 	}
 	col, err := OpenCollection(name, db.dataDir, colCfg)
 	if err != nil {
@@ -207,8 +213,8 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 		}
 		delete(db.collections, name)
 	}
-	if db.xtxJournal != nil {
-		cfg.decisions = db.xtxJournal.decisionsMap()
+	if j := db.journalOrNil(); j != nil {
+		cfg.decisions = j.decisionsMap()
 		cfg.decisionsFn = db.decisionsMap
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
@@ -245,6 +251,19 @@ func (db *DB) DropCollection(name string) error {
 	} else if !exists {
 		return fmt.Errorf("%w: %q is missing from the data directory", ErrUnsafePath, name)
 	}
+	// Interim fail-safe (H6): retirement at drop is not implemented, so refuse
+	// while the journal holds any non-retired COMMIT naming this collection.
+	// Runs under the exclusive DB.mu (no commit can be in flight) and before
+	// any side effect: nothing is closed, removed or journaled on refusal.
+	if j := db.journalOrNil(); j != nil {
+		if txids := j.retainedFor(name); len(txids) > 0 {
+			return &ParticipantRetainedError{
+				Collection: name,
+				TxIDs:      txids,
+				Reason:     "the coordinator journal holds committed cross-collection transactions that name it and have not been retired; its files are preserved as recovery evidence and retirement is not yet available",
+			}
+		}
+	}
 	_ = col.Close()
 	delete(db.collections, name)
 
@@ -255,10 +274,11 @@ func (db *DB) DropCollection(name string) error {
 }
 
 func (db *DB) decisionsMap() map[string]string {
-	if db.xtxJournal == nil {
+	j := db.journalOrNil()
+	if j == nil {
 		return nil
 	}
-	return db.xtxJournal.decisionsMap()
+	return j.decisionsMap()
 }
 
 // Collection returns an existing collection or an error if it doesn't exist.
@@ -324,7 +344,7 @@ func (db *DB) Close() error {
 		}
 	}
 
-	if err := db.xtxJournal.close(); err != nil && firstErr == nil {
+	if err := db.journalOrNil().close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("db: close xtx journal: %w", err)
 	}
 
@@ -367,6 +387,15 @@ func (db *DB) endXTxInFlight(key string) {
 	db.xtxMu.Lock()
 	delete(db.xtxInFlight, key)
 	db.xtxMu.Unlock()
+}
+
+// journalOrNil returns the coordinator journal, or nil before the first XTx
+// created it. The journal is created lazily by commitXTx before it takes
+// DB.mu, so readers under DB.mu must go through xtxMu (a leaf lock).
+func (db *DB) journalOrNil() *xtxJournal {
+	db.xtxMu.Lock()
+	defer db.xtxMu.Unlock()
+	return db.xtxJournal
 }
 
 func (db *DB) ensureXTxJournal() (*xtxJournal, error) {

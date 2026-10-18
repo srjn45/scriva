@@ -193,3 +193,25 @@ func (e *journalCorruptError) Error() string {
 func (e *journalCorruptError) Is(target error) bool {
 	return target == ErrXTxJournalCorrupt || target == ErrIntegrity
 }
+
+// ErrParticipantRetained: DropCollection was refused because the coordinator
+// journal still holds a non-retired COMMIT naming the collection. Dropping it
+// would delete the participant evidence recovery needs to verify that commit
+// (hardening §3.3, H6). Nothing was modified. Retirement at drop is not
+// available yet, so the collection cannot be dropped once it has taken part in
+// a committed cross-collection transaction.
+var ErrParticipantRetained = errors.New("engine: collection retained as cross-collection transaction participant")
+
+// ParticipantRetainedError is the concrete ErrParticipantRetained.
+type ParticipantRetainedError struct {
+	Collection string
+	TxIDs      []string // non-retired decisions naming Collection, sorted
+	Reason     string
+}
+
+func (e *ParticipantRetainedError) Error() string {
+	return fmt.Sprintf("%s: cannot drop %q: %s (txids: %v); no files were changed",
+		ErrParticipantRetained, e.Collection, e.Reason, e.TxIDs)
+}
+
+func (e *ParticipantRetainedError) Is(target error) bool { return target == ErrParticipantRetained }

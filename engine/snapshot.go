@@ -54,8 +54,8 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 
 	// Coordinator metadata is authoritative for stamped entries. A legacy root
 	// has no coordinator files and remains byte-format compatible.
-	if db.xtxJournal != nil {
-		if err := db.writeXTxSnapshot(tw); err != nil {
+	if j := db.journalOrNil(); j != nil {
+		if err := db.writeXTxSnapshot(tw, j); err != nil {
 			return err
 		}
 	}
@@ -78,9 +78,9 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 // writeXTxSnapshot copies the two durable root coordinator files. The journal
 // mutex excludes append/checkpoint while Stat and CopyN establish the tar entry
 // boundary. xtx.journal.tmp is an interrupted checkpoint artifact, not state.
-func (db *DB) writeXTxSnapshot(tw *tar.Writer) error {
-	db.xtxJournal.mu.Lock()
-	defer db.xtxJournal.mu.Unlock()
+func (db *DB) writeXTxSnapshot(tw *tar.Writer, j *xtxJournal) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 
 	for _, base := range []string{xtxFormatFile, xtxJournalFile} {
 		if err := writeFileToTar(tw, db.dataDir, base, ""); err != nil {

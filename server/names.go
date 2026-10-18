@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"strings"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -33,4 +35,27 @@ func createErr(err error) error {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	return status.Errorf(codes.AlreadyExists, "%v", err)
+}
+
+// ReasonParticipantRetained is the ErrorInfo reason of a DropCollection
+// refused because the collection is still a participant of non-retired
+// cross-collection transactions.
+const ReasonParticipantRetained = "PARTICIPANT_RETAINED"
+
+// participantRetainedStatus maps ErrParticipantRetained to FAILED_PRECONDITION
+// with the offending txids in the ErrorInfo metadata (comma-separated).
+func participantRetainedStatus(e *engine.ParticipantRetainedError) error {
+	st := status.New(codes.FailedPrecondition, e.Error())
+	withInfo, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason: ReasonParticipantRetained,
+		Domain: "scriva.dev/collection",
+		Metadata: map[string]string{
+			"collection": e.Collection,
+			"txids":      strings.Join(e.TxIDs, ","),
+		},
+	})
+	if err != nil {
+		return st.Err()
+	}
+	return withInfo.Err()
 }

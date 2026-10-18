@@ -1488,6 +1488,16 @@ are never loaded, created over or dropped (logged, counted in
 `scriva_skipped_root_entries`). There is no rename; to move a legacy-named
 collection, copy it to a valid name with a client.
 
+### Dropping a collection that took part in a cross-collection transaction
+
+`DropCollection` is refused with `FAILED_PRECONDITION` (reason
+`PARTICIPANT_RETAINED`, txids in the error details; `engine.ErrParticipantRetained`
+when embedded) while the collection is named by a committed cross-collection
+transaction. The coordinator journal still needs its files as recovery evidence,
+and retirement is not yet available, so nothing is changed and the collection
+stays fully usable. Collections that never took part in such a transaction drop
+as usual.
+
 ## Backup & restore
 
 `scriva-cli backup` streams a consistent, gzip-compressed snapshot of the entire

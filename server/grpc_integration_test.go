@@ -28,6 +28,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -2916,4 +2917,50 @@ func TestIntegration_WriteOutcome_Follower(t *testing.T) {
 		}
 		restart(t, leader, ldb, f)
 	})
+}
+
+// TestIntegration_DropCollection_ParticipantRetained: dropping a collection
+// that is a participant of a committed cross-collection transaction is refused
+// with FAILED_PRECONDITION / PARTICIPANT_RETAINED and the txids in details;
+// the collection stays usable, and an unrelated collection still drops.
+func TestIntegration_DropCollection_ParticipantRetained(t *testing.T) {
+	c := newTestServer(t)
+	for _, n := range []string{"pa", "pb", "free"} {
+		if _, err := c.CreateCollection(ctx(), &pb.CreateCollectionRequest{Name: n}); err != nil {
+			t.Fatalf("CreateCollection %s: %v", n, err)
+		}
+	}
+	data := mustStruct(t, map[string]any{"n": 1})
+	x, err := c.BeginXTx(ctx(), &pb.BeginXTxRequest{Collections: []string{"pa", "pb"}})
+	if err != nil {
+		t.Fatalf("BeginXTx: %v", err)
+	}
+	for _, n := range []string{"pa", "pb"} {
+		if _, err := c.StageXTx(ctx(), &pb.StageXTxRequest{XtxId: x.XtxId, Collection: n, Op: pb.XTxOpKind_XTX_OP_INSERT, Data: data}); err != nil {
+			t.Fatalf("StageXTx %s: %v", n, err)
+		}
+	}
+	if _, err := c.CommitXTx(ctx(), &pb.CommitXTxRequest{XtxId: x.XtxId}); err != nil {
+		t.Fatalf("CommitXTx: %v", err)
+	}
+
+	_, err = c.DropCollection(ctx(), &pb.DropCollectionRequest{Name: "pa"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (%v)", status.Code(err), err)
+	}
+	var info *errdetails.ErrorInfo
+	for _, d := range status.Convert(err).Details() {
+		if i, ok := d.(*errdetails.ErrorInfo); ok {
+			info = i
+		}
+	}
+	if info == nil || info.Reason != "PARTICIPANT_RETAINED" || info.Metadata["txids"] == "" || info.Metadata["collection"] != "pa" {
+		t.Fatalf("bad ErrorInfo: %+v", info)
+	}
+	if n := countN(t, c, "pa", 1); n != 1 {
+		t.Errorf("pa has %d records after refused drop, want 1", n)
+	}
+	if _, err := c.DropCollection(ctx(), &pb.DropCollectionRequest{Name: "free"}); err != nil {
+		t.Errorf("drop unreferenced: %v", err)
+	}
 }
