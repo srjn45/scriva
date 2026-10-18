@@ -1136,14 +1136,14 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
+	for i := range entries {
+		c.emit(WatchEvent{Op: store.OpInsert, ID: ids[i], Data: records[i], Ts: ts})
+	}
+
 	if needRotate {
 		if err := c.rotateSegment(); err != nil {
 			return ids, ts, &PostCommitError{Op: "insertMany", Stage: "rotate", Err: err}
 		}
-	}
-
-	for i := range entries {
-		c.emit(WatchEvent{Op: store.OpInsert, ID: ids[i], Data: records[i], Ts: ts})
 	}
 	return ids, ts, nil
 }
@@ -1284,9 +1284,10 @@ func (c *Collection) Delete(id uint64) error {
 	c.index.Delete(id)
 	c.sidxRemoveEntry(id)
 	c.publishCommit(e)
+	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	return c.afterCommit("delete", WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts}, false)
+	return c.afterCommit("delete", WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts}, needRotate)
 }
 
 // Record is a fully-resolved view of a single live record: its numeric id, its
@@ -1817,12 +1818,6 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return &PostCommitError{Op: "commitTx", Stage: "rotate", Err: err}
-		}
-	}
-
 	for _, ev := range events {
 		c.emit(ev)
 	}
@@ -1830,6 +1825,12 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	if maxInsertID > 0 {
 		_ = persistMeta(filepath.Join(c.dir, metaFilename),
 			c.metaSnapshot())
+	}
+
+	if needRotate {
+		if err := c.rotateSegment(); err != nil {
+			return &PostCommitError{Op: "commitTx", Stage: "rotate", Err: err}
+		}
 	}
 
 	return nil

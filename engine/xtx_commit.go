@@ -614,6 +614,9 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 
 	// S6: Post-lock maintenance and notifications
 	post := func() {
+		for _, w := range watchEvents {
+			w.col.emit(w.event)
+		}
 		for _, c := range participants {
 			if needsRotate[c.name] {
 				_ = c.rotateSegment()
@@ -621,9 +624,6 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 			if maxInsertIDs[c.name] > 0 {
 				_ = persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
 			}
-		}
-		for _, w := range watchEvents {
-			w.col.emit(w.event)
 		}
 	}
 
