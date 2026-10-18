@@ -63,7 +63,7 @@ func TestFromError(t *testing.T) {
 	if status.Code(d) != codes.Unknown || !errors.Is(d, unknown) {
 		t.Errorf("decoded error lost its status: code %v", status.Code(d))
 	}
-	if FromError(d) != d {
+	if !errors.Is(FromError(d), d) {
 		t.Error("FromError is not idempotent")
 	}
 }

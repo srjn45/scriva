@@ -40,6 +40,23 @@ embedding-specific contract.
 
 ## [Unreleased]
 
+### Added
+
+- **Write outcome durability contract & fail-stop collection fencing (hardening §2.3 / SR-D1):**
+  - Typed engine write outcomes: `ErrWriteOutcomeUnknown`, `ErrCollectionFenced`, and `*PostCommitError` (`ErrPostCommit`).
+  - Fail-stop collection fencing: on an active-segment `fsync` failure or poisoned segment rollback failure, the collection is fenced. Future reads and writes on that collection fail closed until server restart. Reopen recovers fully flushed entries and trims incomplete tails.
+  - Client SDK package `github.com/srjn45/scriva/writeoutcome`: helper functions `IsOutcomeUnknown`, `IsCollectionFenced`, `FromError`, and `PostCommitWarning` for typed error handling.
+  - Server gRPC error mapping:
+    - `ErrWriteOutcomeUnknown` maps to `codes.Unknown` with `errdetails.ErrorInfo` (reason `WRITE_OUTCOME_UNKNOWN`, domain `scriva.write`, `retry_safe: "false"`).
+    - `ErrCollectionFenced` maps to `codes.FailedPrecondition` with `errdetails.ErrorInfo` (reason `COLLECTION_FENCED`, domain `scriva.write`, `retry_safe: "false"`).
+    - `PostCommitError` returns `codes.OK` with `scriva-post-commit-warning` trailer and header.
+    - Write RPCs never map these fail-stop outcomes to retry-safe codes (`Aborted`, `Unavailable`, `ResourceExhausted`).
+    - Cross-collection transactions with a fenced participant fail with `COLLECTION_FENCED` (`retry_safe: "false"`).
+  - REST gateway (grpc-gateway): maps unknown outcomes to HTTP 500, fenced collections to HTTP 400 (reasons in JSON `details`), and post-commit warnings to the `Scriva-Post-Commit-Warning` HTTP header on 200 OK.
+  - CLI (`scriva-cli`): distinct exit codes for write outcomes — exit code `3` for `WRITE_OUTCOME_UNKNOWN` with "Do NOT blind-retry" guidance, exit code `4` for `COLLECTION_FENCED` with "restart server" guidance, and post-commit warnings printed to stderr while exiting `0`.
+  - Replication: follower advances applied LSN on `PostCommitError` and halts stream without advancing on unknown outcome or fenced errors.
+  - Metrics: `scriva_write_outcome_unknown_total{collection,op}` counts indeterminate write outcomes.
+
 ## v1.5.1 — 2026-10-18
 
 ### Fixed

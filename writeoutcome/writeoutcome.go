@@ -120,7 +120,10 @@ func FromError(err error) error {
 	}
 	for _, d := range st.Details() {
 		info, ok := d.(*errdetails.ErrorInfo)
-		if !ok || !(info.Domain == Domain || info.Domain == xtxDomain && info.Reason == ReasonCollectionFenced) {
+		if !ok {
+			continue
+		}
+		if info.Domain != Domain && (info.Domain != xtxDomain || info.Reason != ReasonCollectionFenced) {
 			continue
 		}
 		return &Error{Reason: info.Reason, Collection: info.Metadata[MetaCollection], err: err}

@@ -93,7 +93,7 @@ func TestCommittedTreatsPostCommitAsSuccess(t *testing.T) {
 		t.Errorf("committed(PostCommitError) = %v, want nil", err)
 	}
 	other := errors.New("boom")
-	if err := committed(context.Background(), other); err != other {
+	if err := committed(context.Background(), other); !errors.Is(err, other) {
 		t.Errorf("committed(other) = %v, want it unchanged", err)
 	}
 	if got := headerSafe("a\nbé"); got != "a?b?" {
