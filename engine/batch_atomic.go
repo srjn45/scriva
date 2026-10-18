@@ -65,7 +65,11 @@ func (k atomicBatchCapabilities) missing() []string {
 }
 
 // atomicBatchPrereqs records what exists today. Later tasks flip entries.
-var atomicBatchPrereqs = atomicBatchCapabilities{}
+var atomicBatchPrereqs = atomicBatchCapabilities{
+	BackupPreservesDecisions: true,
+	ReplicationEnvelopes:     true,
+	LegacyRootOptIn:          true,
+}
 
 // atomicBatchWriterReady is the single switch that lets a batch write XTx
 // bytes. It is true only when no prerequisite is missing.

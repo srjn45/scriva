@@ -1083,6 +1083,14 @@ func backupMore(ctx context.Context, dataDir, dst string, cols []string) error {
 			return fmt.Errorf("repair: backup of %q failed verification, nothing was changed: %w", c, err)
 		}
 	}
+	for _, base := range []string{xtxFormatFile, xtxJournalFile} {
+		sp := filepath.Join(dataDir, base)
+		if st, err := os.Lstat(sp); err == nil && st.Mode().IsRegular() {
+			if err := copyFileVerified(sp, filepath.Join(dst, base)); err != nil {
+				return fmt.Errorf("repair: backup of coordinator %q failed verification: %w", base, err)
+			}
+		}
+	}
 	return fsyncDir(dst)
 }
 

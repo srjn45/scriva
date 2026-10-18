@@ -3,6 +3,7 @@ package engine
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,7 +55,9 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 
 	// Coordinator metadata is authoritative for stamped entries. A legacy root
 	// has no coordinator files and remains byte-format compatible.
-	if j := db.journalOrNil(); j != nil {
+	j := db.journalOrNil()
+	_, formatErr := os.Stat(filepath.Join(db.dataDir, xtxFormatFile))
+	if j != nil || formatErr == nil {
 		if err := db.writeXTxSnapshot(tw, j); err != nil {
 			return err
 		}
@@ -75,14 +78,20 @@ func (db *DB) SnapshotTo(w io.Writer) error {
 	return nil
 }
 
-// writeXTxSnapshot copies the two durable root coordinator files. The journal
+// writeXTxSnapshot copies the durable root coordinator files. The journal
 // mutex excludes append/checkpoint while Stat and CopyN establish the tar entry
 // boundary. xtx.journal.tmp is an interrupted checkpoint artifact, not state.
 func (db *DB) writeXTxSnapshot(tw *tar.Writer, j *xtxJournal) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	if j != nil {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+	}
 
 	for _, base := range []string{xtxFormatFile, xtxJournalFile} {
+		p := filepath.Join(db.dataDir, base)
+		if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err := writeFileToTar(tw, db.dataDir, base, ""); err != nil {
 			return fmt.Errorf("snapshot: coordinator %q: %w", base, err)
 		}
