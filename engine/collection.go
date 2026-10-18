@@ -1130,8 +1130,12 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			ids[i] = c.idSeq.Add(1)
 			xops[i] = XTxOp{Op: store.OpInsert, ID: ids[i], Data: d, ExpiresAt: exp}
 		}
-		if _, err := c.commitBatchAtomic(xops, ts); err != nil {
+		br, err := c.commitBatchAtomic(xops, ts)
+		if err != nil {
 			return nil, time.Time{}, err
+		}
+		if br.PostErr != nil {
+			return ids, ts, &PostCommitError{Op: "insertMany", Stage: "rotate", Err: br.PostErr}
 		}
 		return ids, ts, nil
 	}
@@ -1705,8 +1709,14 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		return err
 	}
 	if route == batchRouteAtomic {
-		_, err := c.commitBatchAtomic(txOpsToXTx(ops), ops[0].ts)
-		return err
+		br, err := c.commitBatchAtomic(txOpsToXTx(ops), ops[0].ts)
+		if err != nil {
+			return err
+		}
+		if br.PostErr != nil {
+			return &PostCommitError{Op: "commitTx", Stage: "rotate", Err: br.PostErr}
+		}
+		return nil
 	}
 
 	c.mu.Lock()

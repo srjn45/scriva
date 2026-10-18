@@ -1195,6 +1195,32 @@ idle longer than `--tx-timeout` (default `5m`); a later commit on a reaped
 transaction returns a not-found error. Set `--tx-timeout 0` to keep
 transactions indefinitely.
 
+### Crash-atomic batches
+
+On a database in **atomic-batch mode** — every directory created by this
+release, and any directory that already holds cross-collection transaction
+state — `commit-tx` of two or more writes, `InsertMany`, and bulk loads are
+all-or-nothing across a crash or power loss: after recovery you see either
+every record of the batch or none of it, never a prefix. Two fsyncs are paid per
+batch regardless of `--sync-mode`. A batch larger than 1000 operations or 64 MiB
+fails with `RESOURCE_EXHAUSTED` (`ErrXTxTooLarge`) and is never split. If a
+commit returns an *unknown outcome*, do not retry blindly: resolve it with the
+transaction id in the error (`XTxStatus`).
+
+A directory created by an earlier release keeps the old behaviour (a crash can
+leave part of a batch) and the server logs a warning at startup. Convert it
+once with:
+
+```bash
+cp -a ./data ./data.bak                       # conversion is one-way: back up first
+scriva serve --data ./data --enable-atomic-batches
+# or, in the config file:  enable_atomic_batches: true
+```
+
+Converted directories cannot be opened by releases that predate cross-collection
+transactions; see the
+[downgrade playbook](operations.md#upgrade-downgrade-and-recovery-playbook).
+
 ---
 
 ## Cross-collection transactions

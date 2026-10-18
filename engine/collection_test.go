@@ -11,6 +11,7 @@ import (
 func testCfg() CollectionConfig {
 	cfg := defaultConfig()
 	cfg.CompactInterval = 24 * time.Hour // disable automatic compaction in tests
+	cfg.AllowNonAtomicBatch = true       // standalone collections: no coordinator
 	return cfg
 }
 

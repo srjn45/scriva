@@ -75,7 +75,7 @@ var atomicBatchPrereqs = atomicBatchCapabilities{
 
 // atomicBatchWriterReady is the single switch that lets a batch write XTx
 // bytes. It is true only when no prerequisite is missing.
-var atomicBatchWriterReady = false
+var atomicBatchWriterReady = true
 
 type batchRoute int
 
@@ -119,6 +119,9 @@ func (c *Collection) routeBatch(n int) (batchRoute, error) {
 // DB.XTxStatus(TxID) resolves an unknown outcome.
 type BatchResult struct {
 	TxID string
+	// PostErr: the batch is committed and visible, but segment rotation after
+	// it failed (the collection is fenced). Callers return *PostCommitError.
+	PostErr error
 }
 
 // BatchTxID extracts the txid carried by a batch error, if any.
@@ -148,7 +151,7 @@ func (c *Collection) commitBatchAtomic(ops []XTxOp, ts time.Time) (*BatchResult,
 	if err != nil {
 		return nil, err
 	}
-	return &BatchResult{TxID: res.TxID}, nil
+	return &BatchResult{TxID: res.TxID, PostErr: res.postErr}, nil
 }
 
 // txOpsToXTx converts staged single-collection transaction ops.

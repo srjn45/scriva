@@ -66,6 +66,9 @@ func maybeRunKillChild() {
 	}
 	dir, mode := os.Getenv(envKillDir), os.Getenv(envKillMode)
 	seed, _ := strconv.ParseInt(os.Getenv(envKillSeed), 10, 64)
+	if mode == "batch" {
+		runBatchKillChild(dir, seed)
+	}
 	db, err := Open(dir, killChildCfg(mode))
 	if err != nil {
 		if errors.Is(err, ErrDatabaseLocked) {
