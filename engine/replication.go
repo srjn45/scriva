@@ -662,7 +662,24 @@ func (db *DB) ApplyReplication(collection string, e store.Entry) error {
 // already present (same id at an equal-or-newer revision, or a delete of an
 // already-absent id) is skipped, so re-applying the snapshot/stream overlap or
 // resuming after a disconnect never duplicates or corrupts state.
+//
+// It follows the single-record outcome contract (§2.3): append, sync, then
+// apply the indexes, then emit. A nil error (or a *PostCommitError) means the
+// entry is applied and the caller may advance its applied LSN. Any other error
+// means it must not: an append error whose rollback succeeded is NotApplied
+// (safe to re-apply), while a sync failure or failed rollback returns
+// ErrWriteOutcomeUnknown and fences the collection, with nothing applied to the
+// indexes or emitted; the follower recovers by reopening and resuming from its
+// applied LSN, where revision idempotency absorbs an entry that did persist.
 func (c *Collection) applyEntry(e store.Entry) error {
+	switch e.Op {
+	case store.OpDelete, store.OpInsert, store.OpUpdate:
+	default:
+		return fmt.Errorf("collection: apply: unknown op %q", e.Op)
+	}
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	// A keyed record needs the mandatory unique _key index to exist before it is
 	// applied, mirroring the keyed write path. ensureKeyIndex takes c.mu (read),
 	// so it must run before we take the write lock.
@@ -676,40 +693,38 @@ func (c *Collection) applyEntry(e store.Entry) error {
 
 	c.mu.Lock()
 	cur, exists := c.index.Get(e.ID)
+	if e.Op == store.OpDelete && !exists {
+		c.mu.Unlock()
+		return nil // already absent — idempotent
+	}
+	if e.Op != store.OpDelete && exists && cur.Rev >= e.Rev {
+		c.mu.Unlock()
+		return nil // already applied at an equal-or-newer revision — idempotent
+	}
+	offset, err := c.appendLocked("apply", e)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if err := c.syncCommitLocked("apply"); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 
+	var ev WatchEvent
 	switch e.Op {
 	case store.OpDelete:
-		if !exists {
-			c.mu.Unlock()
-			return nil // already absent — idempotent
-		}
-		if _, err := c.active.Append(e); err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("collection: apply delete: %w", err)
-		}
 		c.index.Delete(e.ID)
 		c.sidxRemoveEntry(e.ID)
-
-	case store.OpInsert, store.OpUpdate:
-		if exists && cur.Rev >= e.Rev {
-			c.mu.Unlock()
-			return nil // already applied at an equal-or-newer revision — idempotent
-		}
-		offset, err := c.active.Append(e)
-		if err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("collection: apply write: %w", err)
-		}
+		ev = WatchEvent{Op: store.OpDelete, ID: e.ID, Ts: e.Ts}
+	default:
 		c.index.Set(e.ID, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: e.Rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch})
 		if exists {
 			c.sidxUpdateEntry(e.ID, e.Data)
 		} else {
 			c.sidxIndexEntry(e.ID, e.Data)
 		}
-
-	default:
-		c.mu.Unlock()
-		return fmt.Errorf("collection: apply: unknown op %q", e.Op)
+		ev = WatchEvent{Op: e.Op, ID: e.ID, Data: e.Data, Ts: e.Ts}
 	}
 
 	// Keep the id counter ahead of every applied id so a future local write (after
@@ -720,28 +735,10 @@ func (c *Collection) applyEntry(e store.Entry) error {
 			break
 		}
 	}
-
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("collection: apply: sync: %w", err)
-	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return fmt.Errorf("collection: rotate after apply: %w", err)
-		}
-	}
-
-	// Surface applied changes to this follower's own Watch subscribers.
-	switch e.Op {
-	case store.OpInsert:
-		c.emit(WatchEvent{Op: store.OpInsert, ID: e.ID, Data: e.Data, Ts: e.Ts})
-	case store.OpUpdate:
-		c.emit(WatchEvent{Op: store.OpUpdate, ID: e.ID, Data: e.Data, Ts: e.Ts})
-	case store.OpDelete:
-		c.emit(WatchEvent{Op: store.OpDelete, ID: e.ID, Ts: e.Ts})
-	}
-	return nil
+	// Surface the applied change to this follower's own Watch subscribers, then
+	// rotate if due (a rotation failure is post-commit).
+	return c.afterCommit("apply", ev, needRotate)
 }

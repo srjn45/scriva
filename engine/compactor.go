@@ -66,13 +66,17 @@ func (c *Collection) compactLoop() {
 			if c.isClosed() {
 				return
 			}
-			_ = c.reapExpired()
+			if !c.backgroundReap() {
+				return // fenced: nothing may write until reopen
+			}
 			_ = c.compact(false)
 		case <-c.compactC:
 			if c.isClosed() {
 				return
 			}
-			_ = c.reapExpired()
+			if !c.backgroundReap() {
+				return // fenced: nothing may write until reopen
+			}
 			_ = c.compact(false)
 		}
 	}

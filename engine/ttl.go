@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -76,7 +77,18 @@ func (c *Collection) isExpired(loc IndexEntry) bool {
 // primary and secondary indexes, reclaiming it on the next compaction. It is
 // driven off the compactor cadence. Records are hidden from reads the instant
 // they expire (see isExpired); this pass makes that reclamation durable.
+//
+// A pass follows the single-record outcome contract (§2.3) with one sync for
+// all its tombstones: append every tombstone, sync once, and only then drop the
+// ids from the indexes, publish each tombstone to replication and emit its
+// watch event. A sync failure (or an append whose rollback failed) is Unknown:
+// the collection is fenced and nothing from the pass is published. An append
+// failure whose rollback succeeded stops the pass; the tombstones already
+// appended are still committed and published, and the error is returned.
 func (c *Collection) reapExpired() error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	now := time.Now().UnixNano()
 
 	// Collect expired ids under the index read lock; do not mutate while iterating.
@@ -94,36 +106,63 @@ func (c *Collection) reapExpired() error {
 	}
 
 	c.mu.Lock()
-	var events []WatchEvent
+	var (
+		reaped  []store.Entry
+		stopErr error
+	)
 	for _, id := range expiredIDs {
 		loc, ok := c.index.Get(id)
 		if !ok || !expired(loc.ExpiresAt, now) {
 			continue // resurrected or refreshed since we snapshotted — leave it be
 		}
 		e := store.NewDelete(id)
-		if _, err := c.active.Append(e); err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("collection: reap id %d: %w", id, err)
+		if _, err := c.appendLocked("reap", e); err != nil {
+			if errors.Is(err, ErrWriteOutcomeUnknown) || errors.Is(err, ErrCollectionFenced) {
+				c.mu.Unlock()
+				return err
+			}
+			stopErr = fmt.Errorf("collection: reap id %d: %w", id, err)
+			break
 		}
-		c.index.Delete(id)
-		c.sidxRemoveEntry(id)
-		events = append(events, WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts})
+		reaped = append(reaped, e)
 	}
-	if err := c.syncActiveLocked(); err != nil {
+	if len(reaped) == 0 {
 		c.mu.Unlock()
-		return fmt.Errorf("collection: reap sync: %w", err)
+		return stopErr
+	}
+	if err := c.syncCommitLocked("reap"); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	for _, e := range reaped {
+		c.index.Delete(e.ID)
+		c.sidxRemoveEntry(e.ID)
+		c.publishCommit(e)
 	}
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
+	for _, e := range reaped {
+		c.emit(WatchEvent{Op: store.OpDelete, ID: e.ID, Ts: e.Ts})
+	}
 	if needRotate {
 		if err := c.rotateSegment(); err != nil {
-			return fmt.Errorf("collection: rotate after reap: %w", err)
+			return &PostCommitError{Op: "reap", Stage: "rotate", Err: err}
 		}
 	}
+	return stopErr
+}
 
-	for _, ev := range events {
-		c.emit(ev)
+// backgroundReap runs a reaper pass for the compactor loop. The pass has no
+// caller to return to, so a failure is logged (an Unknown outcome is also
+// reported through the fence's log line and OnWriteOutcomeUnknown hook). It
+// reports false once the collection is fenced, so the loop stops.
+func (c *Collection) backgroundReap() bool {
+	err := c.reapExpired()
+	if err != nil && !errors.Is(err, ErrCollectionFenced) {
+		if l := c.cfg.Logger; l != nil {
+			l.Error("ttl reaper pass failed", "collection", c.name, "err", err)
+		}
 	}
-	return nil
+	return c.checkFenced() == nil
 }
