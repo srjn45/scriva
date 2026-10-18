@@ -317,7 +317,8 @@ func TestBatchRecovery_IncompleteRun_FailsClosed(t *testing.T) {
 
 	// Read segment and find offset of the 3rd entry so we can simulate crash where
 	// only entries 0 and 1 made it to disk.
-	activePath := c.active.Path()
+	// Path.Base only: Path() may be an fd-relative /proc path that dies with Close.
+	activePath := filepath.Join(dir, "items", filepath.Base(c.active.Path()))
 	_ = db.Close()
 
 	sr, err := ScanSegmentTolerant(activePath)

@@ -37,8 +37,12 @@ func TestAtomicBatchGate_ClosedWhilePrerequisitesMissing(t *testing.T) {
 	if len(atomicBatchPrereqs.missing()) > 0 && atomicBatchWriterReady {
 		t.Fatalf("atomic batch writer enabled with missing prerequisites: %v", atomicBatchPrereqs.missing())
 	}
-	if atomicBatchWriterReady {
-		t.Fatal("atomic batch writer must stay disabled in this change")
+	// Release gate: every prerequisite exists, so the writer is open.
+	if m := atomicBatchPrereqs.missing(); len(m) > 0 {
+		t.Fatalf("release gate: prerequisites still missing: %v", m)
+	}
+	if !atomicBatchWriterReady {
+		t.Fatal("release gate: atomic batch writer is closed although every prerequisite exists")
 	}
 	if n := len((atomicBatchCapabilities{}).missing()); n != 5 {
 		t.Fatalf("zero capabilities: missing = %d, want 5", n)
@@ -51,6 +55,7 @@ func TestAtomicBatchGate_ClosedWhilePrerequisitesMissing(t *testing.T) {
 // With the gate closed (production default) batches write no XTx bytes and
 // behave exactly as before, on legacy roots and on roots that hold xtx.format.
 func TestBatchRouting_GateClosedWritesNoXTxBytes(t *testing.T) {
+	withAtomicBatchWriter(t, false)
 	dir := t.TempDir()
 	db, err := Open(dir, defaultConfig())
 	if err != nil {
@@ -94,16 +99,35 @@ func TestBatchRouting_Decisions(t *testing.T) {
 	if r, err := c.routeBatch(1); r != batchRouteLegacy || err != nil {
 		t.Fatalf("n=1: %v %v", r, err)
 	}
-	// Legacy root: stay on the legacy path until opt-in exists.
-	if r, err := c.routeBatch(2); r != batchRouteLegacy || err != nil {
-		t.Fatalf("legacy root: %v %v", r, err)
+	// New root: atomic by default (hardening §3.1 item 8).
+	if r, err := c.routeBatch(2); r != batchRouteAtomic || err != nil {
+		t.Fatalf("new root: %v %v", r, err)
 	}
-	// Root with xtx.format: atomic.
-	if _, err := db.ensureXTxJournal(); err != nil {
+	// Legacy root (collections, no xtx.format): legacy path until opt-in.
+	legacy := t.TempDir()
+	withAtomicBatchWriter(t, false)
+	ldb, err := Open(legacy, defaultConfig())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if r, err := c.routeBatch(2); r != batchRouteAtomic || err != nil {
-		t.Fatalf("xtx root: %v %v", r, err)
+	if _, err := ldb.CreateCollection("old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ldb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	withAtomicBatchWriter(t, true)
+	ldb, err = Open(legacy, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ldb.Close()
+	lc, _ := ldb.Collection("old")
+	if r, err := lc.routeBatch(2); r != batchRouteLegacy || err != nil {
+		t.Fatalf("legacy root: %v %v", r, err)
+	}
+	if xtxFilesExist(legacy) {
+		t.Fatal("legacy root gained xtx.* files without opt-in")
 	}
 
 	// Unmanaged collection: actionable error unless explicitly allowed.
@@ -278,3 +302,75 @@ func TestBatchTxID(t *testing.T) {
 	}
 }
 
+
+// New roots are atomic by default; legacy roots stay legacy until opt-in;
+// follower roots are never initialised locally; and a reopened atomic root
+// stays atomic.
+func TestAtomicBatch_RootDefaults(t *testing.T) {
+	cfg := defaultConfig()
+
+	// New root.
+	dir := t.TempDir()
+	db, err := Open(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.journalOrNil() == nil || !db.atomicBatchMode() {
+		t.Fatal("new root is not in atomic batch mode")
+	}
+	c, _ := db.CreateCollection("a")
+	if _, _, err := c.InsertMany(batchRecs(3), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(db.journalOrNil().decisionsMap()); n != 1 {
+		t.Fatalf("decisions = %d, want 1", n)
+	}
+	_ = db.Close()
+	db, err = Open(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !db.atomicBatchMode() {
+		t.Fatal("reopened atomic root lost atomic mode")
+	}
+	_ = db.Close()
+
+	// Follower root: not initialised.
+	fcfg := defaultConfig()
+	fcfg.Follower = true
+	fdir := t.TempDir()
+	fdb, err := Open(fdir, fcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xtxFilesExist(fdir) {
+		t.Fatal("follower root initialised XTx files locally")
+	}
+	_ = fdb.Close()
+
+	// Legacy root: untouched without opt-in, converted with it.
+	withAtomicBatchWriter(t, false)
+	ldir := t.TempDir()
+	ldb, _ := Open(ldir, cfg)
+	_, _ = ldb.CreateCollection("old")
+	_ = ldb.Close()
+	withAtomicBatchWriter(t, true)
+	ldb, err = Open(ldir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ldb.atomicBatchMode() || xtxFilesExist(ldir) {
+		t.Fatal("legacy root converted without opt-in")
+	}
+	_ = ldb.Close()
+	ocfg := cfg
+	ocfg.EnableAtomicBatches = true
+	ldb, err = Open(ldir, ocfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ldb.atomicBatchMode() {
+		t.Fatal("opt-in did not convert the legacy root")
+	}
+	_ = ldb.Close()
+}

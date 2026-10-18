@@ -487,8 +487,9 @@ func TestRotation_PostCommit_MultiRecordWrites(t *testing.T) {
 			}
 
 			// 2. Replication publication succeeded.
-			if d := woLSN(db) - lsn0; d != uint64(len(targets)) {
-				t.Fatalf("replication LSN delta = %d, want %d", d, len(targets))
+			// An atomic batch is published as one envelope: one LSN (§3.1).
+			if d := woLSN(db) - lsn0; d != 1 {
+				t.Fatalf("replication LSN delta = %d, want 1 (one envelope)", d)
 			}
 
 			// 3. Fencing: collection is fenced because seal sync failed.

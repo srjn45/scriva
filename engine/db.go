@@ -125,8 +125,11 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		_ = dl.release()
 		return nil, err
 	}
+	atomicRoot := f != nil
 	if f == nil {
-		if cfg.EnableAtomicBatches {
+		hasCols, _ := dirHasExistingCollections(dataDir)
+		switch {
+		case cfg.EnableAtomicBatches:
 			// Operator-controlled opt-in conversion of legacy root.
 			if err := ensureXTxFormat(dataDir, "opt-in"); err != nil {
 				_ = dl.release()
@@ -135,11 +138,17 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 			if cfg.Logger != nil {
 				cfg.Logger.Info("converted legacy root to atomic batches", "data_dir", dataDir)
 			}
-		} else if cfg.Logger != nil {
-			hasCols, _ := dirHasExistingCollections(dataDir)
-			if hasCols {
-				cfg.Logger.Warn("legacy root opened: atomic batches disabled; run serve --enable-atomic-batches to convert", "data_dir", dataDir)
+			atomicRoot = true
+		case !hasCols && !cfg.Follower && atomicBatchWriterReady:
+			// New root: atomic batches are the default (hardening §3.1 item 8).
+			// A follower root is initialised by the leader's envelopes, never here.
+			if err := ensureXTxFormat(dataDir, "default"); err != nil {
+				_ = dl.release()
+				return nil, err
 			}
+			atomicRoot = true
+		case hasCols && cfg.Logger != nil:
+			cfg.Logger.Warn("legacy root opened: atomic batches disabled; run serve --enable-atomic-batches to convert", "data_dir", dataDir)
 		}
 	}
 
@@ -157,7 +166,7 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		return nil, err
 	}
 
-	if (cfg.EnableAtomicBatches || f != nil) && db.xtxJournal == nil {
+	if atomicRoot && db.xtxJournal == nil {
 		if _, err := db.ensureXTxJournal(); err != nil {
 			for _, c := range db.collections {
 				_ = c.Close()

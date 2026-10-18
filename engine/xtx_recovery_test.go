@@ -466,6 +466,7 @@ func TestXTxRecovery_TruthTableFailClosed(t *testing.T) {
 	})
 
 	t.Run("JournalMissingWithStampedEntries_Row12", func(t *testing.T) {
+		withAtomicBatchWriter(t, false) // legacy root: no xtx.* until the test adds them
 		dir := t.TempDir()
 		db, _ := Open(dir, CollectionConfig{})
 		_, _ = db.CreateCollection("orders")

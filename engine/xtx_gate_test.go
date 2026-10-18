@@ -95,6 +95,7 @@ func TestXTxFormatGate(t *testing.T) {
 }
 
 func TestXTxLegacyRootUntouched(t *testing.T) {
+	withAtomicBatchWriter(t, false) // models a legacy root, not a new one
 	dir := t.TempDir()
 	db, err := Open(dir, CollectionConfig{})
 	if err != nil {
@@ -126,6 +127,7 @@ func TestXTxLegacyRootUntouched(t *testing.T) {
 }
 
 func TestXTxOpenRefusesTooNewFormat(t *testing.T) {
+	withAtomicBatchWriter(t, false) // models a legacy root, not a new one
 	dir := t.TempDir()
 	db, _ := Open(dir, CollectionConfig{})
 	_, _ = db.CreateCollection("c")
@@ -261,6 +263,7 @@ func TestXTxOpenFailsClosedOnCorruptJournal(t *testing.T) {
 }
 
 func TestXTxOpenJournalWithoutFormatUnsupported(t *testing.T) {
+	withAtomicBatchWriter(t, false) // models a legacy root, not a new one
 	dir := t.TempDir()
 	j, err := createXTxJournal(dir, xtxOptions{})
 	if err != nil {
@@ -273,6 +276,7 @@ func TestXTxOpenJournalWithoutFormatUnsupported(t *testing.T) {
 }
 
 func TestXTxReservedNames(t *testing.T) {
+	withAtomicBatchWriter(t, false) // models a legacy root, not a new one
 	dir := t.TempDir()
 	db, err := Open(dir, CollectionConfig{})
 	if err != nil {

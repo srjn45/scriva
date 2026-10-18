@@ -399,9 +399,10 @@ func TestRevlessSegmentLoadsFine(t *testing.T) {
 func openTestCollection2(t *testing.T, dir string) *Collection {
 	t.Helper()
 	col, err := OpenCollection("test", dir, CollectionConfig{
-		SegmentMaxSize:  512,
-		CompactInterval: 24 * time.Hour,
-		CompactDirtyPct: 0.30,
+		SegmentMaxSize:      512,
+		AllowNonAtomicBatch: true,
+		CompactInterval:     24 * time.Hour,
+		CompactDirtyPct:     0.30,
 	})
 	if err != nil {
 		t.Fatalf("OpenCollection: %v", err)

@@ -307,6 +307,57 @@ never fed per-entry records.
 
 ---
 
+### Atomic single-collection batches: rollout and recovery
+
+`InsertMany`, single-collection `CommitTx` and bulk loads are crash-atomic on a
+root in atomic-batch mode (design: [architecture](architecture.md#atomic-single-collection-batches)).
+
+**Which roots.** A new data directory is atomic from its first write. A root that
+already has `xtx.format` stays atomic. A *legacy* root (collections, no
+`xtx.format`) is **not** changed by upgrading the binary: it logs
+`legacy root opened: atomic batches disabled; run serve --enable-atomic-batches
+to convert` and keeps the old prefix-visible batch behaviour. A follower root is
+initialised by the leader's envelopes, never locally.
+
+**Converting a legacy root** (one-way):
+
+1. Take a verified backup: `scriva repair`'s backup, or stop the server and copy
+   the directory. This is the only rollback; there is no drain tool.
+2. Upgrade every follower first (a v1-only follower is refused with
+   `REPLICATION_PROTOCOL_UNSUPPORTED` when the first batch reaches it).
+3. Start once with `scriva serve --enable-atomic-batches` (or
+   `enable_atomic_batches: true`). The log line `converted legacy root to atomic
+   batches` confirms it; the flag may stay set or be removed afterwards.
+
+**Cost.** Each batch forces a data fsync and a decision fsync whatever
+`--sync-mode` is, so relaxed modes lose their batching advantage. Measured
+numbers are in [release-readiness-batch.md](release-readiness-batch.md#performance).
+
+**Client errors.**
+
+| Error | Meaning | Action |
+|---|---|---|
+| `ErrXTxDurability` (aborted) | proven abort before the decision, nothing applied | safe to retry |
+| `ErrXTxOutcomeUnknown` | decision fsync/append failed; the journal is fenced | do **not** retry; `XTxStatus(txid)` after restart; the answer is final |
+| `*PostCommitError` (`rotate`) | batch committed; rotation afterwards failed and the collection is fenced | treat as success; restart per the fenced-collection runbook below |
+| `ErrXTxTooLarge` | over 1000 ops / 64 MiB | split the batch yourself, accepting that the parts are independent |
+| `ErrBatchNotAtomic` | embedded collection opened without a DB | open through `engine.Open`/`scriva.Open` or set `AllowNonAtomicBatch` |
+
+**Recovery.** `Open` resolves every batch run itself: no COMMIT means the run is
+truncated (full old state), a COMMIT with a matching run is replayed (full new
+state), including a batch whose caller never got an acknowledgment. If the
+evidence is damaged `Open` refuses (`ErrXTxIncomplete`, `ErrXTxJournalMissing`,
+`ErrXTxRecoveryRequired`) and modifies nothing; follow the recovery paragraph of
+the [playbook](#upgrade-downgrade-and-recovery-playbook) (verify, then repair
+from a copy; restore `xtx.journal` from backup; never create an empty one).
+`snapshot` and `repair --backup` carry `xtx.journal`/`xtx.format`, so a restored
+snapshot of an atomic root is atomic.
+
+**Known limit.** Atomicity here is about crashes. A scan running concurrently
+with a batch may see part of it (hardening §3.5, tracked separately).
+
+---
+
 ### Runbook: `DropCollection` returns `PARTICIPANT_RETAINED`
 
 **Symptom.** `DropCollection` fails with gRPC `FAILED_PRECONDITION`, reason
