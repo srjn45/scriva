@@ -16,8 +16,14 @@ import (
 // DB is the top-level database handle. It owns a registry of collections and
 // is the entry point for all engine operations.
 type DB struct {
-	dataDir     string
-	defaultCfg  CollectionConfig
+	dataDir    string
+	defaultCfg CollectionConfig
+	// mu is the DB lifecycle barrier. Lock order (hardening §3.3):
+	//   DB.mu (DropCollection/Close/snapshot: exclusive; commitXTx and handle
+	//   begin: shared for their whole duration) → participants' c.mu in
+	//   canonical name order → xtxJournal.mu (leaf; never held while taking a
+	//   c.mu) → released before col.Close (compactMu → persistMu → c.mu).
+	// Never take a sibling's compactMu while holding another lock.
 	mu          sync.RWMutex
 	collections map[string]*Collection
 
@@ -244,6 +250,19 @@ func (db *DB) DropCollection(name string) error {
 		return err
 	} else if !exists {
 		return fmt.Errorf("%w: %q is missing from the data directory", ErrUnsafePath, name)
+	}
+	// Interim fail-safe (H6): retirement at drop is not implemented, so refuse
+	// while the journal holds any non-retired COMMIT naming this collection.
+	// Runs under the exclusive DB.mu (no commit can be in flight) and before
+	// any side effect: nothing is closed, removed or journaled on refusal.
+	if db.xtxJournal != nil {
+		if txids := db.xtxJournal.retainedFor(name); len(txids) > 0 {
+			return &ParticipantRetainedError{
+				Collection: name,
+				TxIDs:      txids,
+				Reason:     "the coordinator journal holds committed cross-collection transactions that name it and have not been retired; its files are preserved as recovery evidence and retirement is not yet available",
+			}
+		}
 	}
 	_ = col.Close()
 	delete(db.collections, name)

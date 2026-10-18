@@ -1051,6 +1051,28 @@ func (j *xtxJournal) decisions() []xtxDecision {
 	return out
 }
 
+// retainedFor returns the sorted txids of non-retired COMMIT decisions whose
+// parts name collection. Retired decisions and ABORTs never block. Takes only
+// j.mu (leaf).
+func (j *xtxJournal) retainedFor(collection string) []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []string
+	for tx, d := range j.table.byTx {
+		if d.Retired || d.Outcome != xtxKindCommit {
+			continue
+		}
+		for _, p := range d.Parts {
+			if p.C == collection {
+				out = append(out, tx)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (j *xtxJournal) decisionsMap() map[string]string {
 	if j == nil {
 		return nil
