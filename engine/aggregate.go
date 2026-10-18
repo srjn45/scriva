@@ -65,6 +65,9 @@ type aggAcc struct {
 // ctx cancellation aborts the scan between reads and is returned as
 // context.Canceled / context.DeadlineExceeded.
 func (c *Collection) Aggregate(ctx context.Context, spec AggregateSpec, emit func(GroupResult) error) error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	f := spec.Filter
 	if f == nil {
 		f = query.MatchAll

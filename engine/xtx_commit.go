@@ -335,6 +335,13 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 // in canonical order. The returned func is the S6 post-lock maintenance.
 func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xtxReadCheck, cols map[string]*Collection, participants []*Collection) (*XTxResult, func(), error) {
 	db.xtxHookAt(xtxHookLocked, key, "")
+	// A fenced collection (§2.3) — participant or read-only — aborts the
+	// transaction before any byte or decision is written.
+	for _, c := range cols {
+		if err := c.checkFenced(); err != nil {
+			return nil, nil, xtxErr("", ErrXTxDurability, err)
+		}
+	}
 	if err := validateXTxReads(cols, reads); err != nil {
 		return nil, nil, err
 	}

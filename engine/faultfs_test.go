@@ -8,7 +8,11 @@ package engine
 //	fs.failWriteAt(3, 10, syscall.ENOSPC) // 3rd write: persist 10 bytes, return ENOSPC
 //	fs.failSyncAt(1, nil)                 // 1st fsync fails (nil => EIO)
 //	fs.failRenameAt(1, nil)               // 1st compactor rename fails
+//	fs.failTruncateAt(1, nil)             // 1st truncate (append rollback) fails (nil => EIO)
 //	fs.crashAfter(5)                      // ops 1..5 succeed; op 6+ never reaches disk
+//	fs.scopeTo(activePath)                // write/sync/truncate ordinals count only this file
+//	fs.failSyncAt(fs.scopedCount("sync")+1, nil)
+//	powerLossImage(t, fs, dir, img)       // copy dir, cut wrapped files to last fsync
 //	db, col := openFaulty(t, dir, fs, CollectionConfig{...})
 //	... drive writes / col.CompactNow() ...
 //	db2 := reopenAfterCrash(t, db, fs, dir, cfg) // fresh handle, as after kill -9
@@ -27,6 +31,8 @@ package engine
 // miss them (index.json checksum + segmentsValid do not detect a stale-but-valid
 // index). (2) Background compaction runs on segment rotation, so armed faults
 // may fire there; assert with fs.faults().
+//
+// See write_outcome_harness_test.go for the per-op outcome observation harness.
 //
 // Op counting: "steps" count write, sync, truncate and rename calls (not close,
 // stat, read, seek) across every file of the faultFS, in call order.

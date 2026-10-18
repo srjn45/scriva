@@ -950,7 +950,8 @@ acknowledged is controlled by the **sync mode** (`--sync`):
 `always` holds the collection write lock across the fsync, so it serializes
 durable writes — correct, but the slowest option. `interval` is the recommended
 middle ground for most workloads. Sealing a segment and `Close()` always fsync
-regardless of mode.
+regardless of mode (except on a fenced collection, below, which is never
+fsynced again).
 
 What each mode means for the other durability-relevant events:
 
@@ -965,7 +966,34 @@ What each mode means for the other durability-relevant events:
 
 A crash or power loss can drop the latest writes, and open rebuilds indexes from validated segments. Torn final lines are trimmed. **Single-record writes and multi-entry batches have different guarantees:** `CommitTx`/`InsertMany` roll back ordinary reported append/sync failures in-process, but their current independent-entry format does not provide all-or-nothing visibility after a crash between complete batch entries. Crash-atomic single-collection batches are specified as follow-up hardening in [database integrity and security hardening](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery); do not rely on them as crash-atomic until implemented.
 
-**Failed sync on a single-record write (hardening H5).** Today, under `SyncModeAlways`, `Insert` (confirmed) and — by code trace — `Update`, `Delete`, compare-and-swap, `Upsert` and the TTL reaper append, mutate the index and then return the sync error without rolling back or publishing: the caller sees an error while the same process still serves the record and watchers/followers never see it. The ratified contract is fail-stop: a sync error is an **outcome-unknown** result, `fsync` is never retried, the collection is fenced (reads and writes return `ErrCollectionFenced`) until reopen, and recovery decides from the bytes — a complete line recovers as committed. Seal/rotation failures after a committed write become success plus a post-commit warning. See [hardening §2.3](design-database-integrity-hardening.md#23-durable-write-outcomes). This is **not yet implemented**.
+### Single-record write outcomes
+
+Every single-record mutation (`Insert`, `InsertWithKey`, `Update`, `Delete`, `Upsert`, `UpdateIfRev`/`UpdateIfMatch`, and `UpdateByKey`/`DeleteByKey`, which share the update/delete paths) runs one sequence under the collection write lock ([hardening §2.3](design-database-integrity-hardening.md#23-durable-write-outcomes), [§3.2](design-database-integrity-hardening.md#32-io-failure-and-commit-state-machine)):
+
+1. validate (not found, quota, unique indexes, CAS predicate) — a rejection writes nothing;
+2. append one line to the active segment;
+3. **durability point**: under `always`, fsync the active segment (under `none`/`interval` the append is the commit point and the power-loss window above applies);
+4. only then apply the primary and secondary indexes, publish to the replication feed (`publishCommit`) and release the lock — the write is **linearized** here, so a concurrent reader can never see a record that has not reached its durability point;
+5. after the lock: emit the watch event, *then* rotate the segment if it is full.
+
+The outcome is one of four, all `errors.Is`-friendly:
+
+| Outcome | When | Caller sees | Engine state |
+|---|---|---|---|
+| Durable | append (and, under `always`, fsync) succeeded | `nil` | normal |
+| NotApplied | validation failed, or the append failed **and** the truncate back to the previous size succeeded | the existing error (`ErrDuplicateKey`, `ErrResourceExhausted`, the I/O cause, …) — retry safe; the id is not reused | unchanged, not fenced |
+| Unknown | the fsync failed, or the rollback truncate failed (segment poisoned) | `ErrWriteOutcomeUnknown` wrapping the cause | **fenced**; nothing published, no watch event, replication LSN unchanged |
+| Durable + ancillary failure | committed and published, then rotation failed (seal sync, segment create, directory sync, meta persist) | `*PostCommitError` (`errors.Is(err, ErrPostCommit)`) with the normal return values (id, rev) — treat as success | normal, except a failed seal/directory sync fences the collection for the *next* operation |
+
+**Fencing** (`engine/fence.go`). The first unknown-outcome cause is recorded in an atomic, first-cause-wins pointer on the collection (set under the write lock by foreground writers, lock-free by `syncLoop`). It is checked lock-free at the top of every read and write and again under the lock before an append. A fenced collection returns `ErrCollectionFenced` (wrapping the cause) from `Get`/`FindByKey`/`Scan`/`Count`/`Exists`/`Aggregate` and every write, serves no secondary-index lookups, refuses compaction, index changes, encryption admin and `Snapshot`, and aborts a cross-collection transaction that names it before any byte or decision is written (`ErrXTxDurability`). `Close`, `Stats` and `Verify` remain allowed; `Close` does not fsync the segment or persist the untrusted in-memory indexes. The engine never retries an fsync and never rolls back the index after one fails. Recovery is reopening the collection (restart the process): a complete valid line of the unknown write recovers as committed — the caller saw an error, so single-record writes are at-least-once — and a torn tail is trimmed. To resolve Unknown, re-read: keyed insert → `FindByKey`/`Upsert`; update → read `Rev` and `UpdateIfRev`; id-less insert → at-least-once.
+
+Sealing marks a segment sealed only after its fsync succeeds, so a failed seal never leaves a sealed-and-active segment; if the next segment cannot be created the just-sealed one is reopened as the active segment. Under `interval`, a failed `syncLoop` fsync fences the collection and stops the loop (writes acknowledged since the last good sync may or may not survive power loss); so does a failed fsync of the active segment by the background index persist, in any mode. Each fence calls `CollectionConfig.OnWriteOutcomeUnknown` once (`scriva_write_outcome_unknown_total{collection,op}`), counted separately from proven aborts. Multi-entry batches (`InsertMany`, single-collection `CommitTx`, and `LoadJSONL`, which commits through `CommitTx`) are only partly covered: they refuse to start on a fenced collection, and a rotation failure after the batch committed is a `*PostCommitError`, but a failed batch sync is still rolled back in-process rather than reported as Unknown, and the batch is not crash-atomic — that is stage 3, [§3.1](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery). A truncate failure in any path still poisons and fences. How these outcomes reach gRPC, REST and the CLI: [Write-outcome error mapping](#write-outcome-error-mapping).
+
+**Keyed mutations, TTL reaper and replication apply.** These follow the same sequence and fence the same way:
+
+- *Keyed mutations.* `InsertWithKey` runs `insert`; `UpdateByKey`/`DeleteByKey` resolve the key through the unique `_key` index (refused on a fenced collection) and then run `update`/`Delete`; `Upsert`, `UpdateIfRev` and `UpdateIfMatch` resolve the key and do the append → fsync → index/sidx → `publishCommit` under one write-lock hold. No keyed path touches the indexes or publishes before the fsync returns.
+- *TTL reaper* (`reapExpired`, on the compactor cadence and before `CompactNow`). A pass appends one delete tombstone per expired id, fsyncs **once** for the pass, and only then drops the ids from the primary and secondary indexes, publishes each tombstone to replication (one LSN per reaped id, so followers converge without relying on their own clock) and emits one `delete` watch event per id; rotation follows the events and a rotation failure is a `*PostCommitError`. The pass is linearized at the fsync: if it fails, or a rollback truncate fails, the pass is Unknown — the collection is fenced with op `reap`, counted once, and *none* of its tombstones is applied, published or emitted (the records were already invisible to reads by their TTL, so nothing becomes visible or invisible early). After reopen the tombstones that reached the disk take effect (page cache: all of them; power loss: none, and the records stay hidden by TTL until the next pass). A short write whose truncate succeeds ends the pass early as NotApplied: the tombstones before it are still synced and committed, and the error is returned. The background reaper logs a failed pass through `CollectionConfig.Logger` and stops the compactor loop once the collection is fenced.
+- *Replication apply* (follower `applyEntry`). The idempotency check (an id already at an equal-or-newer revision, or a delete of an absent id, is a no-op) runs under the write lock before any byte; then append → fsync → primary/secondary index → watch event → rotation. A follower apply never re-publishes. `nil` or a `*PostCommitError` means applied, and the follower advances its applied LSN; any other error means it does not. A NotApplied append error is safe to re-apply. A failed fsync or rollback returns `ErrWriteOutcomeUnknown`, fences the collection with op `apply` and leaves the indexes and watchers untouched; the follower loop stops on `ErrWriteOutcomeUnknown`/`ErrCollectionFenced` without advancing its LSN, so after a restart it resumes from the last acknowledged entry and revision idempotency absorbs an entry whose line did persist.
 
 > Pick the mode that matches your data's value. `none` is appropriate for caches
 > and rebuildable data; `always` for data you cannot afford to lose on power loss.
@@ -988,7 +1016,43 @@ cache. Use `--sync=interval` or `--sync=always` to bound or eliminate that windo
 
 A failed `Append` (ENOSPC, EIO, short write) may leave bytes on disk even when it reports zero written. The segment attempts to truncate back to its last known-good size after a failed write, and the collection rolls back an already-appended prefix of a multi-entry write when a later append or sync fails. These in-process rollback paths do not make a batch crash-atomic: a process crash can leave a prefix of complete ordinary entries that recovery replays. Sync failures may also have an indeterminate durable outcome and must be handled according to the hardening contract in [the technical specification](design-database-integrity-hardening.md#32-io-failure-and-commit-state-machine).
 
-If the rollback truncate itself fails, the tail of the file is unknown and appending after it could glue a record onto garbage. The segment is then **poisoned**: every later append returns `engine.ErrSegmentPoisoned` (wrapping the original cause) until the process restarts. Reads and other collections keep working. Poisoning increments `scriva_segment_poisoned_total` and `scriva_append_errors_total{reason="poisoned"}`. The recovery is to fix the underlying fault (disk space, device health), restart so that open re-validates and trims the tail, then run `scriva verify` if you saw it. A record too large to be scanned back is refused up front (`ErrRecordTooLarge`) rather than written.
+If the rollback truncate itself fails, the tail of the file is unknown and appending after it could glue a record onto garbage. The segment is then **poisoned** and the collection **fenced** (see [Single-record write outcomes](#single-record-write-outcomes)): the failing write returns `ErrWriteOutcomeUnknown` wrapping `engine.ErrSegmentPoisoned` and the cause, and every later read and write on that collection returns `ErrCollectionFenced` until the process restarts. Other collections keep working. Poisoning increments `scriva_segment_poisoned_total` and `scriva_append_errors_total{reason="poisoned"}`. The recovery is to fix the underlying fault (disk space, device health), restart so that open re-validates and trims the tail, then run `scriva verify` if you saw it. A record too large to be scanned back is refused up front (`ErrRecordTooLarge`) rather than written.
+
+#### Mutation semantics at a glance
+
+Every ordinary (non-XTx) mutation, where it is linearized — the instant a concurrent reader, the replication feed and a watcher can first observe it — and what its success means. "Sequence" is the single-record sequence above: validate → append → durability point → indexes + `publishCommit` (linearization) → unlock → watch event → rotation.
+
+| Mutation | Linearization point | Success means (`always` / `none`,`interval`) | On I/O failure |
+|---|---|---|---|
+| `Insert`, `InsertWithExpiry`, `InsertWithKey` | index publish after the fsync, under the write lock | fsynced / appended (power-loss window of the mode) | NotApplied, or Unknown + fence |
+| `Update`, `UpdateWithExpiry`, `UpdateByKey`, `Delete`, `DeleteByKey` | same | same | same |
+| `Upsert`, `UpdateIfRev`, `UpdateIfMatch` (key resolved and predicate checked under the same lock hold) | same | same; a failed CAS predicate writes nothing | same |
+| TTL reap pass (`reapExpired`) | one fsync for the whole pass, then all tombstones published together | the pass's tombstones are fsynced / appended | Unknown + fence (`op=reap`), nothing published; a short write ends the pass NotApplied after a committed prefix |
+| Follower apply (`ApplyReplication`) | same as the originating write; never re-published | applied; the follower advances its LSN (also on `*PostCommitError`) | NotApplied (re-applied on resume) or Unknown + fence; the follower stops without advancing |
+| Follower transaction apply (`ApplyReplicatedTx`) | the local coordinator decision, as a leader XTx | applied atomically; LSN advances after | the XTx contract (`ErrXTxOutcomeUnknown` journal fence) |
+| `InsertMany`, `CommitTx`, `LoadJSONL` | all entries published together after one sync, under the write lock | every entry appended (and fsynced under `always`); **not crash-atomic** — a crash can leave a prefix (stage 3) | refused on a fenced collection; a failed sync is rolled back in-process (stage 3 turns it into the XTx outcome model) |
+| `CommitXTx` / `Transact` | the journal `COMMIT` fsync, independent of `SyncMode` | crash-atomic across participants | `ErrXTxDurability` (aborted) or `ErrXTxOutcomeUnknown` (resolve with `XTxStatus`); a fenced participant aborts first |
+| `EnsureIndex`, `EnsureUniqueIndex`, `DropIndex` | the in-memory index set under the write lock; the definition is persisted with temp → fsync → rename | derived state only: rebuildable from segments | an error; never fences; refused on a fenced collection |
+| `CompactNow`, `MigrateNow`, background compaction | the manifest-driven segment swap | the swap is fsynced in order (manifest, renames, unlinks) | an error; the old segments stay authoritative; refused on a fenced collection |
+| Segment rotation | after the write that filled the segment committed | seal fsync, then the new file (plus a directory fsync under `interval`/`always`) | `*PostCommitError` to the writer; a failed seal or directory sync fences the next operation |
+| `CreateCollection`, `DropCollection` | the collection map under `DB.mu` | directory created / removed (local only, not replicated) | an error; nothing to fence |
+| `RotateKey`, `SetEncryptionPolicy` | `meta.json` persist (temp → fsync → rename) | the policy is durable | an error; refused on a fenced collection |
+
+#### Write-outcome error mapping
+
+`server/outcome.go` is the single place that maps the fail-stop outcomes onto the wire; every handler passes its engine error through `outcomeStatus` before any other mapping (`writeErr`, `keyedErr`, `opErr`, the stream handlers and `CommitTx`), so neither outcome can surface as a retry-safe `ABORTED`, `UNAVAILABLE` or `RESOURCE_EXHAUSTED`:
+
+| Engine result | gRPC | `ErrorInfo` (domain `scriva.write`) | REST (grpc-gateway) | `scriva-cli` |
+|---|---|---|---|---|
+| `ErrWriteOutcomeUnknown` | `UNKNOWN` | `WRITE_OUTCOME_UNKNOWN`, metadata `collection`, `retry_safe=false` | HTTP 500, reason in the JSON `details` | "Do NOT blind-retry" guidance, exit code 3 |
+| `ErrCollectionFenced` | `FAILED_PRECONDITION` | `COLLECTION_FENCED`, same metadata | HTTP 400 | "restart the server" guidance, exit code 4 |
+| `*PostCommitError` | `OK`, header and trailer `scriva-post-commit-warning` | — | HTTP 200, header `Scriva-Post-Commit-Warning` | normal output, warning on stderr, exit 0 |
+
+`UNKNOWN` is chosen for the same reason as `XTX_OUTCOME_UNKNOWN`: it is also what a client sees when a response is lost, and both call for reading the record back rather than retrying. A cross-collection transaction with a fenced participant reports `FAILED_PRECONDITION` / `COLLECTION_FENCED` in the `scriva.xtx` domain (`retry_safe=false`) instead of the retry-safe `XTX_DURABILITY`. A `Watch` on a fenced collection is refused rather than left open. The package `writeoutcome` holds the shared constants and decodes a gRPC error into `errors.Is`-able sentinels (`writeoutcome.ErrOutcomeUnknown`, `writeoutcome.ErrCollectionFenced`) for Go clients; it depends only on gRPC, so the CLI uses it without linking the engine. `TestOutcomeErrMapping` and `TestIntegration_WriteOutcome_FencedStatusGolden` pin the mapping for every helper and every write RPC.
+
+#### Testing write outcomes
+
+`engine/write_outcome_harness_test.go` drives every single-record mutation path (Insert, InsertWithKey, Update, Delete, Upsert, `UpdateIfRev`, `UpdateIfMatch`, UpdateByKey, DeleteByKey, the TTL reaper and follower `applyEntry`) through a fault-injecting filesystem (`engine/faultfs.go`: count-based nth write / short write / sync / truncate / rename failure, optionally scoped to one file such as the active segment). For each call it records the returned error, the record as seen through the primary index, `Get`, the secondary index and `FindByKey`, emitted watch events, the replication LSN delta, whether a following write is accepted, and the record after reopening two images of the data directory taken right after the call — bytes as they are (process crash, page cache survives) and every wrapped file cut back to its last successful fsync (power loss) — each opened twice to prove recovery is idempotent. `write_outcome_baseline_test.go` asserts the ratified [§2.3 outcome](design-database-integrity-hardening.md#23-durable-write-outcomes) for short write + truncate, write + truncate failure, fsync failure (`SyncModeAlways`) and `syncLoop` failure (`SyncModeInterval`) on every path, including the TTL reaper and `applyEntry`. `engine/background_outcome_test.go` adds a multi-tombstone reaper pass (sync failure publishes none of it and reopens all-or-none; a mid-pass short write commits the prefix) and a follower re-apply after reopen. `engine/fence_test.go` covers the fenced read/write surface, single counting of the unknown-outcome hook, the seal-sync `PostCommitError`, and the fenced XTx participant.
 
 ### Directory lock and filesystem assumptions
 
@@ -1503,6 +1567,7 @@ ScrivaDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/
 | `scriva_append_total`, `scriva_append_bytes_total` | Counter | `collection` |
 | `scriva_append_errors_total` | Counter | `collection`, `reason` |
 | `scriva_segment_poisoned_total` | Counter | `collection` |
+| `scriva_write_outcome_unknown_total` | Counter | `collection`, `op` |
 | `scriva_dir_lock_total` | Counter | `result` |
 | `scriva_xtx_total` | Counter | `outcome` |
 | `scriva_xtx_duration_seconds` | Histogram | `outcome` |
@@ -1513,7 +1578,7 @@ Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Com
 
 Cross-collection transaction metrics (`scriva_xtx_*`) are driven entirely by observer hooks (`OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) configured on the engine without importing metrics into the engine package. Lifecycle events (`begin`, `commit`, `abort`, `conflict`, `expired`, `unknown`), conflict classifications (`write`, `read`, `constraint`), and open-time journal recovery outcomes (`committed`, `aborted`, `unresolved`) are forwarded by the server layer to Prometheus instruments.
 
-The recovery, integrity, append, poison, lock, and transaction series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnLock`, `OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
+The recovery, integrity, append, poison, lock, and transaction series follow the same rule: the engine only calls `CollectionConfig` hooks (`OnIndexRecovery`, `OnIntegrity`, `OnAppend`, `OnSegmentPoisoned`, `OnWriteOutcomeUnknown`, `OnLock`, `OnXTx`, `OnXTxConflict`, `OnXTxRecovery`) and a `Logger`; the server (and the embedded façade options) inject the Prometheus/`slog` implementations.
 
 ### Fail-closed open policy
 

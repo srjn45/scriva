@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"os"
 
@@ -23,6 +24,8 @@ type cliFlags struct {
 	socket string
 	apiKey string
 	tlsCA  string // path to PEM CA cert; empty = no TLS on TCP
+
+	warn io.Writer // where post-commit warnings go; nil = os.Stderr
 }
 
 // Build information, injected at release time via -ldflags -X (see .goreleaser.yml).
@@ -34,7 +37,7 @@ var (
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
@@ -93,6 +96,7 @@ func rootCmd() *cobra.Command {
 		xtxStatusCmd(flags),
 		versionCmd(),
 	)
+	decodeOutcomes(root, flags)
 	return root
 }
 
@@ -116,6 +120,7 @@ func connect(flags *cliFlags) (*grpc.ClientConn, pb.ScrivaClient, func(), error)
 	// Prefer Unix socket if the file exists (always insecure — local transport).
 	if _, statErr := os.Stat(flags.socket); statErr == nil {
 		opts := []grpc.DialOption{
+			grpc.WithChainUnaryInterceptor(postCommitWarnings(flags)),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", flags.socket)
@@ -138,7 +143,8 @@ func connect(flags *cliFlags) (*grpc.ClientConn, pb.ScrivaClient, func(), error)
 		} else {
 			tcpCreds = insecure.NewCredentials()
 		}
-		conn, err = grpc.NewClient(flags.host, grpc.WithTransportCredentials(tcpCreds))
+		conn, err = grpc.NewClient(flags.host, grpc.WithTransportCredentials(tcpCreds),
+			grpc.WithChainUnaryInterceptor(postCommitWarnings(flags)))
 	}
 
 	if err != nil {

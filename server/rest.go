@@ -9,6 +9,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	pb "github.com/srjn45/scriva/internal/pb/proto"
 	"github.com/srjn45/scriva/internal/xtxapi"
+	"github.com/srjn45/scriva/writeoutcome"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,6 +29,24 @@ func headerMatcher(key string) (string, bool) {
 	return runtime.DefaultHeaderMatcher(key)
 }
 
+// outgoingHeaderMatcher forwards the post-commit warning as the plain HTTP
+// header Scriva-Post-Commit-Warning, and every other response header under
+// the gateway's default Grpc-Metadata- prefix.
+func outgoingHeaderMatcher(key string) (string, bool) {
+	if strings.EqualFold(key, writeoutcome.TrailerPostCommit) {
+		return writeoutcome.HeaderPostCommit, true
+	}
+	return runtime.MetadataHeaderPrefix + key, true
+}
+
+// newGatewayMux is the gateway mux shared by the TCP and Unix gateways.
+func newGatewayMux() *runtime.ServeMux {
+	return runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(headerMatcher),
+		runtime.WithOutgoingHeaderMatcher(outgoingHeaderMatcher),
+	)
+}
+
 // corsMiddleware adds permissive CORS headers so browser clients (e.g. the
 // web UI dev server at :5173) can call the REST gateway at :8080.
 func corsMiddleware(next http.Handler) http.Handler {
@@ -35,6 +54,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-api-key, x-xtx-id")
+		w.Header().Set("Access-Control-Expose-Headers", writeoutcome.HeaderPostCommit)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -64,7 +84,7 @@ func registerProbes(mux *runtime.ServeMux, ready func() error) error {
 // process probes GET /healthz and GET /readyz (the latter gated by ready).
 // creds controls how the gateway dials gRPC (pass insecure.NewCredentials() when TLS is off).
 func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials, ready func() error) (http.Handler, error) {
-	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
+	mux := newGatewayMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
 	if err := pb.RegisterScrivaHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
@@ -91,7 +111,7 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 // are used regardless of the server's TLS setting. ready gates GET /readyz (nil
 // = always ready).
 func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() error) (http.Handler, error) {
-	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
+	mux := newGatewayMux()
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {

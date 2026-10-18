@@ -34,6 +34,7 @@ func engineCfgWithMetrics(m *metrics.Metrics) engine.CollectionConfig {
 	cfg.OnIntegrity = server.IntegrityMetricsHook(m)
 	cfg.OnAppend = server.AppendMetricsHook(m)
 	cfg.OnSegmentPoisoned = func(c, _ string, _ error) { m.ObserveSegmentPoisoned(c) }
+	cfg.OnWriteOutcomeUnknown = m.ObserveWriteOutcomeUnknown
 	cfg.OnLock = func(_, r string) { m.ObserveDirLock(r) }
 	return cfg
 }

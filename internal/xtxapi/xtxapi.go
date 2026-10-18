@@ -63,6 +63,11 @@ const (
 	// ReasonUnsupported: the data directory holds transaction state this binary
 	// cannot operate on. FAILED_PRECONDITION.
 	ReasonUnsupported = "XTX_UNSUPPORTED"
+	// ReasonCollectionFenced: a participant collection is fenced by an earlier
+	// outcome-unknown write; nothing was applied, and nothing can be until the
+	// server reopens the collection. Same reason string as the single-record
+	// writeoutcome.ReasonCollectionFenced. FAILED_PRECONDITION.
+	ReasonCollectionFenced = "COLLECTION_FENCED"
 	// ReasonResourceExhausted: a collection quota refused the transaction;
 	// nothing was applied. RESOURCE_EXHAUSTED.
 	ReasonResourceExhausted = "XTX_RESOURCE_EXHAUSTED"
