@@ -128,6 +128,11 @@ type CollectionConfig struct {
 	// semantics instead of failing with ErrBatchNotAtomic. For tests and tools.
 	AllowNonAtomicBatch bool
 
+	// EnableAtomicBatches opts an existing legacy data directory into atomic
+	// batches, initializing xtx.format so future multi-entry batches run as
+	// single-participant transactions.
+	EnableAtomicBatches bool
+
 	// MaxRecords caps the number of live records in the collection (S4). A write
 	// that would create a new record beyond this limit is refused with
 	// ErrResourceExhausted before anything is appended. 0 (the default) means

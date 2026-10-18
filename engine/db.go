@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,6 +119,30 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	// before opening any collection, so collections open with a live broker.
 	db.initReplication(cfg.ReplicationRingSize)
 
+	// Check coordinator format: legacy root conversion and new-root initialization.
+	f, err := readXTxFormat(dataDir)
+	if err != nil {
+		_ = dl.release()
+		return nil, err
+	}
+	if f == nil {
+		if cfg.EnableAtomicBatches {
+			// Operator-controlled opt-in conversion of legacy root.
+			if err := ensureXTxFormat(dataDir, "opt-in"); err != nil {
+				_ = dl.release()
+				return nil, err
+			}
+			if cfg.Logger != nil {
+				cfg.Logger.Info("converted legacy root to atomic batches", "data_dir", dataDir)
+			}
+		} else if cfg.Logger != nil {
+			hasCols, _ := dirHasExistingCollections(dataDir)
+			if hasCols {
+				cfg.Logger.Warn("legacy root opened: atomic batches disabled; run serve --enable-atomic-batches to convert", "data_dir", dataDir)
+			}
+		}
+	}
+
 	// Coordinator recovery (design §7): validate format gate, open journal,
 	// gather participant evidence, resolve truth table, truncate dead tail runs,
 	// replay committed entries, and open collections under the decision table.
@@ -131,7 +156,38 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		_ = dl.release()
 		return nil, err
 	}
+
+	if (cfg.EnableAtomicBatches || f != nil) && db.xtxJournal == nil {
+		if _, err := db.ensureXTxJournal(); err != nil {
+			for _, c := range db.collections {
+				_ = c.Close()
+			}
+			_ = dl.release()
+			return nil, err
+		}
+	}
 	return db, nil
+}
+
+func dirHasExistingCollections(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || isReservedXTxName(name) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // CreateCollection creates a new collection with the given name.

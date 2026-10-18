@@ -1,6 +1,9 @@
 package engine
 
-import "os"
+import (
+	"os"
+	"testing"
+)
 
 // XTxHookPoint names a phase of the cross-collection commit path.
 type XTxHookPoint int
@@ -77,4 +80,12 @@ func (f *TestFaultFS) Count(op string) int {
 // Wrap is a fileWrapper adapter for CollectionConfig.
 func (f *TestFaultFS) Wrap(cfg *CollectionConfig) {
 	cfg.wrapFile = f.inner.wrap
+}
+
+// SetAtomicBatchWriterReady sets the atomic batch writer gate for tests.
+func SetAtomicBatchWriterReady(t testing.TB, on bool) {
+	t.Helper()
+	prev := atomicBatchWriterReady
+	atomicBatchWriterReady = on
+	t.Cleanup(func() { atomicBatchWriterReady = prev })
 }
