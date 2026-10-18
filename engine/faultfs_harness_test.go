@@ -169,3 +169,56 @@ func TestFaultFS_CleanReopenAgrees(t *testing.T) {
 	}
 	assertLookupScanAgree(t, col2, rep.model(), del)
 }
+
+func TestFaultFS_FailTruncatePoisons(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFaultFS()
+	_, col := openFaulty(t, dir, fs, CollectionConfig{})
+	if _, _, err := col.Insert(map[string]any{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	fs.failWriteAt(fs.count("write")+1, 7, syscall.ENOSPC)
+	fs.failTruncateAt(fs.count("truncate")+1, nil)
+	if _, _, err := col.Insert(map[string]any{"b": 2}); !errors.Is(err, ErrSegmentPoisoned) || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("want poisoned segment wrapping EIO, got %v", err)
+	}
+	if fs.faults() != 2 {
+		t.Fatalf("faults=%d, want 2 (write + truncate)", fs.faults())
+	}
+	// The failed truncate left the torn prefix in place.
+	if rep := diskState(t, colDirOf(dir)); len(rep.Bad) != 1 {
+		t.Fatalf("want the torn tail preserved, bad=%v", rep.Bad)
+	}
+}
+
+func TestFaultFS_ScopeAndDurableSizes(t *testing.T) {
+	dir := t.TempDir()
+	fs := newFaultFS()
+	_, col := openFaulty(t, dir, fs, CollectionConfig{SyncMode: SyncModeAlways})
+	if _, _, err := col.Insert(map[string]any{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	col.mu.RLock()
+	active := col.active.Path()
+	col.mu.RUnlock()
+
+	fs.scopeTo(filepath.Join(dir, "elsewhere"))
+	fs.failSyncAt(1, nil)
+	if _, _, err := col.Insert(map[string]any{"a": 2}); err != nil {
+		t.Fatalf("a fault scoped to another file fired: %v", err)
+	}
+	fs.scopeTo(active)
+	fs.failSyncAt(fs.scopedCount("sync")+1, nil)
+	if _, _, err := col.Insert(map[string]any{"a": 3}); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("want EIO from the scoped fsync, got %v", err)
+	}
+	// Two synced records survive a power loss; the third (unsynced) does not.
+	img := t.TempDir()
+	powerLossImage(t, fs, dir, img)
+	if rep := diskState(t, colDirOf(img)); len(rep.Live) != 2 || len(rep.Bad) != 0 {
+		t.Fatalf("power-loss image: live=%d bad=%v, want 2 live", len(rep.Live), rep.Bad)
+	}
+	if rep := diskState(t, colDirOf(dir)); len(rep.Live) != 3 {
+		t.Fatalf("live dir: live=%d, want 3", len(rep.Live))
+	}
+}

@@ -86,6 +86,7 @@ All of these run under `make test` (race detector on) and are hermetic (`t.TempD
 | `TestCrashMatrix_*` (`engine/crash_matrix_test.go`) | single-writer crash at every step boundary, short/torn writes, rotation, compaction swap, index persist, shutdown, using the fault-injecting FS in `faultfs_test.go` |
 | `TestKill9_*` (`engine/multiprocess_kill_test.go`, non-Windows) | a re-exec'd child is SIGKILLed mid-write/rotate/compact; recovered state must equal the acknowledged ops. `SCRIVA_KILL_SEED=<n>` replays one seed, `SCRIVA_KILL_SOAK=1` raises iterations |
 | `TestIntegrityFixtures`, `TestIntegrityFixturesUpToDate` | synthetic incident directories in `engine/testdata/integrity/`; never hand-edit — regenerate with `go generate ./engine` and commit the result |
+| `TestWriteOutcomeBaseline_*` (`engine/write_outcome_baseline_test.go`) | every single-record mutation × {short write + truncate ok, write + truncate fail, fsync fail, `syncLoop` fail}: returned error, immediate Get/index/key reads, watch events, replication LSN, follow-up write, and state after page-cache and power-loss reopen. Harness in `write_outcome_harness_test.go` (`observeWriteOutcome`, `assertWriteOutcome`); each case keeps `today` vs ratified `want` (hardening §2.3) and logs the gap as `TODO(...)` |
 | `verify_test.go`, `repair_test.go`, `salvage_test.go`, `sidx_recovery_test.go` | `Verify` / `Repair` / index recovery |
 
 ```bash
