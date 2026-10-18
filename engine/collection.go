@@ -123,6 +123,11 @@ type CollectionConfig struct {
 	// once at Open.
 	Follower bool
 
+	// AllowNonAtomicBatch lets a collection opened without a DB (OpenCollection)
+	// accept batches of two or more entries with the legacy prefix-visible
+	// semantics instead of failing with ErrBatchNotAtomic. For tests and tools.
+	AllowNonAtomicBatch bool
+
 	// MaxRecords caps the number of live records in the collection (S4). A write
 	// that would create a new record beyond this limit is refused with
 	// ErrResourceExhausted before anything is appended. 0 (the default) means
@@ -358,6 +363,9 @@ type Collection struct {
 	// them with a global LSN. It is wired by DB.Open when replication is enabled;
 	// a collection opened directly (embedded, no DB) leaves it nil.
 	broker *replicationBroker
+	// db is the owning DB (nil for a collection opened with OpenCollection). It
+	// is the batch path's route to the transaction coordinator (batch_atomic.go).
+	db *DB
 
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
@@ -1067,6 +1075,23 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 	exp := c.resolveInsertExpiry(expiresAt)
 	ts := time.Now().UTC()
 
+	route, err := c.routeBatch(len(records))
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if route == batchRouteAtomic {
+		ids := make([]uint64, len(records))
+		xops := make([]XTxOp, len(records))
+		for i, d := range records {
+			ids[i] = c.idSeq.Add(1)
+			xops[i] = XTxOp{Op: store.OpInsert, ID: ids[i], Data: d, ExpiresAt: exp}
+		}
+		if _, err := c.commitBatchAtomic(xops, ts); err != nil {
+			return nil, time.Time{}, err
+		}
+		return ids, ts, nil
+	}
+
 	// Build every entry with a freshly-assigned id before taking the lock, and
 	// tally the batch's on-disk footprint for the quota check.
 	ids := make([]uint64, len(records))
@@ -1630,6 +1655,14 @@ func (c *Collection) ReserveID() uint64 {
 func (c *Collection) CommitTx(ops []txOp) error {
 	if len(ops) == 0 {
 		return nil
+	}
+	route, err := c.routeBatch(len(ops))
+	if err != nil {
+		return err
+	}
+	if route == batchRouteAtomic {
+		_, err := c.commitBatchAtomic(txOpsToXTx(ops), ops[0].ts)
+		return err
 	}
 
 	c.mu.Lock()

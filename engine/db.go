@@ -161,6 +161,7 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 		return nil, err
 	}
 	col.broker = db.broker
+	col.db = db
 	db.collections[name] = col
 	return col, nil
 }
@@ -222,6 +223,7 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 		return nil, fmt.Errorf("db: open collection %q: %w", name, err)
 	}
 	col.broker = db.broker
+	col.db = db
 	db.collections[name] = col
 	return col, nil
 }
