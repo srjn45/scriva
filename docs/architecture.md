@@ -792,6 +792,40 @@ Multiple concurrent reads proceed without blocking each other. The write lock is
 
 The compaction goroutine acquires the write lock only during the final atomic segment swap — reads and writes are unblocked for the entire resolve + rewrite phase.
 
+### Lock hierarchy and DropCollection / XTx / snapshot serialization
+
+Locks are always taken in this order; none is ever taken against it:
+
+```
+xtxSnapshotMu → DB.mu → participants' c.mu (canonical name order) → xtxJournal.mu   (leaf)
+compactMu → persistMu → c.mu                                                        (collection Close)
+```
+
+- `xtxMu` is a leaf that guards only the lazily created `DB.xtxJournal` pointer and
+  the in-flight idempotency keys; readers under `DB.mu` use `journalOrNil()`.
+- `CommitXTx` holds `xtxSnapshotMu` shared and `DB.mu` shared for the whole
+  commit (lock, prepare, decide, apply), then takes each participant's `c.mu` in
+  bytewise name order. `xtxJournal.mu` is a leaf and is never held while a `c.mu`
+  is taken.
+- `DropCollection` holds `DB.mu` **exclusively**, so it cannot overlap a commit.
+  It first asks the journal for non-retired COMMIT decisions naming the
+  collection and, if any exist, returns `ErrParticipantRetained` before any side
+  effect (nothing closed, removed or journaled). Otherwise it closes the collection (`compactMu` → `persistMu` → `c.mu`) and removes the
+  directory. Outcome of a drop racing a commit that names the collection: either
+  the commit decided first (the drop is refused and the files are untouched) or
+  the drop ran first (the commit fails with `ErrCollectionNotFound` and journals
+  no evidence naming it).
+- `SnapshotTo` takes `xtxSnapshotMu` exclusively, then `DB.mu` shared, so an
+  archive is one cut of the journal and every collection: it never straddles a
+  commit and never sees a collection mid-drop. A snapshot taken before or after a
+  refused drop restores and opens; retained evidence travels with it.
+- Background compaction takes only its own collection's locks and never a
+  sibling's `compactMu`.
+
+Tests: `engine/drop_concurrency_test.go` (commit-vs-drop at every phase using the
+commit hook, snapshot-vs-drop, evidence across reopen, SIGKILL during drops, and
+a seeded commit/drop/snapshot/compact stress under `-race` with a deadlock guard).
+
 ---
 
 ## Background Compactor
