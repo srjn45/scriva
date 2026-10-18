@@ -270,6 +270,10 @@ type CollectionConfig struct {
 	// decisionsFn supplies dynamic cross-collection transaction decisions from
 	// the active DB coordinator journal while the database is live.
 	decisionsFn func() map[string]string
+
+	// journalEpoch is the active DB coordinator journal epoch (if any).
+	journalEpoch string
+	journalEpochFn func() string
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -330,6 +334,9 @@ type Collection struct {
 	// decisions is the cross-collection transaction decision table.
 	decisions   map[string]string
 	decisionsFn func() map[string]string
+
+	journalEpochStr string
+	journalEpochFn  func() string
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -498,22 +505,27 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		if _, err := os.Stat(filepath.Join(dataDir, xtxFormatFile)); err == nil {
 			return nil, xtxErr("", ErrXTxRecoveryRequired, fmt.Errorf("collection %q in XTx-enabled database requires DB-level recovery; open via engine.Open", name))
 		}
+		if _, err := os.Stat(filepath.Join(dataDir, xtxJournalFile)); err == nil {
+			return nil, xtxErr("", ErrXTxRecoveryRequired, fmt.Errorf("collection %q in XTx-enabled database requires DB-level recovery; open via engine.Open", name))
+		}
 	}
 
 	c := &Collection{
-		name:        name,
-		dir:         dir,
-		diskDir:     diskDir,
-		dirHandle:   dirHandle,
-		cfg:         cfg,
-		decisions:   cfg.decisions,
-		decisionsFn: cfg.decisionsFn,
-		index:       newIndex(),
-		sidxMap:     make(map[string]*SecondaryIndex),
-		watchers:    make(map[uint64]*watcher),
-		compactC:    make(chan struct{}, 1),
-		closed:      make(chan struct{}),
-		persistC:    make(chan struct{}, 1),
+		name:           name,
+		dir:            dir,
+		diskDir:        diskDir,
+		dirHandle:      dirHandle,
+		cfg:            cfg,
+		decisions:      cfg.decisions,
+		decisionsFn:    cfg.decisionsFn,
+		journalEpochStr: cfg.journalEpoch,
+		journalEpochFn:  cfg.journalEpochFn,
+		index:          newIndex(),
+		sidxMap:        make(map[string]*SecondaryIndex),
+		watchers:       make(map[uint64]*watcher),
+		compactC:       make(chan struct{}, 1),
+		closed:         make(chan struct{}),
+		persistC:       make(chan struct{}, 1),
 
 		sealedCov: make(map[string]SegmentCoverage),
 	}
@@ -571,6 +583,20 @@ func (c *Collection) currentDecisions() map[string]string {
 		}
 	}
 	return c.decisions
+}
+
+func (c *Collection) journalEpoch() string {
+	if c.db != nil {
+		if j := c.db.journalOrNil(); j != nil {
+			return j.epoch()
+		}
+	}
+	if c.journalEpochFn != nil {
+		if ep := c.journalEpochFn(); ep != "" {
+			return ep
+		}
+	}
+	return c.journalEpochStr
 }
 
 // syncLoop periodically fsyncs the active segment when SyncModeInterval is
@@ -695,7 +721,7 @@ func (c *Collection) persistIndexes() error {
 		sealed[s] = true
 	}
 	segs = append(segs, c.active)
-	snap, err := c.index.snapshotCached(segs, sealed, c.sealedCov)
+	snap, err := c.index.snapshotCached(segs, sealed, c.sealedCov, c.currentDecisions(), c.journalEpoch())
 	// Secondary buckets are copied under the same lock so their coverage is
 	// exactly snap.coverage.
 	sidxSnaps := make(map[string]*sidxSnapshot)
@@ -782,6 +808,22 @@ func (c *Collection) load() error {
 	all = append(all, c.sealed...)
 	all = append(all, c.active)
 
+	if c.decisions == nil {
+		for _, seg := range all {
+			hasStamped := false
+			_ = seg.ScanStampedFromOffset(0, func(_ int64, _ store.Entry, tx *TxStamp) error {
+				if tx != nil && tx.T != "" {
+					hasStamped = true
+					return errStopScan
+				}
+				return nil
+			})
+			if hasStamped {
+				return xtxErr("", ErrXTxRecoveryRequired, fmt.Errorf("collection %q in XTx-enabled database requires DB-level recovery; open via engine.Open", c.name))
+			}
+		}
+	}
+
 	var maxSeg uint64
 	for _, s := range all {
 		var n uint64
@@ -805,7 +847,7 @@ func (c *Collection) load() error {
 	// O(tail) to redo, and the background persister (timer, rotation, Close)
 	// writes the result off the open path.
 	if changed && c.indexRebuilds.Load() != rebuildsBefore {
-		if snap, snErr := c.index.Snapshot(all); snErr == nil {
+		if snap, snErr := c.index.Snapshot(all, c.currentDecisions(), c.journalEpoch()); snErr == nil {
 			_ = snap.Persist(indexPath)
 		}
 	}
@@ -836,7 +878,7 @@ func (c *Collection) load() error {
 				return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
 			}
 			if changed && c.sidxRebuilds.Load() != sidxRebuildsBefore {
-				_ = persistSecondary(sidx, p, all)
+				_ = persistSecondary(sidx, p, all, c.currentDecisions(), c.journalEpoch())
 			}
 			c.sidxMap[field] = sidx
 		}
@@ -876,15 +918,12 @@ func (c *Collection) load() error {
 	c.index.mu.RUnlock()
 
 	for _, seg := range all {
-		entries, err := seg.ScanAll()
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.ID > maxID {
+		_ = seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
+			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
 				maxID = e.ID
 			}
-		}
+			return nil
+		})
 	}
 	c.idSeq.Store(maxID)
 	c.createdAt = time.Now().UTC()
@@ -905,7 +944,7 @@ func (c *Collection) tailMaxID(all []*Segment) uint64 {
 	for i := len(all) - 1; i >= 0; i-- {
 		var maxID uint64
 		_ = all[i].ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
-			if entryVisible(tx, c.decisions) && e.ID > maxID {
+			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
 				maxID = e.ID
 			}
 			return nil
@@ -1922,7 +1961,7 @@ func (c *Collection) Close() error {
 		return err
 	}
 	closeSegs := append(append([]*Segment(nil), c.sealed...), c.active)
-	snap, err := c.index.Snapshot(closeSegs)
+	snap, err := c.index.Snapshot(closeSegs, c.currentDecisions(), c.journalEpoch())
 	if err != nil {
 		return err
 	}
@@ -2312,10 +2351,24 @@ func (c *Collection) seedSealedCoverage(all []*Segment) {
 	if c.covMemo == nil {
 		return
 	}
+	existingCov := make(map[string]SegmentCoverage)
+	c.index.mu.RLock()
+	for _, cv := range c.index.coverage {
+		existingCov[cv.Segment] = cv
+	}
+	c.index.mu.RUnlock()
+
 	for _, seg := range all {
 		key := fmt.Sprintf("%s|%d", seg.Path(), seg.Size())
 		if sum, ok := c.covMemo.sums[key]; ok {
-			c.sealedCov[seg.Path()] = SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: seg.Size(), Checksum: sum}
+			base := filepath.Base(seg.Path())
+			if ecv, found := existingCov[base]; found && ecv.Size == seg.Size() && ecv.Checksum == sum {
+				c.sealedCov[seg.Path()] = ecv
+			} else if cov, err := captureCoverage(seg, c.currentDecisions(), c.journalEpoch()); err == nil {
+				c.sealedCov[seg.Path()] = cov
+			} else {
+				c.sealedCov[seg.Path()] = SegmentCoverage{Segment: base, Size: seg.Size(), Checksum: sum}
+			}
 		}
 	}
 }

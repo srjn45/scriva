@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/srjn45/scriva/store"
 )
 
 // Index recovery kinds reported through CollectionConfig.OnIndexRecovery.
@@ -86,11 +88,11 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 			return false, err
 		}
 		if tolerant {
-			if err := c.index.rebuildTolerant(all, c.decisions); err != nil {
+			if err := c.index.rebuildTolerant(all, c.currentDecisions()); err != nil {
 				return false, fmt.Errorf("collection: rebuild index: %w", err)
 			}
 		} else {
-			if err := c.index.Rebuild(all, c.decisions); err != nil {
+			if err := c.index.Rebuild(all, c.currentDecisions()); err != nil {
 				return false, fmt.Errorf("collection: rebuild index: %w", err)
 			}
 		}
@@ -115,7 +117,7 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 	if len(plan) > 0 {
 		c.index.mu.Lock()
 		for _, st := range plan {
-			if err := applyEntries(c.index.entries, st.seg, st.from, c.decisions); err != nil {
+			if err := applyEntries(c.index.entries, st.seg, st.from, c.currentDecisions()); err != nil {
 				c.index.mu.Unlock()
 				return rebuild()
 			}
@@ -162,18 +164,43 @@ func (c *Collection) planReplay(all []*Segment) (plan []replayStep, ok bool) {
 	cov := append([]SegmentCoverage(nil), c.index.coverage...)
 	nEntries := len(c.index.entries)
 	c.index.mu.RUnlock()
-	return planReplayFor(all, known, cov, nEntries, c.covMemo, c.decisions)
+	return planReplayFor(all, known, cov, nEntries, c.covMemo, c.currentDecisions(), c.journalEpoch())
+}
+
+// hasCommittedStamped reports whether seg contains any committed stamped entry
+// within the byte range [0, size).
+func hasCommittedStamped(seg *Segment, size int64, decisions map[string]string) bool {
+	if seg == nil || decisions == nil || len(decisions) == 0 {
+		return false
+	}
+	has := false
+	_ = seg.ScanStampedFromOffset(0, func(offset int64, e store.Entry, tx *TxStamp) error {
+		if offset >= size {
+			return errStopScan
+		}
+		if tx != nil && tx.T != "" && entryVisible(tx, decisions) {
+			has = true
+			return errStopScan
+		}
+		return nil
+	})
+	return has
 }
 
 // planReplayFor is planReplay over explicit coverage, shared by the primary and
 // secondary indexes: known=false (v1) means coverage is unknown, and nEntries>0
 // with empty coverage means entries nothing proves.
-func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int, memo *coverageMemo, decisions map[string]string) (plan []replayStep, ok bool) {
+func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries int, memo *coverageMemo, decisions map[string]string, epoch ...string) (plan []replayStep, ok bool) {
 	if !known {
 		return nil, false // v1: coverage unknown -> stale
 	}
 	if len(cov) == 0 && nEntries > 0 {
 		return nil, false // entries with nothing proving them
+	}
+
+	var journalEpoch string
+	if len(epoch) > 0 {
+		journalEpoch = epoch[0]
 	}
 
 	byName := make(map[string]*Segment, len(all))
@@ -203,10 +230,23 @@ func planReplayFor(all []*Segment, known bool, cov []SegmentCoverage, nEntries i
 	}
 	for _, cv := range cov {
 		if len(cv.XTxApplied) > 0 {
+			if decisions == nil {
+				return nil, false
+			}
 			for _, tx := range cv.XTxApplied {
-				if decisions != nil && (decisions[tx] != xtxKindCommit && decisions[tx] != "retire-commit") {
+				if decisions[tx] != xtxKindCommit && decisions[tx] != "retire-commit" {
 					return nil, false
 				}
+			}
+			if journalEpoch != "" && cv.XTxEpoch != "" && cv.XTxEpoch != journalEpoch {
+				return nil, false
+			}
+		} else if decisions != nil {
+			// A snapshot with no xtx_applied but covering stamped bytes that are committed
+			// must be rebuilt (§7.3).
+			seg := byName[cv.Segment]
+			if hasCommittedStamped(seg, cv.Size, decisions) {
+				return nil, false
 			}
 		}
 		seg := byName[cv.Segment]
@@ -353,7 +393,7 @@ func totalSize(segs []*Segment) (n int64) {
 func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Segment, force bool) (changed bool, err error) {
 	rebuild := func() (bool, error) {
 		c.sidxRebuilds.Add(1)
-		if err := sidx.rebuild(all, c.tolerantOpen, c.decisions); err != nil {
+		if err := sidx.rebuild(all, c.tolerantOpen, c.currentDecisions()); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -367,12 +407,12 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 	sidx.mu.RLock()
 	known, cov, n := sidx.coverageKnown, append([]SegmentCoverage(nil), sidx.coverage...), len(sidx.buckets)
 	sidx.mu.RUnlock()
-	plan, ok := planReplayFor(all, known, cov, n, c.covMemo, c.decisions)
+	plan, ok := planReplayFor(all, known, cov, n, c.covMemo, c.currentDecisions(), c.journalEpoch())
 	if !ok {
 		return rebuild()
 	}
 	for _, st := range plan {
-		if err := sidx.replay(st.seg, st.from, c.decisions); err != nil {
+		if err := sidx.replay(st.seg, st.from, c.currentDecisions()); err != nil {
 			return rebuild()
 		}
 	}
@@ -384,10 +424,10 @@ func (c *Collection) recoverSecondary(sidx *SecondaryIndex, p string, all []*Seg
 
 // persistSecondary writes sidx with coverage of segs. Callers must hold the
 // lock that excludes writes to segs.
-func persistSecondary(sidx *SecondaryIndex, p string, segs []*Segment) error {
+func persistSecondary(sidx *SecondaryIndex, p string, segs []*Segment, decisionsAndEpoch ...any) error {
 	cov := make([]SegmentCoverage, 0, len(segs))
 	for _, seg := range segs {
-		cv, err := captureCoverage(seg)
+		cv, err := captureCoverage(seg, decisionsAndEpoch...)
 		if err != nil {
 			return err
 		}
