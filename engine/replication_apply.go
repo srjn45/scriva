@@ -293,6 +293,9 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 
 	// Visible: release the participant locks, then run S6 maintenance.
 	release()
+	for _, ev := range events {
+		ev.col.emit(ev.event)
+	}
 	for _, c := range participants {
 		if needsRotate[c.name] {
 			_ = c.rotateSegment()
@@ -300,9 +303,6 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 		if bumped[c.name] {
 			_ = persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
 		}
-	}
-	for _, ev := range events {
-		ev.col.emit(ev.event)
 	}
 	return true, nil
 }

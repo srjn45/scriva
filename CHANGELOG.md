@@ -56,6 +56,14 @@ embedding-specific contract.
   - CLI (`scriva-cli`): distinct exit codes for write outcomes — exit code `3` for `WRITE_OUTCOME_UNKNOWN` with "Do NOT blind-retry" guidance, exit code `4` for `COLLECTION_FENCED` with "restart server" guidance, and post-commit warnings printed to stderr while exiting `0`.
   - Replication: follower advances applied LSN on `PostCommitError` and halts stream without advancing on unknown outcome or fenced errors.
   - Metrics: `scriva_write_outcome_unknown_total{collection,op}` counts indeterminate write outcomes.
+- **Segment rotation and sealing failure safety (hardening §3.6 / SR-D1 item 6):**
+  - Ordered segment sealing: `Segment.Seal()` requires a successful `fsync` before marking a segment sealed, preventing ambiguous sealed-and-active segment states on sync failure.
+  - Fail-stop fencing on seal sync, directory sync, and unrecoverable rotation: failed seal `fsync`, directory `fsync` (`fsyncDir`), or fallback reopen failure immediately fences the collection (`ErrCollectionFenced`, op `"seal"` or `"rotate"`), refusing subsequent reads and writes until process restart.
+  - Fallback reopen on new segment create failure: if creating the next segment file fails, the engine reopens the old segment as active, maintaining write availability without fencing.
+  - Post-commit error semantics (`*PostCommitError`): rotation failure after a successful commit preserves the committed operation result, returning `*PostCommitError` (`ErrPostCommit`) rather than reporting a false write failure.
+  - Watch event delivery guarantees: watch events are emitted before rotation across single writes, `InsertMany`, `CommitTx`, replication apply, and cross-collection transactions (`CommitXTx`), ensuring committed events are never lost due to subsequent rotation errors.
+  - Delete triggers rotation: `Delete` and `DeleteByKey` now check active segment size against `SegmentMaxSize` and trigger rotation when full.
+  - Id-counter recovery: metadata persist failure during rotation returns `*PostCommitError` without fencing; startup recovery rebuilds max ID from segment tails, preventing ID reuse.
 
 ## v1.5.1 — 2026-10-18
 

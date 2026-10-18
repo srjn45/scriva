@@ -989,6 +989,52 @@ The outcome is one of four, all `errors.Is`-friendly:
 
 Sealing marks a segment sealed only after its fsync succeeds, so a failed seal never leaves a sealed-and-active segment; if the next segment cannot be created the just-sealed one is reopened as the active segment. Under `interval`, a failed `syncLoop` fsync fences the collection and stops the loop (writes acknowledged since the last good sync may or may not survive power loss); so does a failed fsync of the active segment by the background index persist, in any mode. Each fence calls `CollectionConfig.OnWriteOutcomeUnknown` once (`scriva_write_outcome_unknown_total{collection,op}`), counted separately from proven aborts. Multi-entry batches (`InsertMany`, single-collection `CommitTx`, and `LoadJSONL`, which commits through `CommitTx`) are only partly covered: they refuse to start on a fenced collection, and a rotation failure after the batch committed is a `*PostCommitError`, but a failed batch sync is still rolled back in-process rather than reported as Unknown, and the batch is not crash-atomic — that is stage 3, [§3.1](design-database-integrity-hardening.md#31-single-collection-batches-use-the-durable-decision-machinery). A truncate failure in any path still poisons and fences. How these outcomes reach gRPC, REST and the CLI: [Write-outcome error mapping](#write-outcome-error-mapping).
 
+### Segment rotation lifecycle and failure safety
+
+Segment rotation transitions an active append target that has reached or exceeded `SegmentMaxSize` into an immutable sealed segment and installs a fresh active segment ([hardening §3.6](design-database-integrity-hardening.md#36-rotationsealing-failures), [acceptance SR-D1 S1.5](design-database-integrity-hardening.md#23-durable-write-outcomes)). Because rotation executes after the mutation's durability point has passed and indexes have been updated, its failure semantics differ fundamentally from write-time append failures:
+
+#### Lifecycle and failure boundaries
+
+1. **Rotation Trigger & Size Check**:
+   - Every mutation path (`Insert`, `InsertWithKey`, `InsertWithExpiry`, `Update`, `UpdateWithExpiry`, `UpdateByKey`, `Delete`, `DeleteByKey`, `Upsert`, `UpdateIfRev`, `UpdateIfMatch`, `InsertMany`, `CommitTx`, TTL `reapExpired`, follower `applyEntry`, and coordinator `commitXTx`) checks whether the active segment size meets or exceeds `SegmentMaxSize`.
+   - `Delete` and `DeleteByKey` explicitly participate in this check, ensuring tombstone-heavy workloads rotate full segments properly.
+
+2. **Watch Event Delivery Guarantee**:
+   - Watch events for committed mutations are emitted **before** rotation is attempted across all write paths (or preserved in deferred cleanup).
+   - A subsequent rotation error can **never suppress, drop, or delay** watch event publication for committed data: subscribers observe every durable write regardless of rotation outcome.
+
+3. **Segment Sealing (`Segment.Seal`)**:
+   - The active segment is sealed via `old.Seal()`, which issues an explicit `Sync()` on the file descriptor before mutating in-memory state.
+   - **Seal Sync Failure Boundary**: If the seal sync fails, `sealed` remains `false`, the file handle remains open, and the collection is immediately fail-stop fenced (`ErrCollectionFenced` wrapping the sync error, recording `OnWriteOutcomeUnknown` with op `"seal"`). The active segment is never left in an ambiguous sealed-and-active state.
+   - **Seal Close Failure**: If sync succeeds but the subsequent `Close()` fails, the segment is marked sealed (because its on-disk bytes were durably flushed) and the close error is returned as an ancillary `*PostCommitError` without fencing the collection.
+
+4. **New Segment Creation & Fallback Reopen**:
+   - The segment sequence counter is incremented globally (`c.segSeq.Add(1)`) to avoid collision with concurrent compactor renames, and `openActiveSegmentWith` creates the next segment file (e.g. `seg_000002.ndjson`).
+   - **Creation Failure with Fallback Reopen**: If creating the new segment fails (e.g. ENOSPC, file descriptor exhaustion, or I/O failure), the engine attempts a fallback reopen of the old segment (`openActiveSegmentWith(old.Path(), ...)`). If the fallback reopen succeeds:
+     - The collection remains **unfenced and fully operable**.
+     - The old segment is restored as the active, unsealed append target.
+     - Subsequent writes continue to succeed on the active segment.
+     - The caller receives the committed operation's normal results alongside a `*PostCommitError{Stage: "rotate"}` wrapping the creation error.
+   - **Unrecoverable Rotation Failure**: If the fallback reopen of the old segment also fails, the engine cannot establish any safe active segment. The rotation failure is unrecoverable: the collection is immediately fail-stop fenced (`ErrCollectionFenced`, op `"rotate"`). All subsequent reads and writes fail closed with `ErrCollectionFenced` until the server is restarted.
+
+5. **Directory Fsync**:
+   - Under `SyncModeAlways` and `SyncModeInterval`, the parent collection directory is synced (`fsyncDir(c.dir)`) to ensure the directory entry for the newly created segment survives sudden power loss.
+   - **Directory Fsync Failure Boundary**: If `fsyncDir` fails, durability of the new directory entry cannot be guaranteed; the collection is immediately fail-stop fenced (`ErrCollectionFenced`, op `"rotate"`).
+
+6. **Metadata Persist**:
+   - `persistMeta` writes the updated ID counter and timestamp snapshot to `meta.json`.
+   - **Metadata Persist Failure Boundary**: If writing `meta.json` fails, the error is returned as a `*PostCommitError{Stage: "rotate"}`. The collection is **not fenced**, because metadata is ancillary: subsequent writes proceed normally, and startup recovery reconstructs the highest allocated ID (`maxID`) by scanning the segment tails, guaranteeing ID continuity without reuse.
+
+#### Post-commit error semantics (`*PostCommitError`)
+
+When rotation fails after a write has committed:
+- The committed write is **never reported as a failure** (the return values include the assigned ID, timestamp, and revision).
+- The returned error is typed as `*PostCommitError` (`errors.Is(err, ErrPostCommit)`), containing the operation name (`Op`) and failure phase (`Stage: "rotate"`).
+- gRPC handlers return `codes.OK` with the `scriva-post-commit-warning` trailer.
+- REST gateway returns HTTP 200 with the `Scriva-Post-Commit-Warning` response header.
+- CLI (`scriva-cli`) emits a warning message to stderr and exits with status 0.
+
+
 **Keyed mutations, TTL reaper and replication apply.** These follow the same sequence and fence the same way:
 
 - *Keyed mutations.* `InsertWithKey` runs `insert`; `UpdateByKey`/`DeleteByKey` resolve the key through the unique `_key` index (refused on a fenced collection) and then run `update`/`Delete`; `Upsert`, `UpdateIfRev` and `UpdateIfMatch` resolve the key and do the append → fsync → index/sidx → `publishCommit` under one write-lock hold. No keyed path touches the indexes or publishes before the fsync returns.

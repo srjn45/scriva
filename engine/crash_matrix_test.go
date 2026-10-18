@@ -34,11 +34,14 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -519,6 +522,38 @@ func TestCrashMatrix_RotationBoundaries(t *testing.T) {
 		db2, root := openSnapshot(t, snap, cfg)
 		cmVerify(t, db2, root, r, false)
 	})
+	t.Run("seal_sync_failure_fencing", func(t *testing.T) {
+		dir := t.TempDir()
+		fs := newFaultFS()
+		db, col := openFaulty(t, dir, fs, cfg)
+		r := newCmRun(t, col, false)
+		workAppend(r)
+
+		// Arm seal sync failure on active segment:
+		col.mu.RLock()
+		activePath := col.active.Path()
+		col.mu.RUnlock()
+		fs.scopeTo(activePath)
+		fs.failSyncAt(fs.scopedCount("sync")+1, syscall.EIO)
+
+		err := col.rotateSegment()
+		if err == nil || !errors.Is(err, syscall.EIO) {
+			t.Fatalf("rotateSegment err = %v, want EIO", err)
+		}
+		// Seal sync failure MUST fence the collection (§3.6):
+		if col.Fenced() == nil || !errors.Is(col.Fenced(), ErrCollectionFenced) {
+			t.Fatalf("collection must be fenced after seal sync failure: %v", col.Fenced())
+		}
+		// Subsequent write rejected:
+		if _, _, err := col.Insert(map[string]any{"v": "rejected"}); !errors.Is(err, ErrCollectionFenced) {
+			t.Fatalf("subsequent insert err = %v, want ErrCollectionFenced", err)
+		}
+
+		snap := snapshotOf(t, colDirOf(dir))
+		abandon(t, db, fs)
+		db2, root := openSnapshot(t, snap, cfg)
+		cmVerify(t, db2, root, r, false)
+	})
 	t.Run("after_seal_before_new_segment", func(t *testing.T) {
 		db, fs, dir, r := setup(t)
 		if err := r.col.rotateSegment(); err != nil {
@@ -542,6 +577,152 @@ func TestCrashMatrix_RotationBoundaries(t *testing.T) {
 		}
 		cmVerify(t, db2, root, r, false)
 	})
+	t.Run("create_segment_fallback_reopen_success", func(t *testing.T) {
+		dir := t.TempDir()
+		fs := newFaultFS()
+		var failCreate atomic.Bool
+		cCfg := cfg
+		cCfg.wrapFile = func(path string, real segFile) segFile {
+			f := fs.wrap(path, real)
+			return &faultySegFile{
+				segFile: f,
+				onStat: func() (os.FileInfo, error) {
+					if failCreate.Load() && strings.Contains(path, "seg_000002") {
+						return nil, syscall.EIO
+					}
+					return f.Stat()
+				},
+			}
+		}
+		cCfg.renameFn = fs.rename
+		db, err := Open(dir, cCfg)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		col, err := db.CreateCollection("c")
+		if err != nil {
+			t.Fatalf("CreateCollection: %v", err)
+		}
+		r := newCmRun(t, col, false)
+		workAppend(r)
+
+		// Arm create failure on next segment; fallback reopen should succeed.
+		failCreate.Store(true)
+		err = col.rotateSegment()
+		if err == nil || !strings.Contains(err.Error(), "create segment") {
+			t.Fatalf("rotateSegment err = %v, want create segment error", err)
+		}
+		// Collection must NOT be fenced because fallback reopen succeeded:
+		if col.Fenced() != nil {
+			t.Fatalf("collection must not be fenced on fallback success: %v", col.Fenced())
+		}
+		// Subsequent write succeeds on the fallback active segment:
+		id := r.insert("fallback_val")
+		if id == 0 {
+			t.Fatal("insert after fallback failed")
+		}
+		snap := snapshotOf(t, colDirOf(dir))
+		abandon(t, db, fs)
+		failCreate.Store(false)
+		db2, root := openSnapshot(t, snap, cfg)
+		cmVerify(t, db2, root, r, false)
+	})
+	t.Run("create_segment_fallback_failure_fencing", func(t *testing.T) {
+		dir := t.TempDir()
+		fs := newFaultFS()
+		var failStat atomic.Bool
+		cCfg := cfg
+		cCfg.wrapFile = func(path string, real segFile) segFile {
+			f := fs.wrap(path, real)
+			return &faultySegFile{
+				segFile: f,
+				onStat: func() (os.FileInfo, error) {
+					if failStat.Load() {
+						return nil, syscall.EIO
+					}
+					return f.Stat()
+				},
+			}
+		}
+		cCfg.renameFn = fs.rename
+		db, err := Open(dir, cCfg)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		col, err := db.CreateCollection("c")
+		if err != nil {
+			t.Fatalf("CreateCollection: %v", err)
+		}
+		r := newCmRun(t, col, false)
+		workAppend(r)
+
+		// Fail stat everywhere so fallback reopen also fails.
+		failStat.Store(true)
+		err = col.rotateSegment()
+		if err == nil || !errors.Is(err, syscall.EIO) {
+			t.Fatalf("rotateSegment err = %v, want EIO", err)
+		}
+		// Fallback failure (unrecoverable rotate) MUST fence the collection:
+		if err := col.Fenced(); !errors.Is(err, ErrCollectionFenced) {
+			t.Fatalf("collection must be fenced: %v", err)
+		}
+		if _, _, err := col.Insert(map[string]any{"v": "rejected"}); !errors.Is(err, ErrCollectionFenced) {
+			t.Fatalf("subsequent insert err = %v, want ErrCollectionFenced", err)
+		}
+		snap := snapshotOf(t, colDirOf(dir))
+		abandon(t, db, fs)
+		failStat.Store(false)
+		db2, root := openSnapshot(t, snap, cfg)
+		cmVerify(t, db2, root, r, false)
+	})
+	t.Run("directory_fsync_failure_fencing", func(t *testing.T) {
+		dir := t.TempDir()
+		fs := newFaultFS()
+		var armDirFsync atomic.Bool
+		cCfg := cfg
+		cCfg.wrapFile = func(path string, real segFile) segFile {
+			if armDirFsync.Load() && strings.Contains(path, "seg_000002") {
+				colDir := filepath.Dir(path)
+				_ = os.Chmod(colDir, 0o300)
+			}
+			return fs.wrap(path, real)
+		}
+		cCfg.renameFn = fs.rename
+		db, err := Open(dir, cCfg)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(filepath.Join(dir, "c"), 0o755)
+			_ = db.Close()
+		})
+		col, err := db.CreateCollection("c")
+		if err != nil {
+			t.Fatalf("CreateCollection: %v", err)
+		}
+		r := newCmRun(t, col, false)
+		workAppend(r)
+
+		armDirFsync.Store(true)
+		err = col.rotateSegment()
+		if err == nil || !strings.Contains(err.Error(), "fsync dir after rotate") {
+			t.Fatalf("rotateSegment err = %v, want fsync dir error", err)
+		}
+		// Failed directory fsync fences the collection:
+		if err := col.Fenced(); !errors.Is(err, ErrCollectionFenced) {
+			t.Fatalf("collection must be fenced: %v", err)
+		}
+		if _, _, err := col.Insert(map[string]any{"v": "rejected"}); !errors.Is(err, ErrCollectionFenced) {
+			t.Fatalf("subsequent insert err = %v, want ErrCollectionFenced", err)
+		}
+		_ = os.Chmod(filepath.Join(dir, "c"), 0o755)
+		snap := snapshotOf(t, colDirOf(dir))
+		abandon(t, db, fs)
+		db2, root := openSnapshot(t, snap, cfg)
+		cmVerify(t, db2, root, r, false)
+	})
 	t.Run("after_new_segment_before_meta_persist", func(t *testing.T) {
 		db, fs, dir, r := setup(t)
 		oldMeta := snapshotOf(t, colDirOf(dir))
@@ -557,13 +738,95 @@ func TestCrashMatrix_RotationBoundaries(t *testing.T) {
 		}
 		db2, root := openSnapshot(t, snap, cfg)
 		cmVerify(t, db2, root, r, false)
-		// ids must not be reused after the stale-meta recovery.
+		// ids must not be reused after the stale-meta recovery:
 		r.col, _ = db2.Collection("c")
 		before := len(r.live)
-		if r.insert("c") == 0 || len(r.live) != before+1 {
+		newID := r.insert("c")
+		if newID == 0 || len(r.live) != before+1 {
 			t.Fatal("insert after stale meta lost or clobbered a record")
 		}
 		cmVerify(t, db2, root, r, false)
+	})
+	t.Run("clean_crash_power_loss_repeated_passes", func(t *testing.T) {
+		for _, scenario := range []string{"rotation_success", "fallback_active"} {
+			t.Run(scenario, func(t *testing.T) {
+				dir := t.TempDir()
+				fs := newFaultFS()
+				var failCreate atomic.Bool
+				cCfg := cfg
+				cCfg.wrapFile = func(path string, real segFile) segFile {
+					f := fs.wrap(path, real)
+					return &faultySegFile{
+						segFile: f,
+						onStat: func() (os.FileInfo, error) {
+							if failCreate.Load() && strings.Contains(path, "seg_000002") {
+								return nil, syscall.EIO
+							}
+							return f.Stat()
+						},
+					}
+				}
+				cCfg.renameFn = fs.rename
+				db, err := Open(dir, cCfg)
+				if err != nil {
+					t.Fatalf("Open: %v", err)
+				}
+				t.Cleanup(func() { _ = db.Close() })
+				col, err := db.CreateCollection("c")
+				if err != nil {
+					t.Fatalf("CreateCollection: %v", err)
+				}
+				r := newCmRun(t, col, false)
+				workAppend(r)
+
+				if scenario == "fallback_active" {
+					failCreate.Store(true)
+					err := col.rotateSegment()
+					if err == nil || !strings.Contains(err.Error(), "create segment") {
+						t.Fatalf("rotateSegment err = %v, want create segment error", err)
+					}
+					failCreate.Store(false)
+				} else {
+					if err := col.rotateSegment(); err != nil {
+						t.Fatalf("rotateSegment err = %v", err)
+					}
+				}
+
+				// Subsequent write on active segment:
+				id := r.insert("post_rotate")
+				if id == 0 {
+					t.Fatal("subsequent insert failed")
+				}
+
+				// 1. Crash snapshot recovery with repeated passes:
+				snap := snapshotOf(t, colDirOf(dir))
+				for pass := 0; pass < 2; pass++ {
+					dbPass, rootPass := openSnapshot(t, snap, cfg)
+					cmVerify(t, dbPass, rootPass, r, false)
+					_ = dbPass.Close()
+				}
+
+				// 2. Power-loss recovery with repeated passes:
+				img := t.TempDir()
+				powerLossImage(t, fs, dir, img)
+				for pass := 0; pass < 2; pass++ {
+					dbPass, rootPass := openSnapshot(t, filepath.Join(img, "c"), cfg)
+					cmVerify(t, dbPass, rootPass, r, false)
+					_ = dbPass.Close()
+				}
+
+				// 3. Clean reopen with repeated passes:
+				abandon(t, db, fs)
+				for pass := 0; pass < 2; pass++ {
+					dbPass, err := Open(dir, CollectionConfig{SyncMode: SyncModeAlways})
+					if err != nil {
+						t.Fatalf("clean reopen pass %d: %v", pass, err)
+					}
+					cmVerify(t, dbPass, dir, r, false)
+					_ = dbPass.Close()
+				}
+			})
+		}
 	})
 }
 
