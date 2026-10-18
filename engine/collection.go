@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -191,6 +192,11 @@ type CollectionConfig struct {
 	// be rolled back and the active segment refuses further appends until the
 	// collection is reopened.
 	OnSegmentPoisoned func(collection, segment string, cause error)
+	// OnWriteOutcomeUnknown, when non-nil, is called once when the collection
+	// is fenced by a write whose outcome cannot be proven (fsync, truncate or
+	// seal-sync failure; see fence.go), with the operation that hit it. It may
+	// run under the collection or segment lock: keep it cheap and non-blocking.
+	OnWriteOutcomeUnknown func(collection, op string)
 	// OnLock, when non-nil, is called by Open with the result of acquiring the
 	// exclusive data-directory lock: LockAcquired, LockContended (another
 	// handle/process holds it) or LockFailed. DB-wide.
@@ -305,6 +311,11 @@ type Collection struct {
 	index    *Index
 	idSeq    atomic.Uint64 // monotonically increasing id counter
 	segSeq   atomic.Uint64 // monotonically increasing segment id counter
+	// fenced, once set, is the first cause of an outcome-unknown failure; the
+	// collection then refuses reads and writes until reopen (see fence.go).
+	// Set under c.mu by foreground writers (lock-free by syncLoop), read
+	// lock-free.
+	fenced atomic.Pointer[fenceState]
 
 	// decisions is the cross-collection transaction decision table.
 	decisions   map[string]string
@@ -526,9 +537,6 @@ func (c *Collection) observeActive(seg *Segment) {
 		seg.onAppend = func(n int, err error) { h(name, n, err) }
 	}
 	h, l := c.cfg.OnSegmentPoisoned, c.cfg.Logger
-	if h == nil && l == nil {
-		return
-	}
 	name, path := c.name, filepath.Base(seg.Path())
 	seg.onPoison = func(cause error) {
 		if l != nil {
@@ -537,6 +545,9 @@ func (c *Collection) observeActive(seg *Segment) {
 		if h != nil {
 			h(name, path, cause)
 		}
+		// A failed rollback truncate leaves an unknown tail: Unknown + fence
+		// (§3.2 failure-state table), whichever write path hit it.
+		c.fence("truncate", cause)
 	}
 }
 
@@ -550,7 +561,8 @@ func (c *Collection) currentDecisions() map[string]string {
 }
 
 // syncLoop periodically fsyncs the active segment when SyncModeInterval is
-// configured. It exits when the collection is closed.
+// configured. It exits when the collection is closed or fenced; a failed fsync
+// fences the collection (lock-free, without c.mu).
 func (c *Collection) syncLoop() {
 	t := time.NewTicker(c.cfg.SyncInterval)
 	defer t.Stop()
@@ -559,10 +571,18 @@ func (c *Collection) syncLoop() {
 		case <-c.closed:
 			return
 		case <-t.C:
+			if c.checkFenced() != nil {
+				return
+			}
 			c.mu.RLock()
 			active := c.active
 			c.mu.RUnlock()
-			_ = active.Sync()
+			if err := active.Sync(); err != nil {
+				// Unknown (§2.3): writes acknowledged since the last good sync
+				// may or may not be durable. Fence and stop — never retry.
+				c.fence("syncLoop", err)
+				return
+			}
 		}
 	}
 }
@@ -644,8 +664,15 @@ func (c *Collection) persistIndexes() error {
 		return nil
 	default:
 	}
+	// A fenced collection's in-memory index is untrusted and its segment must
+	// not be fsynced again (§2.3 fail-stop); reopen rebuilds from segments.
+	if c.checkFenced() != nil {
+		c.mu.RUnlock()
+		return nil
+	}
 	if err := c.active.Sync(); err != nil {
 		c.mu.RUnlock()
+		c.fence("persist", err)
 		return err
 	}
 	segs := make([]*Segment, 0, len(c.sealed)+1)
@@ -886,6 +913,57 @@ func (c *Collection) syncActiveLocked() error {
 	return c.active.Sync()
 }
 
+// appendLocked appends e to the active segment for a single-record write. The
+// caller holds c.mu (write). It refuses on a fenced collection and classifies an
+// append failure (§2.3): a failed write whose rollback truncate succeeded is
+// NotApplied and returns the cause; a failed rollback poisons the segment and
+// is Unknown (ErrWriteOutcomeUnknown), with the collection fenced.
+func (c *Collection) appendLocked(op string, e store.Entry) (int64, error) {
+	if err := c.checkFenced(); err != nil {
+		return 0, err
+	}
+	offset, err := c.active.Append(e)
+	if err == nil {
+		return offset, nil
+	}
+	if errors.Is(err, ErrSegmentPoisoned) {
+		return 0, c.unknownOutcome(op, err)
+	}
+	return 0, fmt.Errorf("collection: %s: %w", op, err)
+}
+
+// syncCommitLocked is the durability point of a single-record write: under
+// SyncModeAlways it fsyncs the active segment. A failed fsync is Unknown — the
+// collection is fenced, the record must not be published, and fsync is never
+// retried (a later success proves nothing about the earlier bytes). The caller
+// holds c.mu (write) and applies the index only after this returns nil, so
+// visibility follows durability.
+func (c *Collection) syncCommitLocked(op string) error {
+	if c.cfg.SyncMode != SyncModeAlways {
+		return nil
+	}
+	if err := c.active.Sync(); err != nil {
+		return c.unknownOutcome(op, err)
+	}
+	return nil
+}
+
+// afterCommit runs the post-commit steps of a committed single-record write,
+// after c.mu is released: the watch event is emitted first, so a rotation
+// failure can never drop it (§3.2), then the segment is rotated if due. A
+// rotation failure does not undo the commit; it is reported as a
+// *PostCommitError (and fences the collection if the seal sync failed).
+func (c *Collection) afterCommit(op string, ev WatchEvent, needRotate bool) error {
+	c.emit(ev)
+	if !needRotate {
+		return nil
+	}
+	if err := c.rotateSegment(); err != nil {
+		return &PostCommitError{Op: op, Stage: "rotate", Err: err}
+	}
+	return nil
+}
+
 // Insert adds a new record and returns its assigned id. Data that sets the
 // reserved _key field is rejected with ErrReservedField — string keys are
 // settable only via InsertWithKey (see keys.go).
@@ -928,6 +1006,9 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 
 	qBytes := c.entryQuotaBytes(e)
 
+	if err := c.checkFenced(); err != nil {
+		return 0, time.Time{}, err
+	}
 	c.mu.Lock()
 	// Enforce the collection's quota before writing so a refused insert appends
 	// nothing and mutates no index (S4).
@@ -941,32 +1022,25 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 		c.mu.Unlock()
 		return 0, time.Time{}, err
 	}
-	offset, err := c.active.Append(e)
+	offset, err := c.appendLocked("insert", e)
 	if err != nil {
 		c.mu.Unlock()
-		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
+		return 0, time.Time{}, err
+	}
+	if err := c.syncCommitLocked("insert"); err != nil {
+		c.mu.Unlock()
+		return 0, time.Time{}, err
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: expiresAt, Epoch: e.Epoch})
 	c.sidxIndexEntry(id, data)
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
-	}
 	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return id, ts, fmt.Errorf("collection: rotate after insert: %w", err)
-		}
-	}
-
 	// meta.json is persisted on rotation and on Close rather than per insert;
 	// the id counter is reconciled against the active segment on load, so a
 	// crash between writes cannot cause id reuse.
-	c.emit(WatchEvent{Op: store.OpInsert, ID: id, Data: data, Ts: ts})
-	return id, ts, nil
+	return id, ts, c.afterCommit("insert", WatchEvent{Op: store.OpInsert, ID: id, Data: data, Ts: ts}, needRotate)
 }
 
 // InsertMany appends a batch of keyless records atomically. The collection's
@@ -1139,6 +1213,9 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 		return time.Time{}, err
 	}
 
+	if err := c.checkFenced(); err != nil {
+		return time.Time{}, err
+	}
 	c.mu.Lock()
 	cur, ok := c.index.Get(id)
 	if !ok {
@@ -1158,55 +1235,50 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 	e.ExpiresAt = exp
 	newRev := cur.Rev + 1
 	e.Rev = newRev
-	offset, err := c.active.Append(e)
+	offset, err := c.appendLocked("update", e)
 	if err != nil {
 		c.mu.Unlock()
-		return time.Time{}, fmt.Errorf("collection: update: %w", err)
+		return time.Time{}, err
+	}
+	if err := c.syncCommitLocked("update"); err != nil {
+		c.mu.Unlock()
+		return time.Time{}, err
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp, Epoch: e.Epoch})
 	c.sidxUpdateEntry(id, data)
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return time.Time{}, fmt.Errorf("collection: update: %w", err)
-	}
 	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return ts, fmt.Errorf("collection: rotate after update: %w", err)
-		}
-	}
-
-	c.emit(WatchEvent{Op: store.OpUpdate, ID: id, Data: data, Ts: ts})
-	return ts, nil
+	return ts, c.afterCommit("update", WatchEvent{Op: store.OpUpdate, ID: id, Data: data, Ts: ts}, needRotate)
 }
 
 // Delete removes a record by id.
 func (c *Collection) Delete(id uint64) error {
 	e := store.NewDelete(id)
 
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	if _, ok := c.index.Get(id); !ok {
 		c.mu.Unlock()
 		return fmt.Errorf("collection: delete: id %d not found", id)
 	}
-	if _, err := c.active.Append(e); err != nil {
+	if _, err := c.appendLocked("delete", e); err != nil {
 		c.mu.Unlock()
-		return fmt.Errorf("collection: delete: %w", err)
+		return err
+	}
+	if err := c.syncCommitLocked("delete"); err != nil {
+		c.mu.Unlock()
+		return err
 	}
 	c.index.Delete(id)
 	c.sidxRemoveEntry(id)
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("collection: delete: %w", err)
-	}
 	c.publishCommit(e)
 	c.mu.Unlock()
 
-	c.emit(WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts})
-	return nil
+	return c.afterCommit("delete", WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts}, false)
 }
 
 // Record is a fully-resolved view of a single live record: its numeric id, its
@@ -1299,6 +1371,9 @@ func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Seg
 // missing key surfaces as a typed error (crypto.ErrDecryptFailed /
 // crypto.ErrKeyUnavailable) rather than garbage.
 func (c *Collection) Get(id uint64) (Record, error) {
+	if err := c.checkFenced(); err != nil {
+		return Record{}, err
+	}
 	e, loc, err := c.getStored(id)
 	if err != nil {
 		return Record{}, err
@@ -1433,21 +1508,44 @@ func (c *Collection) publishCommit(e store.Entry) {
 }
 
 // rotateSegment seals the current active segment and opens a new one.
+//
+// Failure handling (§3.6): a failed seal sync fences the collection and leaves
+// the segment active (never sealed-and-active, never re-synced). If the new
+// segment cannot be created, the just-sealed one is reopened as the active
+// segment (its bytes are durable), so the collection keeps a writable tail; if
+// that also fails the collection is fenced. A failed directory sync fences too.
+// Callers that rotate after a commit report any error as a *PostCommitError.
 func (c *Collection) rotateSegment() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c.active.Seal(); err != nil {
+	if err := c.checkFenced(); err != nil {
 		return err
 	}
-	c.sealed = append(c.sealed, c.active)
+	old := c.active
+	var closeErr error
+	if err := old.Seal(); err != nil {
+		if !old.IsSealed() {
+			c.fence("seal", err)
+			return err
+		}
+		closeErr = err // synced and sealed; only the close failed
+	}
 
 	// Number the new active segment globally to avoid collisions with compactor.
 	newPath := c.segmentPath(c.segSeq.Add(1))
 	active, err := openActiveSegmentWith(newPath, c.cfg.wrapFile)
 	if err != nil {
-		return err
+		reopened, rerr := openActiveSegmentWith(old.Path(), c.cfg.wrapFile)
+		if rerr != nil {
+			c.fence("rotate", fmt.Errorf("%w (reopen previous segment: %w)", err, rerr))
+			return err
+		}
+		c.observeActive(reopened)
+		c.active = reopened
+		return fmt.Errorf("collection: rotate: create segment: %w", err)
 	}
+	c.sealed = append(c.sealed, old)
 	c.active = active
 	c.observeActive(active)
 
@@ -1455,12 +1553,13 @@ func (c *Collection) rotateSegment() error {
 	// lose the file. Skipped in SyncModeNone to preserve fast-mode throughput.
 	if c.cfg.SyncMode != SyncModeNone {
 		if err := fsyncDir(c.dir); err != nil {
+			c.fence("rotate", err)
 			return fmt.Errorf("collection: fsync dir after rotate: %w", err)
 		}
 	}
 
 	// Persist the id counter now that a segment boundary has been crossed.
-	_ = persistMeta(filepath.Join(c.dir, metaFilename),
+	metaErr := persistMeta(filepath.Join(c.dir, metaFilename),
 		c.metaSnapshot())
 
 	// Signal the compactor, and ask the persist loop to record the sealed
@@ -1472,6 +1571,12 @@ func (c *Collection) rotateSegment() error {
 	select {
 	case c.persistC <- struct{}{}:
 	default:
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if metaErr != nil {
+		return fmt.Errorf("collection: persist meta after rotate: %w", metaErr)
 	}
 	return nil
 }
@@ -1752,6 +1857,15 @@ func (c *Collection) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.checkFenced() != nil {
+		// Fenced (§2.3): never fsync the segment again and never persist the
+		// untrusted in-memory indexes; reopen rebuilds them from segments. The
+		// id counter is still persisted so no id is reused.
+		if err := c.active.closeNoSync(); err != nil {
+			return err
+		}
+		return persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
+	}
 	if err := c.active.Close(); err != nil {
 		return err
 	}
@@ -1900,6 +2014,9 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 	// the buckets were built from, so no write may land in between — and no
 	// snapshot taken under c.mu (Verify) may observe the index registered but
 	// not yet built. Lock order is mu → sidxMu, as on the write path.
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sidxMu.Lock()
@@ -1926,6 +2043,9 @@ func (c *Collection) ensureIndex(field string, unique bool) error {
 
 // DropIndex removes the secondary index for field and deletes its file.
 func (c *Collection) DropIndex(field string) error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.sidxMu.Lock()
 	if _, exists := c.sidxMap[field]; !exists {
 		c.sidxMu.Unlock()
@@ -1952,7 +2072,17 @@ func (c *Collection) ListIndexes() []string {
 // IndexLookup returns the IDs of records whose field equals value, using the
 // secondary index. Returns nil if no index exists for field (caller falls back
 // to Scan).
+// A fenced collection serves no index (nil, false).
 func (c *Collection) IndexLookup(field, value string) ([]uint64, bool) {
+	if c.checkFenced() != nil {
+		return nil, false
+	}
+	return c.indexLookup(field, value)
+}
+
+// indexLookup is IndexLookup without the fence check, for internal callers that
+// have already checked (or hold c.mu and must see the index regardless).
+func (c *Collection) indexLookup(field, value string) ([]uint64, bool) {
 	c.sidxMu.RLock()
 	sidx, ok := c.sidxMap[field]
 	c.sidxMu.RUnlock()
@@ -2013,12 +2143,15 @@ func (c *Collection) UpdateIfMatch(key string, pred func(cur map[string]any) boo
 func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur map[string]any, curRev uint64) bool) (bool, error) {
 	ts := time.Now().UTC()
 
+	if err := c.checkFenced(); err != nil {
+		return false, err
+	}
 	c.mu.Lock()
 
-	// Resolve the key under the same lock that will perform the write. IndexLookup
+	// Resolve the key under the same lock that will perform the write. indexLookup
 	// takes sidxMu (read) after c.mu (write), matching the lock order used by the
 	// insert/update paths, so there is no deadlock.
-	ids, hit := c.IndexLookup(KeyField, key)
+	ids, hit := c.indexLookup(KeyField, key)
 	if !hit || len(ids) == 0 {
 		c.mu.Unlock()
 		return false, nil // no live record carries key → no-op
@@ -2087,29 +2220,22 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		c.mu.Unlock()
 		return false, err
 	}
-	offset, err := c.active.Append(e)
+	offset, err := c.appendLocked("cas", e)
 	if err != nil {
 		c.mu.Unlock()
-		return false, fmt.Errorf("collection: cas: %w", err)
+		return false, err
+	}
+	if err := c.syncCommitLocked("cas"); err != nil {
+		c.mu.Unlock()
+		return false, err
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: loc.ExpiresAt, Epoch: e.Epoch})
 	c.sidxUpdateEntry(id, stamped)
-	if err := c.syncActiveLocked(); err != nil {
-		c.mu.Unlock()
-		return false, fmt.Errorf("collection: cas: %w", err)
-	}
 	c.publishCommit(e)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return true, fmt.Errorf("collection: rotate after cas: %w", err)
-		}
-	}
-
-	c.emit(WatchEvent{Op: store.OpUpdate, ID: id, Data: stamped, Ts: ts})
-	return true, nil
+	return true, c.afterCommit("cas", WatchEvent{Op: store.OpUpdate, ID: id, Data: stamped, Ts: ts}, needRotate)
 }
 
 // indexRangeLookup returns candidate IDs for a range predicate (gt/gte/lt/lte)

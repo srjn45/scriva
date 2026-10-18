@@ -73,6 +73,9 @@ func (c *Collection) EncryptionStatus() EncryptionStatus {
 // re-enable under the new mode. First-time enable requires a KeyProvider to have
 // been supplied when the collection was opened.
 func (c *Collection) SetEncryptionPolicy(ctx context.Context, policy *EncryptionPolicy) error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.encAdminMu.Lock()
 	defer c.encAdminMu.Unlock()
 
@@ -126,6 +129,9 @@ func (c *Collection) SetEncryptionPolicy(ctx context.Context, policy *Encryption
 // via the provider; a CompactNow re-encrypts them under the new key, after which
 // the old key can be retired.
 func (c *Collection) RotateKey(ctx context.Context) error {
+	if err := c.checkFenced(); err != nil {
+		return err
+	}
 	c.encAdminMu.Lock()
 	defer c.encAdminMu.Unlock()
 

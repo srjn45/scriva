@@ -437,8 +437,13 @@ func (s *Segment) ScanStampedFromOffset(from int64, yield func(offset int64, e s
 	return nil
 }
 
-// Seal marks the segment as immutable and flushes + closes the underlying
-// file. After sealing, only ReadAt and ScanAll are valid.
+// Seal flushes + closes the underlying file and marks the segment immutable.
+// After sealing, only ReadAt and ScanAll are valid.
+//
+// The segment is marked sealed only once its fsync succeeded (§3.6). A failed
+// sync leaves it active and open — the caller must fence, never retry the sync
+// and never treat the segment as sealed. A close failure after a successful
+// sync still seals (the bytes are durable) and is returned for reporting.
 func (s *Segment) Seal() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -446,18 +451,33 @@ func (s *Segment) Seal() error {
 	if s.sealed {
 		return nil
 	}
-	s.sealed = true
-
 	if s.file != nil {
 		if err := s.file.Sync(); err != nil {
 			return fmt.Errorf("segment: sync %q: %w", s.path, err)
 		}
-		if err := s.file.Close(); err != nil {
+		f := s.file
+		s.file = nil
+		s.sealed = true
+		if err := f.Close(); err != nil {
 			return fmt.Errorf("segment: close %q: %w", s.path, err)
 		}
-		s.file = nil
+		return nil
 	}
+	s.sealed = true
 	return nil
+}
+
+// closeNoSync closes an active segment's file without fsync. It is for a
+// fenced collection, whose segment must not be synced again (§2.3).
+func (s *Segment) closeNoSync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	f := s.file
+	s.file = nil
+	return f.Close()
 }
 
 // Path returns the file path of this segment.

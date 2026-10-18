@@ -27,6 +27,24 @@ scriva_quota_rejected_total{collection="users"} 2
 	}
 }
 
+func TestObserveWriteOutcomeUnknown(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg)
+
+	m.ObserveWriteOutcomeUnknown("users", "insert")
+	m.ObserveWriteOutcomeUnknown("events", "syncLoop")
+
+	want := `
+# HELP scriva_write_outcome_unknown_total Writes whose outcome could not be proven (fsync, truncate or seal-sync failure); each fences its collection until reopen.
+# TYPE scriva_write_outcome_unknown_total counter
+scriva_write_outcome_unknown_total{collection="events",op="syncLoop"} 1
+scriva_write_outcome_unknown_total{collection="users",op="insert"} 1
+`
+	if err := testutil.CollectAndCompare(m.WriteOutcomeUnknownTotal, strings.NewReader(want)); err != nil {
+		t.Fatalf("unexpected write-outcome-unknown metric: %v", err)
+	}
+}
+
 func TestDBCollectorEmitsBytes(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	NewDBCollector(reg, func() []CollectionStats {
