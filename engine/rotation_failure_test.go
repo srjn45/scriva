@@ -318,15 +318,6 @@ func TestRotation_PostCommit_SingleRecordWrites(t *testing.T) {
 
 			target, opErr := op.run(col, seedID)
 
-			if (op.name == "Delete" || op.name == "DeleteByKey") && opErr == nil {
-				// GAP REPRODUCED: Delete (and DeleteByKey) in collection.go:1289 hardcodes
-				// needRotate=false in c.afterCommit("delete", ..., false).
-				// Therefore it never checks active segment size, never calls rotateSegment,
-				// and never encounters the rotation failure.
-				t.Logf("TODO(rotation-state-fix): %s does not rotate when active segment exceeds SegmentMaxSize because collection.go:1289 hardcodes needRotate=false; ratified spec §3.6 requires Delete to rotate and return *PostCommitError on rotation failure", op.name)
-				return
-			}
-
 			// 1. Commit must NOT be reported as a failure (returns *PostCommitError, NOT ErrWriteOutcomeUnknown).
 			var pce *PostCommitError
 			if !errors.Is(opErr, ErrPostCommit) || !errors.As(opErr, &pce) || !errors.Is(opErr, syscall.EIO) {
@@ -529,13 +520,8 @@ func TestRotation_PostCommit_MultiRecordWrites(t *testing.T) {
 				}
 			}
 
-			// Deterministically reproduce the gap:
-			if len(emitted) == 0 {
-				t.Logf("TODO(rotation-state-fix): %s dropped %d watch events on post-commit rotation failure; "+
-					"spec §3.2/§3.6 requires emit before rotation or via defer (today: 0 events; want: %d)",
-					tc.name, tc.wantEvents, tc.wantEvents)
-			} else if len(emitted) != tc.wantEvents {
-				t.Errorf("%s: emitted %d watch events, want %d", tc.name, len(emitted), tc.wantEvents)
+			if len(emitted) != tc.wantEvents {
+				t.Fatalf("%s: emitted %d watch events, want %d", tc.name, len(emitted), tc.wantEvents)
 			}
 
 			// 5. Data durability: despite rotation failure, the batch committed and is visible
