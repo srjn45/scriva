@@ -37,8 +37,8 @@ make build
 scriva serve \
   --data ./data \
   --api-key my-secret-key \
-  --grpc-addr :5433 \
-  --rest-addr :8080
+  --grpc-addr 0.0.0.0:5433 \
+  --rest-addr 0.0.0.0:8080
 ```
 
 Environment variable alternative:
@@ -53,11 +53,13 @@ All flags and their defaults:
 | Flag | Default | Description |
 |---|---|---|
 | `--data` | `./data` | Data directory |
-| `--grpc-addr` | `:5433` | TCP gRPC listen address |
-| `--rest-addr` | `:8080` | REST gateway listen address |
+| `--grpc-addr` | `127.0.0.1:5433` | TCP gRPC listen address |
+| `--rest-addr` | `127.0.0.1:8080` | REST gateway listen address |
 | `--socket` | `/tmp/scriva.sock` | Unix domain socket path |
 | `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth) |
-| `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled) |
+| `--metrics-addr` | `127.0.0.1:9090` |
+| `--insecure-allow-remote` | `false` | Allow non-loopback listeners with no API key and no TLS (INSECURE; logs a warning) |
+| `--cors-allowed-origin` | none | Origin allowed to call REST cross-origin (repeatable) | Prometheus metrics address (empty = disabled) |
 | `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key` | *(none)* | Path to TLS private key PEM file |
 | `--tls-client-ca` | *(none)* | Path to PEM CA bundle that signs trusted client certs (enables mTLS) |
@@ -92,11 +94,11 @@ You can put all server options in a YAML file and load it with `--config`:
 ```yaml
 # scriva.yaml
 data_dir: ./data
-grpc_addr: :5433
-rest_addr: :8080
+grpc_addr: 127.0.0.1:5433
+rest_addr: 127.0.0.1:8080
 unix_socket: /tmp/scriva.sock
 api_key: my-secret-key
-metrics_addr: :9090
+metrics_addr: 127.0.0.1:9090
 segment_max_size: 4194304   # 4 MiB
 compact_interval: 5m
 compact_dirty_pct: 0.30

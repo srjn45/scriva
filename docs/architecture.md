@@ -1,5 +1,23 @@
 # ScrivaDB — Architecture
 
+## Listener security
+
+All TCP listeners (gRPC, REST, metrics) default to `127.0.0.1`. At startup
+`server.ValidateListeners` refuses to start if any listener is bound to a
+non-loopback address (wildcard `:port`, `0.0.0.0`, `[::]`, or an external IP)
+unless an API key (`--api-key` / `keys:`) or TLS (`--tls-cert`/`--tls-key`) is
+configured. `--insecure-allow-remote` / `insecure_allow_remote: true` is an
+explicit override that logs an `INSECURE` warning. **Migration:** deployments
+that relied on the old `:5433`/`:8080`/`:9090` wildcard defaults must set an API
+key or TLS (recommended), bind explicitly, or use the override.
+
+The unix socket is created `0600` (umask-tightened during bind) and a stale
+socket is replaced only if the path is a socket. REST and metrics use
+`http.Server` with read-header/read/write/idle timeouts (watch streams lift the
+write deadline), REST request bodies are capped (`max_request_body_bytes`,
+default 32 MiB), and CORS headers are emitted only for origins listed in
+`cors_allowed_origins` (default none; `"*"` is an explicit opt-in).
+
 ## Overview
 
 ScrivaDB is a lightweight, append-only, file-based document database written in Go. It exposes a gRPC API (with a REST gateway) and stores data as human-readable NDJSON files on disk.
