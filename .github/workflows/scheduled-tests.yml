@@ -1,0 +1,98 @@
+name: Scheduled deep tests
+
+# Long-running tiers that are too slow for PR CI: mutation fuzzing, the model
+# soak, the full crash matrix with the kill -9 soak, and resource-exhaustion
+# (scan stress) checks. Run locally with the make targets named in each step;
+# see docs/operations.md ("Testing tiers").
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # nightly: fuzz + soak + crash
+    - cron: "43 4 * * 0"   # weekly: extended soak
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz duration"
+        default: "5m"
+      soak_seeds:
+        description: "Model soak seed count"
+        default: "300"
+      soak_steps:
+        description: "Model soak steps per seed"
+        default: "1000"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzSegmentRecovery, FuzzCompaction, FuzzScanSegmentTolerant]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Fuzz
+        run: go test ./engine -run '^$' -fuzz '${{ matrix.target }}$' -fuzztime=${{ inputs.fuzztime || '5m' }}
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-corpus
+          path: engine/testdata/fuzz/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  soak:
+    name: Model soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: make test-soak
+        run: >
+          make test-soak
+          SOAK_SEEDS=${{ inputs.soak_seeds || (github.event.schedule == '43 4 * * 0' && '1000' || '300') }}
+          SOAK_STEPS=${{ inputs.soak_steps || '1000' }}
+          SOAK_BASE=$(( $(date +%s) / 86400 * 1000 ))
+          SOAK_TIMEOUT=100m
+
+  crash:
+    name: Crash matrix + kill -9 soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: make test-crash (SCRIVA_KILL_SOAK=1)
+        run: make test-crash SOAK_TIMEOUT=50m
+        env:
+          SCRIVA_KILL_SOAK: "1"
+
+  resources:
+    name: Resource exhaustion / scan stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Scan stress, ENOSPC write outcomes and recovery benchmarks
+        run: |
+          go test ./engine -race -count=3 -run 'ScanStress|TestWriteOutcomeBaseline|TestIntegrityFixtures' -timeout 30m
+          make bench BENCHTIME=3x
