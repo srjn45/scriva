@@ -93,6 +93,7 @@ Key properties:
 - **OpenAPI spec** — `docs/openapi/scriva.swagger.json` generated from the proto; generate clients for any language with [openapi-generator](https://openapi-generator.tech/)
 - **Official client SDKs** — idiomatic, hand-written libraries for 10 languages (Python, JavaScript/TypeScript, PHP, Java, Kotlin, Scala, Clojure, Ruby, Rust, C#/.NET) under `clients/`
 - **Scoped API keys** — multiple named keys with `read` or `read-write` scope; a read-only key is refused on writes, and keys hot-reload on `SIGHUP` for rotation without a restart
+- **Secure by default** — loopback binds, non-loopback exposure requires auth/TLS (or explicit `--insecure-allow-remote`), `0600` socket, HTTP timeouts/body limits, CORS off, TLS/mTLS replication; see [upgrade guide](docs/operations.md#upgrading-to-secure-server-defaults)
 - **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
 - **YAML config file** — `--config scriva.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, gRPC request duration, and per-query rows-scanned at `--metrics-addr`

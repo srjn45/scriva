@@ -283,6 +283,9 @@ Fixed the index/data desync class and made recovery verifiable. See [docs/archit
 - [x] Test infrastructure: crash matrix, fault-injecting filesystem, kill -9 multi-process tests, synthetic incident fixtures, randomized model test + `make test-soak`
 - [x] Recovery-cost benchmarks and guardrails ([architecture.md](docs/architecture.md#recovery-cost-and-performance-guardrails))
 
+#### ~~8. Secure server defaults and transport (hardening §3.8)~~ ✅ Done
+Loopback default binds, exposure validation (`--insecure-allow-remote` override), `0600` socket, HTTP timeouts/body limits, CORS allowlist, and TLS/mTLS replication with downgrade protection and protocol negotiation. Migration: [operations.md](docs/operations.md#upgrading-to-secure-server-defaults).
+
 ---
 
 ## Post-v0.1.0 roadmap (Hardening & Scale)
