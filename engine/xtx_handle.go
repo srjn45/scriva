@@ -430,6 +430,11 @@ func (x *XTx) Stage(op XTxOp) (uint64, error) {
 	default:
 		return 0, xtxErr("", ErrXTxInvalid, fmt.Errorf("unknown op %q", op.Op))
 	}
+	if op.Op != store.OpDelete {
+		if _, ok := op.Data[KeyField]; ok {
+			return 0, reservedFieldErr()
+		}
+	}
 	if op.Op == store.OpDelete {
 		op.Data = nil
 	} else {

@@ -26,6 +26,70 @@ var ErrReservedField = errors.New("engine: reserved field")
 // errors.Is.
 var ErrKeyNotFound = errors.New("engine: key not found")
 
+// maxKeyConflictIDs bounds the ids listed in a KeyIndexConflictError.
+const maxKeyConflictIDs = 16
+
+// ErrKeyIndexConflict is matched (errors.Is) by *KeyIndexConflictError.
+var ErrKeyIndexConflict = errors.New("engine: key index conflict")
+
+// KeyIndexConflictError is returned by the keyed API (InsertWithKey, FindByKey,
+// UpdateByKey, DeleteByKey, Upsert, Exists, UpdateIfRev, UpdateIfMatch) when more
+// than one live record carries the same string _key — legacy or imported data
+// the unique index could not have admitted. The engine never picks a winner:
+// id-addressed operations keep working and the operator resolves the duplicate
+// by deleting or rewriting one of the records. Key is the smallest duplicated
+// key; IDs lists up to 16 of its holders in ascending order.
+type KeyIndexConflictError struct {
+	Collection string
+	Key        string
+	IDs        []uint64
+}
+
+func (e *KeyIndexConflictError) Error() string {
+	return fmt.Sprintf("%v: collection %q: %d+ live records share _key %q: ids %v", ErrKeyIndexConflict, e.Collection, len(e.IDs), e.Key, e.IDs)
+}
+
+func (e *KeyIndexConflictError) Is(target error) bool { return target == ErrKeyIndexConflict }
+
+// keyConflict reports a duplicate-ownership conflict in the collection's _key
+// index, or nil when the index is absent or clean.
+func (c *Collection) keyConflict() error {
+	c.sidxMu.RLock()
+	sidx, ok := c.sidxMap[KeyField]
+	c.sidxMu.RUnlock()
+	if !ok {
+		return nil
+	}
+	if k, ids, dup := sidx.firstDuplicate(maxKeyConflictIDs); dup {
+		return &KeyIndexConflictError{Collection: c.name, Key: k, IDs: ids}
+	}
+	return nil
+}
+
+// preserveReservedLocked returns data with the record's current _key stamped
+// in, so an id-addressed write neither drops nor changes it. It is a no-op
+// (data returned as is, no extra read) when the collection has no _key index,
+// the record carries no indexed string key, or data already carries _key
+// (keyed writers stamp it themselves). The caller holds c.mu.
+func (c *Collection) preserveReservedLocked(id uint64, data map[string]any) map[string]any {
+	if _, has := data[KeyField]; has {
+		return data
+	}
+	c.sidxMu.RLock()
+	sidx, ok := c.sidxMap[KeyField]
+	c.sidxMu.RUnlock()
+	if !ok {
+		return data
+	}
+	sidx.mu.RLock()
+	key, indexed := sidx.reverse[id]
+	sidx.mu.RUnlock()
+	if !indexed {
+		return data
+	}
+	return stampKey(data, key)
+}
+
 // reservedFieldErr builds the ErrReservedField error with guidance on the
 // correct API to use.
 func reservedFieldErr() error {
@@ -43,6 +107,9 @@ func (c *Collection) InsertWithKey(key string, data map[string]any) (uint64, tim
 		return 0, time.Time{}, reservedFieldErr()
 	}
 	if err := c.ensureKeyIndex(); err != nil {
+		return 0, time.Time{}, err
+	}
+	if err := c.keyConflict(); err != nil {
 		return 0, time.Time{}, err
 	}
 	return c.insert(stampKey(data, key), c.resolveInsertExpiry(time.Time{}))
@@ -99,6 +166,9 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 	// section: ensureKeyIndex acquires c.mu (read) internally, so it must not run
 	// while we hold c.mu (write).
 	if err := c.ensureKeyIndex(); err != nil {
+		return Record{}, err
+	}
+	if err := c.keyConflict(); err != nil {
 		return Record{}, err
 	}
 
@@ -201,6 +271,9 @@ func (c *Collection) resolveKey(key string) (uint64, error) {
 	if err := c.checkFenced(); err != nil {
 		return 0, err
 	}
+	if err := c.keyConflict(); err != nil {
+		return 0, err
+	}
 	ids, ok := c.indexLookup(KeyField, key)
 	if !ok || len(ids) == 0 {
 		return 0, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
@@ -219,4 +292,34 @@ func stampKey(data map[string]any, key string) map[string]any {
 	}
 	out[KeyField] = key
 	return out
+}
+
+// replKeyConflictLocked checks a replicated insert/update against the _key
+// index: if another live record already holds the entry's string _key (and that
+// record is not itself rewritten by the same apply, per touched), the stream
+// cannot be applied without breaking uniqueness. The returned
+// *KeyIndexConflictError stops replication; nothing is silently skipped. The
+// caller holds c.mu.
+func (c *Collection) replKeyConflictLocked(e store.Entry, touched map[uint64]struct{}) error {
+	if e.Op == store.OpDelete {
+		return nil
+	}
+	key, ok := e.Data[KeyField].(string)
+	if !ok {
+		return nil
+	}
+	ids, hit := c.indexLookup(KeyField, key)
+	if !hit {
+		return nil
+	}
+	for _, id := range ids {
+		if id == e.ID {
+			continue
+		}
+		if _, t := touched[id]; t {
+			continue
+		}
+		return &KeyIndexConflictError{Collection: c.name, Key: key, IDs: []uint64{id, e.ID}}
+	}
+	return nil
 }

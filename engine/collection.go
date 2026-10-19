@@ -1345,9 +1345,19 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: id %d not found", id)
 	}
+	// Keep the record's reserved _key: an id-addressed update that omits it must
+	// not silently free the key. _key is never encrypted, so it is stamped into
+	// both the logical data and the sealed entry.
+	// The preserved key is not a new claim, so uniqueness is checked on the
+	// caller's data: a record in a legacy duplicate set stays updatable by id.
+	checkData := data
+	if kept := c.preserveReservedLocked(id, data); len(kept) != len(data) {
+		data = kept
+		e.Data = stampKey(e.Data, kept[KeyField].(string))
+	}
 	// Enforce unique indexes before writing so a rejected update appends nothing
 	// and mutates no index.
-	if err := c.sidxCheckUnique(id, data); err != nil {
+	if err := c.sidxCheckUnique(id, checkData); err != nil {
 		c.mu.Unlock()
 		return time.Time{}, err
 	}
@@ -1791,6 +1801,13 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		c.mu.Unlock()
 		return err
 	}
+	// Keep each updated record's reserved _key (see update). Done after the
+	// uniqueness check: a preserved key is not a new claim.
+	for i := range ops {
+		if ops[i].kind == txOpUpdate {
+			ops[i].data = c.preserveReservedLocked(ops[i].id, ops[i].data)
+		}
+	}
 
 	// Quota pre-check (S4): reject the whole commit atomically if its inserts
 	// would breach the collection's record/byte budget, before any op is applied.
@@ -2039,7 +2056,7 @@ func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
 			continue
 		}
 		val, ok := data[field]
-		if !ok {
+		if !ok || !sidx.accepts(val) {
 			continue
 		}
 		key := toIndexKey(val)
@@ -2069,7 +2086,7 @@ func (c *Collection) txCheckUnique(ops []txOp) error {
 				continue
 			}
 			val, ok := op.data[field]
-			if !ok {
+			if !ok || !sidx.accepts(val) {
 				continue
 			}
 			key := toIndexKey(val)
@@ -2285,6 +2302,11 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		return false, err
 	}
 	c.mu.Lock()
+
+	if err := c.keyConflict(); err != nil {
+		c.mu.Unlock()
+		return false, err
+	}
 
 	// Resolve the key under the same lock that will perform the write. indexLookup
 	// takes sidxMu (read) after c.mu (write), matching the lock order used by the

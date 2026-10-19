@@ -254,6 +254,27 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 	if len(specsByCol) == 0 {
 		return false, nil // everything already present
 	}
+	// A replicated _key must stay unique: refuse the whole transaction before any
+	// byte is written, rather than skipping or choosing a winner.
+	for _, p := range parts {
+		specs := specsByCol[p.Collection]
+		touched := make(map[uint64]struct{}, len(specs))
+		for _, s := range specs {
+			touched[s.entry.ID] = struct{}{}
+		}
+		claimed := map[string]uint64{}
+		for _, s := range specs {
+			if err := cols[p.Collection].replKeyConflictLocked(s.entry, touched); err != nil {
+				return false, err
+			}
+			if k, ok := s.entry.Data[KeyField].(string); ok && s.entry.Op != store.OpDelete {
+				if prev, dup := claimed[k]; dup && prev != s.entry.ID {
+					return false, &KeyIndexConflictError{Collection: p.Collection, Key: k, IDs: []uint64{prev, s.entry.ID}}
+				}
+				claimed[k] = s.entry.ID
+			}
+		}
+	}
 	var participants []*Collection
 	for _, p := range parts {
 		specs := specsByCol[p.Collection]

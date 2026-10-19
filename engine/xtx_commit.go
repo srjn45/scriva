@@ -420,6 +420,11 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 				if !ok {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: update target id %d not found", c.name, op.ID))
 				}
+				// Keep the record's reserved _key (see Collection.update). Stored
+				// back into colOps so apply, watch and replication see it too.
+				claimData := op.Data // uniqueness is checked on the caller's data
+				op.Data = c.preserveReservedLocked(op.ID, op.Data)
+				colOps[i].Data = op.Data
 				if c.isExpired(loc) {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: update target id %d expired", c.name, op.ID))
 				}
@@ -440,7 +445,7 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 					}
 					colSealed[i] = sd
 				}
-				txOps = append(txOps, txOp{kind: txOpUpdate, id: op.ID, data: op.Data, ts: time.Now().UTC()})
+				txOps = append(txOps, txOp{kind: txOpUpdate, id: op.ID, data: claimData, ts: time.Now().UTC()})
 
 			case store.OpDelete:
 				loc, ok := c.index.Get(op.ID)
