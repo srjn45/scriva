@@ -14,10 +14,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/srjn45/scriva/query"
 )
 
 type gateModel map[uint64]map[string]any
@@ -598,15 +601,31 @@ func TestBatchGate_ConcurrentWritersAndReaders(t *testing.T) {
 					fail(err)
 					return
 				}
-				// Scans stream without a stable view (hardening §3.5, a separate
-				// stage), so an in-flight batch may be partly visible here; that
-				// is isolation, not crash atomicity. What must hold: no error,
-				// no record belonging to a batch that never began.
+				// Every read path must see each batch whole: Scan, an indexed
+				// Scan (candidate path), Count(MatchAll) and indexed Count.
+				counts := map[string]int{}
 				for _, r := range res {
-					if _, ok := r.Data["tag"].(string); !ok {
-						fail(fmt.Errorf("reader saw malformed record %v", r.Data))
+					counts[r.Data["tag"].(string)]++
+				}
+				for tag, k := range counts {
+					if k != n {
+						fail(fmt.Errorf("Scan saw %d of %d records of batch %s", k, n, tag))
 						return
 					}
+				}
+				if cnt, err := c.Count(nil); err != nil || cnt%n != 0 {
+					fail(fmt.Errorf("Count(MatchAll) = %d (err %w), not a multiple of %d", cnt, err, n))
+					return
+				}
+				probe := fmt.Sprintf("w%d-%d", rand.Intn(writers), rand.Intn(perWriter))
+				f := &query.FieldFilter{Field: "tag", Op: query.OpEq, Value: `"` + probe + `"`}
+				if ir, err := c.Scan(f); err != nil || (len(ir) != 0 && len(ir) != n) {
+					fail(fmt.Errorf("indexed Scan(%s) = %d records (err %w)", probe, len(ir), err))
+					return
+				}
+				if cnt, err := c.Count(f); err != nil || (cnt != 0 && cnt != n) {
+					fail(fmt.Errorf("indexed Count(%s) = %d (err %w)", probe, cnt, err))
+					return
 				}
 			}
 		}()
@@ -663,5 +682,78 @@ func TestBatchGate_ConcurrentWritersAndReaders(t *testing.T) {
 			}
 		}
 		_ = db2.Close()
+	}
+}
+
+// TestBatchGate_ScanSeesBatchWholeAcrossCommit: a scan parked mid-stream while a
+// multi-entry update batch commits must return the pre-batch state for every
+// record (and never a mix); a scan started after sees the post-batch state.
+func TestBatchGate_ScanSeesBatchWholeAcrossCommit(t *testing.T) {
+	SetAtomicBatchWriterReady(t, true)
+	cfg := gateCfg(SyncModeAlways)
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var armed bool
+	var amu sync.Mutex
+	cfg.scanHook = func(p scanHookPoint, arg uint64) {
+		amu.Lock()
+		a := armed
+		amu.Unlock()
+		if a && p == scanAtEntry {
+			once.Do(func() { close(reached); <-release })
+		}
+	}
+	db, err := Open(t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	c, _ := db.CreateCollection("g")
+	ids, _, err := c.InsertMany(batchRecs(6), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	amu.Lock()
+	armed = true
+	amu.Unlock()
+
+	type out struct {
+		res []ScanResult
+		err error
+	}
+	done := make(chan out)
+	go func() {
+		r, err := c.Scan(nil)
+		done <- out{r, err}
+	}()
+	<-reached
+
+	now := time.Now().UTC()
+	var ops []txOp
+	for _, id := range ids {
+		ops = append(ops, txOp{kind: txOpUpdate, id: id, data: map[string]any{"n": 100.0}, ts: now})
+	}
+	if err := c.CommitTx(ops); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	o := <-done
+	if o.err != nil {
+		t.Fatal(o.err)
+	}
+	if len(o.res) != len(ids) {
+		t.Fatalf("scan returned %d records, want %d", len(o.res), len(ids))
+	}
+	for _, r := range o.res {
+		if r.Data["n"] == 100.0 {
+			t.Fatalf("scan begun before the commit exposed post-batch record %d (mixed view)", r.ID)
+		}
+	}
+	after, _ := c.Scan(nil)
+	for _, r := range after {
+		if r.Data["n"] != 100.0 {
+			t.Fatalf("scan after the commit missed update on %d", r.ID)
+		}
 	}
 }
