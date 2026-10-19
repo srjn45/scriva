@@ -167,6 +167,20 @@ func serveCmd() *cobra.Command {
 						merged.OTLPSampleRatio = cfg.OTLPSampleRatio
 					case "replicate-from":
 						merged.ReplicateFrom = cfg.ReplicateFrom
+					case "replicate-tls":
+						merged.ReplicateTLS = cfg.ReplicateTLS
+					case "replicate-ca":
+						merged.ReplicateCA = cfg.ReplicateCA
+					case "replicate-cert":
+						merged.ReplicateCert = cfg.ReplicateCert
+					case "replicate-key":
+						merged.ReplicateKey = cfg.ReplicateKey
+					case "replicate-server-name":
+						merged.ReplicateServerName = cfg.ReplicateServerName
+					case "replicate-api-key":
+						merged.ReplicateAPIKey = cfg.ReplicateAPIKey
+					case "replicate-insecure":
+						merged.ReplicateInsecure = cfg.ReplicateInsecure
 					case "replicate-id":
 						merged.FollowerID = cfg.FollowerID
 					case "replication-ring-size":
@@ -217,6 +231,13 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP/gRPC collector address for OpenTelemetry tracing, e.g. localhost:4317 (empty = tracing disabled)")
 	f.Float64Var(&cfg.OTLPSampleRatio, "otlp-sample-ratio", cfg.OTLPSampleRatio, "Fraction of traces to sample when tracing is enabled (0–1)")
 	f.StringVar(&cfg.ReplicateFrom, "replicate-from", cfg.ReplicateFrom, "Run as a follower tailing the leader at this gRPC address (empty = leader mode)")
+	f.BoolVar(&cfg.ReplicateTLS, "replicate-tls", cfg.ReplicateTLS, "Dial the leader over TLS (system roots unless --replicate-ca is set)")
+	f.StringVar(&cfg.ReplicateCA, "replicate-ca", cfg.ReplicateCA, "PEM CA bundle trusted for the leader's certificate (implies TLS)")
+	f.StringVar(&cfg.ReplicateCert, "replicate-cert", cfg.ReplicateCert, "Client certificate presented to the leader for mTLS (requires --replicate-key)")
+	f.StringVar(&cfg.ReplicateKey, "replicate-key", cfg.ReplicateKey, "Client private key for --replicate-cert")
+	f.StringVar(&cfg.ReplicateServerName, "replicate-server-name", cfg.ReplicateServerName, "Expected leader certificate name (default: host of --replicate-from)")
+	f.StringVar(&cfg.ReplicateAPIKey, "replicate-api-key", cfg.ReplicateAPIKey, "API key used to authenticate to the leader (default: --api-key)")
+	f.BoolVar(&cfg.ReplicateInsecure, "replicate-insecure", cfg.ReplicateInsecure, "Allow replicating from a non-loopback leader without TLS/credentials (INSECURE)")
 	f.StringVar(&cfg.FollowerID, "replicate-id", cfg.FollowerID, "Follower identity reported to the leader in ReplicationStatus (default: hostname)")
 	f.IntVar(&cfg.ReplicationRingSize, "replication-ring-size", cfg.ReplicationRingSize, "Leader-side buffer of recent committed entries for follower resume (0 = disable replication)")
 	f.Uint64Var(&cfg.PromoteMaxLag, "promote-max-lag", cfg.PromoteMaxLag, "Max follower replication lag (in LSNs) still eligible for Promote without --force (0 = must be fully caught up)")
@@ -282,7 +303,17 @@ func serve(cfg server.Config, configFile string) error {
 	var followerWatermark uint64
 	var followerBootstrapped bool
 	if cfg.ReplicateFrom != "" {
-		conn, err := grpc.NewClient(cfg.ReplicateFrom, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		replCreds, replWarnings, err := server.ReplicationTransport(cfg)
+		if err != nil {
+			return err
+		}
+		for _, w := range replWarnings {
+			logger.Warn(w)
+		}
+		if err := server.CheckReplicationTransportMarker(cfg.DataDir, replCreds.Secure); err != nil {
+			return err
+		}
+		conn, err := grpc.NewClient(cfg.ReplicateFrom, grpc.WithTransportCredentials(replCreds.Creds))
 		if err != nil {
 			return fmt.Errorf("dial leader %q: %w", cfg.ReplicateFrom, err)
 		}
@@ -295,16 +326,22 @@ func serve(cfg server.Config, configFile string) error {
 		}
 		if fresh {
 			logger.Info("follower: bootstrapping from leader snapshot", "leader", cfg.ReplicateFrom)
-			bctx := server.ReplicationAuthContext(context.Background(), cfg.APIKey)
+			bctx := server.ReplicationAuthContext(context.Background(), server.ReplicationAPIKey(cfg))
 			wm, err := server.Bootstrap(bctx, pb.NewScrivaClient(conn), cfg.DataDir)
 			if err != nil {
 				return fmt.Errorf("follower bootstrap: %w", err)
 			}
 			followerWatermark = wm
 			followerBootstrapped = true
+			if err := server.WriteReplicationTransportMarker(cfg.DataDir, replCreds.Secure); err != nil {
+				return err
+			}
 			logger.Info("follower: bootstrap complete", "resume_lsn", wm)
 		} else {
 			logger.Info("follower: resuming from existing data", "leader", cfg.ReplicateFrom)
+			if err := server.WriteReplicationTransportMarker(cfg.DataDir, replCreds.Secure); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -603,7 +640,7 @@ func serve(cfg server.Config, configFile string) error {
 				followerID = hn
 			}
 		}
-		fol := server.NewFollower(db, pb.NewScrivaClient(leaderConn), followerID, cfg.APIKey, logger)
+		fol := server.NewFollower(db, pb.NewScrivaClient(leaderConn), followerID, server.ReplicationAPIKey(cfg), logger)
 		fol.SetEnvelopeApplyObserver(m.ObserveReplTxApply)
 		m.RegisterReplicationGauges(db.AppliedLSN, db.ReplicationLag)
 		go func() {
