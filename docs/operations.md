@@ -540,6 +540,17 @@ scriva-cli --host 127.0.0.1:5433 collection stats <collection-name>
 
 
 
+## Runbook: snapshot restore and bootstrap failures
+
+A follower bootstraps from the leader's snapshot stream, and `scriva-cli snapshot` / `repair --backup` archives restore the same way. Extraction is staged privately and swapped in only after the whole archive validates, so a failed restore never leaves a half-written data directory.
+
+Extraction refuses (and the follower retries or halts with the error) when the archive has: an absolute or `..` path, a link or other non-regular entry, more than 1,048,576 entries, a file over 8 GiB, more than 64 GiB total decompressed, or a truncated/corrupt gzip stream.
+
+1. Read the error in the follower log (`snapshot entry "…"`, `snapshot exceeds … limit`, `unexpected EOF`).
+2. Truncation or EOF: usually a network cut or leader restart mid-stream. Wipe the follower data dir (and any leftover staging directory beside it) and restart with `--replicate-from`; it re-bootstraps.
+3. Size/entry-limit or path errors from a leader you control mean the data is larger than the caps or the archive was tampered with; do not raise limits blindly. Verify the leader (`scriva-cli verify`) and take a fresh snapshot.
+4. After any restore, run `scriva-cli verify` before serving traffic.
+
 ## Testing tiers and local commands
 
 | Tier | Where | What |

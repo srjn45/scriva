@@ -4,6 +4,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/srjn45/scriva/store"
@@ -114,9 +115,9 @@ func assertRecovered(t *testing.T, path string, lineEnds []int64, truncTo int64)
 // every complete line written before the cut, and accept a fresh append.
 func FuzzSegmentRecovery(f *testing.F) {
 	// Explicit seeds spanning the interesting truncation regimes.
-	f.Add(uint8(3), []byte("payload"), int64(0))   // truncate to empty
-	f.Add(uint8(3), []byte("payload"), int64(10))  // mid first line
-	f.Add(uint8(5), []byte(""), int64(1<<30))      // beyond EOF -> no truncation
+	f.Add(uint8(3), []byte("payload"), int64(0))  // truncate to empty
+	f.Add(uint8(3), []byte("payload"), int64(10)) // mid first line
+	f.Add(uint8(5), []byte(""), int64(1<<30))     // beyond EOF -> no truncation
 	f.Add(uint8(8), []byte("hello world"), int64(7))
 	f.Add(uint8(1), []byte("x"), int64(3))
 	f.Add(uint8(12), []byte(`{"nested":"json"}`), int64(123))
@@ -126,6 +127,10 @@ func FuzzSegmentRecovery(f *testing.F) {
 		if len(payload) > 4096 {
 			payload = payload[:4096]
 		}
+		// Invalid UTF-8 does not survive the JSON round trip, so the CRC computed
+		// at encode time can never match the decoded data; that is a codec
+		// property, not a recovery one. Keep this target about truncation.
+		payload = []byte(strings.ToValidUTF8(string(payload), "?"))
 
 		path := filepath.Join(t.TempDir(), "seg_000001.ndjson")
 		lineEnds := writeEntries(t, path, n, payload)

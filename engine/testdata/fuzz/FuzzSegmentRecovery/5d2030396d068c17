@@ -1,0 +1,4 @@
+go test fuzz v1
+byte('\x05')
+[]byte("\xd7Lo#\xaf\x16\x153\xe0\x9a\x7fl\x17\xc97")
+int64(1073741824)
