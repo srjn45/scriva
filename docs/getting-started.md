@@ -474,6 +474,12 @@ Key points:
 - **Backups are encrypted for free** — segment files and snapshots already hold
   ciphertext, so a leaked backup is useless without the key. **Back up the key
   separately** — a backup without it is unrecoverable.
+- **Fail-closed on lost metadata** — if an encrypted collection's `meta.json` is
+  missing, corrupt or stale, `Open` returns `engine.ErrEncryptionMetaIntegrity`
+  (distinct from a wrong key) instead of treating the data as plaintext. An
+  `encryption.sentinel` file in the collection directory (carried by snapshots)
+  is part of how this is detected; never delete it. Recovery steps:
+  [operations.md](operations.md#runbook-errencryptionmetaintegrity).
 
 See [encryption-at-rest.md](encryption-at-rest.md) for the full design and
 [architecture.md](architecture.md#encryption-at-rest) for how it works internally.

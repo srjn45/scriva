@@ -905,8 +905,13 @@ func (c *Collection) load() error {
 	// highest id present in the active segment, which always holds the most
 	// recently assigned id (ids are monotonic and appended in order). This
 	// scan is cheap: the active segment is bounded by SegmentMaxSize.
-	metaPath := filepath.Join(c.dir, metaFilename)
-	if meta, err := loadMeta(metaPath); err == nil {
+	// Classify meta.json against the evidence of encryption BEFORE anything may
+	// regenerate it: a lost block must never read as "plaintext" (§3.4).
+	meta, metaOK, err := c.checkEncryptionMeta(all)
+	if err != nil {
+		return err
+	}
+	if metaOK {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
@@ -916,7 +921,8 @@ func (c *Collection) load() error {
 		return nil
 	}
 
-	// Slow path: meta.json is missing or corrupt — scan all entries for max id.
+	// Slow path: meta.json is missing or corrupt and the collection shows no
+	// evidence of encryption — scan all entries for max id and regenerate it.
 	var maxID uint64
 
 	c.index.mu.RLock()

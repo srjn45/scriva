@@ -240,6 +240,11 @@ func loadPersisted(in *verifyInput, sink *findingSink) {
 	switch m, err := loadMeta(metaPath(in.dir)); {
 	case err == nil:
 		in.idCounter, in.idCounterKnown = m.IDCounter, true
+		if m.Encryption == nil && sentinelExists(in.dir) {
+			sink.add(SeverityDataCorruption, CodeEncryptionMetaLost, Location{}, "%s exists but meta.json has no encryption block; open fails with ErrEncryptionMetaIntegrity — restore meta.json from a backup", encryptionSentinelFile)
+		}
+	case sentinelExists(in.dir):
+		sink.add(SeverityDataCorruption, CodeEncryptionMetaLost, Location{}, "%s exists but meta.json is missing or unreadable (%v); open fails with ErrEncryptionMetaIntegrity — restore meta.json from a backup", encryptionSentinelFile, err)
 	case errors.Is(err, os.ErrNotExist):
 		sink.add(SeverityInfo, CodeMetaMissing, Location{}, "meta.json is missing; open recomputes the id counter")
 	default:

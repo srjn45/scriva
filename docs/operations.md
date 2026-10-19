@@ -393,6 +393,36 @@ root will fail to reopen (`ErrXTxRecoveryRequired` / `OpenIntegrityError`).
 
 Verify the root any time with `scriva verify`.
 
+## Runbook: `ErrEncryptionMetaIntegrity`
+
+**Symptom.** `scriva serve` (or an embedded `Open`) refuses to start with
+`collection "<name>" holds encrypted data (evidence: index-epoch|sentinel|segment-marker) but meta.json is missing|unparseable|lacks the encryption block|epoch behind stored entries`
+(gRPC `DATA_LOSS` where it surfaces on a call). It is *not* a wrong-key error and no
+integrity-policy setting (not even `report`) bypasses it: the collection holds ciphertext but the
+file that says how to read it is gone or stale, and opening it would serve
+envelopes as data and accept plaintext writes.
+
+**Nothing was modified.** Open never rewrites `meta.json`; if it was unparseable a
+copy sits beside it as `meta.json.corrupt-<unixnano>`.
+
+1. Stop the server. Do not delete `encryption.sentinel`, and do not try to reset the metadata
+   with `Repair`'s `AllowMetaReset` (it refuses encrypted collections).
+2. Restore `meta.json` for that collection from a backup or snapshot (it holds the
+   non-secret `encryption` block, the id counter and default TTL; the key itself is
+   backed up separately). Check `meta.json.corrupt-*` first — a partially damaged
+   file may be hand-repairable JSON.
+3. If the restored file is older than the data, an `epoch behind stored entries`
+   error means the policy epoch moved on after the backup (e.g. a key rotation);
+   restore a newer copy, or restore the whole collection directory from one
+   consistent backup.
+4. Start the server with the correct key. A lower id counter is reconciled from the
+   segments on open, so ids are not reused.
+5. `scriva verify` reports `encryption-meta-lost` for this state before you start.
+
+If the collection is verifiably **not** encrypted (a stray sentinel from manual
+copying), move `encryption.sentinel` away and reopen — only do this when you are
+certain no ciphertext was ever written.
+
 ## Segment rotation errors and fenced collections
 
 This section provides operator guidance and a runbook for managing segment rotation failures, post-commit rotation warnings, and fenced collections.

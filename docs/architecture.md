@@ -17,7 +17,8 @@ data/
     ├── seg_000002.ndjson   # sealed
     ├── seg_000003.ndjson   # active (append target)
     ├── index.json          # persisted id → {segment, offset} map
-    ├── meta.json           # id counter, created_at
+    ├── meta.json           # id counter, created_at, encryption block
+    ├── encryption.sentinel # present once the collection held encrypted data (encrypted collections only)
     └── sidx_email.json     # secondary index for "email" field (if created)
 ```
 
@@ -320,6 +321,22 @@ policy, read mode, policy epoch, the passphrase KDF parameters + salt (non-secre
 a `key_check` (an AEAD-sealed known constant), and the current key id. On `Open`,
 the `key_check` is verified under the supplied key so a wrong key/passphrase fails
 fast. None of this block is secret — it reveals nothing without the key.
+
+**Fail-closed open.** `load()` classifies `meta.json` *before* it can regenerate it
+(`checkEncryptionMeta`, `engine/encryption_integrity.go`). Evidence of encryption —
+E1 a primary-index entry with `Epoch > 0`, E2 the `encryption.sentinel` file, E3 (only
+when meta is missing/unparseable) the on-disk envelope marker `\u0000scrivaenc:` in
+a segment — plus a missing/unparseable/block-less meta, or a meta epoch below the
+highest entry epoch, fails open with `ErrEncryptionMetaIntegrity`. Nothing is
+rewritten (an unparseable file is copied to `meta.json.corrupt-<unixnano>`); no
+integrity policy tolerates it. A plaintext collection with the same damage still
+regenerates. E1 is computed by one pass over the in-memory index at open. The
+sentinel is written durably (file + dir fsync) before encrypted writes take effect —
+by `initEncryption` after the block when enabling at open, and by
+`applyEncryptionChange` before the meta write — is self-healed by `initEncryption`
+when a valid block is found, and is in `SnapshotFileAllowed`, so snapshot, restore
+and follower bootstrap carry it. Compaction does not touch it; `Verify` raises
+`encryption-meta-lost`; `Repair` blocks rather than regenerate such a `meta.json`.
 
 ### Migration: epochs, functional vs security completion
 

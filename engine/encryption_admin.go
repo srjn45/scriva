@@ -166,6 +166,15 @@ func (c *Collection) applyEncryptionChange(readMode EncryptionMode, writePolicy 
 
 	c.mu.Lock()
 	prev := c.encMeta.Load()
+	// The sentinel (E2) is durable before the policy that produces ciphertext
+	// takes effect. If the meta write then fails, a sentinel this call created
+	// is removed again so a collection that never became encrypted is not
+	// mistaken for one.
+	sentinelNew, serr := ensureSentinel(c.dir)
+	if serr != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("engine: enable encryption on %q: %w", c.name, serr)
+	}
 	m := &encryptionMeta{
 		Policy:   writePolicy,
 		ReadMode: readMode,
@@ -187,6 +196,9 @@ func (c *Collection) applyEncryptionChange(readMode EncryptionMode, writePolicy 
 		func(s *collectionMeta) { s.Encryption = m },
 		func() { c.encMeta.Store(m) })
 	if err != nil {
+		if sentinelNew && prev == nil {
+			removeSentinel(c.dir)
+		}
 		c.mu.Unlock()
 		return fmt.Errorf("engine: persist encryption meta for %q: %w", c.name, err)
 	}
