@@ -29,7 +29,7 @@ neither state and fails.
 | named phases: before locks, locked, prepared (data durable, no decision), decided, applied-not-acknowledged | `TestBatchGate_PhaseHooks` | before ⇒ full old, from decision ⇒ full new, `XTxStatus` agrees |
 | injected EIO on sync, ENOSPC (partial / zero-byte) on write at ordinals 1–6 of a batch, then crash image | `TestBatchGate_InjectedFaults` | typed error (`ErrXTxDurability` / `ErrXTxOutcomeUnknown` / fenced), live view never a prefix, image full old/new |
 | real process SIGKILL mid-`InsertMany` / mid-`CommitTx`, state carried across iterations, 3 reopens each | `TestKill9_AtomicBatches` | seeded; `SCRIVA_KILL_SOAK=1` for 300 |
-| concurrent writers (6×12 batches) and readers; final state exactly the acknowledged batches, twice reopened | `TestBatchGate_ConcurrentWritersAndReaders` | race detector on |
+| concurrent writers (6×12 batches) and readers (Scan, indexed Scan, Count, indexed Count each see every batch whole); final state exactly the acknowledged batches, twice reopened | `TestBatchGate_ConcurrentWritersAndReaders`, `TestBatchGate_ScanSeesBatchWholeAcrossCommit` | race detector on |
 | recovery, compaction, coverage tracking, verify/repair, snapshot, replication, downgrade, legacy opt-in | pre-existing: `batch_recovery_test.go`, `batch_tools_test.go`, `batch_replication_test.go`, `xtx_downgrade_test.go` | — |
 
 Mutation check: with the gate closed the same step matrix fails with "neither
@@ -41,6 +41,17 @@ Whole-project: `make test` (race) all packages ok (engine 88.0%), `make vet`,
 batch soak: see PR description for the final count.
 
 ## Defects found and fixed
+
+0. **Scans could observe a prefix of a committing batch** (found by the reader
+   check of the gate and by review). `streamLive` consulted the live index per
+   entry and `Count(MatchAll)` read `index.Len()` mid-apply. Fixed in
+   `engine/scan.go` / `count.go`: scans capture the index and segment end
+   offsets under `c.mu.RLock` (which a batch commit holds exclusively), and the
+   O(1)/indexed counts read under the same lock. Proof tests fail without the
+   change: `TestBatchGate_ScanSeesBatchWholeAcrossCommit` (scan parked
+   mid-stream while a 6-record update batch commits returns the pre-batch state)
+   and `TestBatchGate_ConcurrentWritersAndReaders` (Scan, indexed Scan,
+   `Count(MatchAll)` and indexed `Count` never see 1..n-1 records of a batch).
 
 1. **Gate closed / new roots not initialised.** The feature never ran outside
    tests. Fixed: gate open; a new, non-follower root gets `xtx.format` and
@@ -88,7 +99,7 @@ Single-record writes are untouched (batches of one stay on the single-write path
 
 * **One-way format on every new directory.** New roots cannot be opened by pre-XTx binaries. Release-note it (done in CHANGELOG).
 * **Throughput of small batches** drops 2–4× CPU-side, plus two forced fsyncs on real disks; relaxed `sync_mode` no longer speeds batches up. Profile of the extra CPU (digest + journal encoding) not done.
-* **Scans are not isolated from in-flight batches** (hardening §3.5, separate stage); a concurrent scan can see part of a batch. Crash/recovery never exposes a prefix.
+* **Scan memory:** the start-of-scan view copies the primary index (about 64 B per live record per concurrent scan); the per-collection view limit and max age of hardening §3.5 are not implemented. Visibility within one scan is atomic; separate calls are not one snapshot.
 * **Batches > 1000 ops / 64 MiB now fail** (`ErrXTxTooLarge`); callers with huge `InsertMany` need to chunk, losing atomicity across chunks.
 * **No drain/downgrade tool** (deferred by the design).
 * `.warden/check.yml` is absent, so `wd check` cannot run; the project checks above were run directly.

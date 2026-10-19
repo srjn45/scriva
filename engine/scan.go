@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 
@@ -84,6 +85,9 @@ type ScanStats struct {
 // errStopScan is an internal sentinel used to terminate a scan early once a
 // limit has been satisfied. It never escapes ScanStream.
 var errStopScan = errors.New("engine: scan limit reached")
+
+// errViewEnd stops a segment walk at the end offset captured with the scan view.
+var errViewEnd = errors.New("engine: scan view end")
 
 // ScanStream streams the live records matching opts.Filter to yield, in the
 // requested order, honouring Offset and Limit. yield is invoked once per
@@ -297,11 +301,59 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *Sc
 			return err
 		}
 	}
+	// Capture one stable view at scan start (hardening §3.5): the layout lease
+	// keeps compaction from unlinking captured bytes, and c.mu.RLock excludes
+	// every writer, including a batch commit, which holds c.mu exclusively from
+	// the first appended byte through the last index update. A scan therefore
+	// sees a multi-entry batch entirely or not at all, never a prefix, however
+	// long it streams afterwards.
+	c.layoutMu.RLock()
+	defer c.layoutMu.RUnlock()
+	c.mu.RLock()
 	if ids, hit := c.indexCandidates(f); hit {
+		view := c.captureViewLocked(ids)
+		c.mu.RUnlock()
 		stats.IndexUsed = true
-		return c.visitCandidates(ctx, f, ids, stats, visit)
+		return c.visitCandidates(ctx, f, ids, view, stats, visit)
 	}
-	return c.streamLive(ctx, f, stats, visit)
+	view := c.captureViewLocked(nil)
+	c.mu.RUnlock()
+	return c.streamLive(ctx, f, view, stats, visit)
+}
+
+// scanView is the state a scan reads from, captured once under c.mu.RLock.
+type scanView struct {
+	segs   []*Segment
+	ends   []int64             // committed end offset of each segment at capture
+	byPath map[string]*Segment // captured segments by path
+	locs   map[uint64]IndexEntry
+}
+
+// captureViewLocked snapshots the segment list with committed end offsets and
+// the primary-index locations: every id when ids is nil, otherwise only ids.
+// The caller holds layoutMu.RLock and c.mu.RLock.
+func (c *Collection) captureViewLocked(ids []uint64) *scanView {
+	v := &scanView{byPath: make(map[string]*Segment, len(c.sealed)+1)}
+	v.segs = append(v.segs, c.sealed...)
+	v.segs = append(v.segs, c.active)
+	v.ends = make([]int64, len(v.segs))
+	for i, s := range v.segs {
+		v.ends[i] = s.Size()
+		v.byPath[s.Path()] = s
+	}
+	c.index.mu.RLock()
+	if ids == nil {
+		v.locs = maps.Clone(c.index.entries)
+	} else {
+		v.locs = make(map[uint64]IndexEntry, len(ids))
+		for _, id := range ids {
+			if e, ok := c.index.entries[id]; ok {
+				v.locs[id] = e
+			}
+		}
+	}
+	c.index.mu.RUnlock()
+	return v
 }
 
 // indexCandidates returns a candidate id set from a secondary index when f is a
@@ -325,7 +377,7 @@ func (c *Collection) indexCandidates(f query.Filter) ([]uint64, bool) {
 
 // visitCandidates re-validates indexed candidate ids against the live store and
 // the filter, emitting matches in ascending id (insertion) order.
-func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []uint64, stats *ScanStats, visit func(ScanResult) error) error {
+func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []uint64, view *scanView, stats *ScanStats, visit func(ScanResult) error) error {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -335,12 +387,13 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		// references plaintext fields (encrypted fields are rejected at planning),
 		// which are identical in the stored form, and deferring decryption to the
 		// yield boundary keeps it to a single pass — matching streamLive.
-		e, loc, err := c.getStored(id)
+		loc, ok := view.locs[id]
+		e, err := c.readLocated(id, loc, ok, view.byPath[loc.SegmentPath])
 		if err != nil {
 			if errors.Is(err, ErrIndexCorrupt) {
 				return err
 			}
-			continue // deleted since the index was consulted
+			continue // absent or expired at capture
 		}
 		stats.RowsScanned++ // a live candidate examined against the filter
 		if !f.Match(e.Data) {
@@ -371,22 +424,10 @@ const (
 // live, matching record. An entry is live only when the primary index still
 // points at exactly its segment and offset; stale versions and tombstones are
 // skipped. No per-id map of the whole collection is built.
-func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *ScanStats, visit func(ScanResult) error) error {
-	// Keep the layout stable from taking this snapshot through opening and
-	// walking every segment. A compaction swap atomically replaces some paths
-	// and removes others; without this lease a scan could open a mix of the old
-	// and new layouts, or fail opening a segment that was just unlinked.
-	// layoutMu deliberately does not cover ordinary writes, so streaming a scan
-	// to a slow client does not block appenders.
-	c.layoutMu.RLock()
-	defer c.layoutMu.RUnlock()
-	c.mu.RLock()
-	segs := make([]*Segment, 0, len(c.sealed)+1)
-	segs = append(segs, c.sealed...)
-	segs = append(segs, c.active)
-	c.mu.RUnlock()
-
-	for i, seg := range segs {
+func (c *Collection) streamLive(ctx context.Context, f query.Filter, view *scanView, stats *ScanStats, visit func(ScanResult) error) error {
+	// The caller holds the layout lease (see forEachMatch) and captured view
+	// under c.mu.RLock; ordinary writes are not blocked while streaming.
+	for i, seg := range view.segs {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -394,14 +435,18 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *Scan
 			c.cfg.scanHook(scanAtSegment, uint64(i))
 		}
 		path := seg.Path()
+		end := view.ends[i]
 		err := seg.ScanFrom(func(offset int64, e store.Entry) error {
+			if offset >= end {
+				return errViewEnd // appended after capture
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			if c.cfg.scanHook != nil {
 				c.cfg.scanHook(scanAtEntry, e.ID)
 			}
-			loc, ok := c.index.Get(e.ID)
+			loc, ok := view.locs[e.ID]
 			if c.cfg.scanHook != nil {
 				c.cfg.scanHook(scanAtLocated, e.ID)
 			}
@@ -409,10 +454,10 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *Scan
 				return nil // record was deleted
 			}
 			if loc.SegmentPath != path || loc.Offset != offset {
-				// The index points to a different location for e.ID.
+				// The captured index points to a different location for e.ID.
 				// Verify whether the target location contains a valid newer version of e.ID
 				// or if the index is corrupted.
-				targetSeg := c.segmentByPath(loc.SegmentPath)
+				targetSeg := view.byPath[loc.SegmentPath]
 				if targetSeg == nil {
 					return &IntegrityError{
 						ID:          e.ID,
@@ -452,7 +497,7 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, stats *Scan
 			}
 			return visit(ScanResult{ID: e.ID, Rev: loc.Rev, Data: e.Data, Ts: e.Ts})
 		})
-		if err != nil {
+		if err != nil && !errors.Is(err, errViewEnd) {
 			return fmt.Errorf("collection: scan %q: %w", path, err)
 		}
 	}

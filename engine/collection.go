@@ -1663,14 +1663,7 @@ func (c *Collection) rotateSegment() error {
 	return nil
 }
 
-// segmentByPath finds a segment in the collection by its file path.
-func (c *Collection) segmentByPath(path string) *Segment {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.segmentByPathLocked(path)
-}
-
-// segmentByPathLocked is segmentByPath without acquiring c.mu; the caller must
+// segmentByPathLocked finds a segment by path; the caller must
 // already hold c.mu (read or write). It exists so the CAS path can read the
 // current record while holding the write lock — taking c.mu.RLock there would
 // deadlock a goroutine that already holds the write lock.

@@ -353,8 +353,10 @@ from a copy; restore `xtx.journal` from backup; never create an empty one).
 `snapshot` and `repair --backup` carry `xtx.journal`/`xtx.format`, so a restored
 snapshot of an atomic root is atomic.
 
-**Known limit.** Atomicity here is about crashes. A scan running concurrently
-with a batch may see part of it (hardening §3.5, tracked separately).
+**Readers.** A scan, `Find`, aggregate or `Count` sees a batch entirely or not
+at all, including when the batch commits mid-scan (the scan returns its
+start-of-scan state). Separate calls (e.g. two `Get`s) are not one snapshot. A
+full scan copies the primary index, roughly 64 B per live record.
 
 ---
 
