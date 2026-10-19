@@ -539,3 +539,37 @@ scriva-cli --host 127.0.0.1:5433 collection stats <collection-name>
 ```
 
 
+
+## Runbook: snapshot restore and bootstrap failures
+
+A follower bootstraps from the leader's snapshot stream, and `scriva-cli snapshot` / `repair --backup` archives restore the same way. Extraction is staged privately and swapped in only after the whole archive validates, so a failed restore never leaves a half-written data directory.
+
+Extraction refuses (and the follower retries or halts with the error) when the archive has: an absolute or `..` path, a link or other non-regular entry, more than 1,048,576 entries, a file over 8 GiB, more than 64 GiB total decompressed, or a truncated/corrupt gzip stream.
+
+1. Read the error in the follower log (`snapshot entry "…"`, `snapshot exceeds … limit`, `unexpected EOF`).
+2. Truncation or EOF: usually a network cut or leader restart mid-stream. Wipe the follower data dir (and any leftover staging directory beside it) and restart with `--replicate-from`; it re-bootstraps.
+3. Size/entry-limit or path errors from a leader you control mean the data is larger than the caps or the archive was tampered with; do not raise limits blindly. Verify the leader (`scriva-cli verify`) and take a fresh snapshot.
+4. After any restore, run `scriva-cli verify` before serving traffic.
+
+## Testing tiers and local commands
+
+| Tier | Where | What |
+|---|---|---|
+| PR / push | `.github/workflows/ci.yml` | `make test` (race), `make fuzz-smoke`, `make test-crash`, `make bench-smoke` |
+| Scheduled | `.github/workflows/scheduled-tests.yml` (nightly + weekly + `workflow_dispatch`) | mutation fuzzing of every target, `make test-soak`, `make test-crash` with `SCRIVA_KILL_SOAK=1`, scan-stress / write-outcome / benchmark resource checks |
+
+Local commands and knobs:
+
+```bash
+make bench                    # engine benchmarks; BENCHTIME=1s (e.g. BENCHTIME=3x)
+make bench-smoke              # every benchmark exactly once
+make fuzz                     # FuzzSegmentRecovery, FuzzCompaction, FuzzScanSegmentTolerant; FUZZTIME=10s each
+make fuzz FUZZTIME=5m         # longer mutation fuzzing
+make fuzz-smoke               # deterministic: replay seeds + committed corpus only
+make test-crash               # TestCrashMatrix_* + TestKill9_*; SCRIVA_KILL_SOAK=1 for more iterations
+make test-soak                # model soak; SOAK_SEEDS=100 SOAK_STEPS=500 SOAK_BASE=1000 SOAK_TIMEOUT=60m
+```
+
+A failing fuzz run writes the input to `engine/testdata/fuzz/<Target>/`; replay it with
+`go test ./engine -run 'FuzzX/<hash>'` and commit it as a regression seed once fixed (the scheduled
+job uploads it as a workflow artifact). Model-soak failures print `replay: SCRIVA_MODEL_SEED=<n>`.

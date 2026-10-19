@@ -189,3 +189,49 @@ func TestExtractSnapshotRemovesStaleTemp(t *testing.T) {
 		t.Fatalf("stale temp dir still present: %v", err)
 	}
 }
+
+func TestExtractSnapshotTotalSizeLimit(t *testing.T) {
+	old := maxSnapshotTotalSize
+	t.Cleanup(func() { maxSnapshotTotalSize = old })
+	maxSnapshotTotalSize = 5
+	parent := t.TempDir()
+	ents := []tarEnt{{name: "c/seg_000001.ndjson", body: "abc"}, {name: "c/seg_000002.ndjson", body: "def"}}
+	if err := extractSnapshot(buildArchive(t, ents), filepath.Join(parent, "data")); err == nil {
+		t.Fatal("total size limit not enforced")
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Fatalf("residue: %v", entries)
+	}
+}
+
+// A stream cut inside the gzip trailer decodes a complete tar but must still fail.
+func TestExtractSnapshotTruncatedTrailerRejected(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "data")
+	full := buildArchive(t, []tarEnt{{name: "c/seg_000001.ndjson", body: "x"}})
+	b := make([]byte, full.Len())
+	_, _ = full.Read(b)
+	if err := extractSnapshot(bytes.NewReader(b[:len(b)-4]), target); err == nil {
+		t.Fatal("archive with truncated gzip trailer accepted")
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Fatalf("residue: %v", entries)
+	}
+}
+
+func TestExtractSnapshotPermissions(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "data")
+	if err := extractSnapshot(buildArchive(t, []tarEnt{{name: "c/seg_000001.ndjson", body: "x"}}), target); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]os.FileMode{target: 0o700, filepath.Join(target, "c"): 0o700, filepath.Join(target, "c", "seg_000001.ndjson"): 0o600} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != want {
+			t.Errorf("%s mode %v, want %v", p, fi.Mode().Perm(), want)
+		}
+	}
+}
