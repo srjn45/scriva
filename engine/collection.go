@@ -64,6 +64,14 @@ type CollectionConfig struct {
 	CompactInterval time.Duration // default: 5m
 	CompactDirtyPct float64       // default: 0.30 (30%)
 
+	// MaxScanViews bounds the stable scan views (ScanStream, Count, Aggregate)
+	// open at once on this collection; further scans wait on their context.
+	// Default: 8 (0 selects the default).
+	MaxScanViews int
+	// ScanViewMaxAge is how long a scan may hold its captured view; an older
+	// view fails with the retryable ErrScanViewExpired. Default: 10m.
+	ScanViewMaxAge time.Duration
+
 	// SyncMode selects the durability policy. Default: SyncModeNone.
 	SyncMode SyncMode
 	// SyncInterval is the flush cadence for SyncModeInterval. Default: 1s.
@@ -276,7 +284,7 @@ type CollectionConfig struct {
 	decisionsFn func() map[string]string
 
 	// journalEpoch is the active DB coordinator journal epoch (if any).
-	journalEpoch string
+	journalEpoch   string
 	journalEpochFn func() string
 }
 
@@ -322,18 +330,20 @@ type Collection struct {
 	createdAt time.Time
 	// metaMu serializes meta.json snapshot+write (see writeMeta). It is a leaf in
 	// the lock order encAdminMu → c.mu → metaMu.
-	metaMu    sync.Mutex
-	mu        sync.RWMutex
+	metaMu sync.Mutex
+	mu     sync.RWMutex
 	// layoutMu excludes a full segment scan from a compaction swap. Unlike mu it
 	// is not held by ordinary writers, so a slow client consuming ScanStream
 	// does not stall appends; it only keeps the scan's segment snapshot from
 	// being replaced or unlinked underneath it.
 	layoutMu sync.RWMutex
-	sealed   []*Segment
-	active   *Segment
-	index    *Index
-	idSeq    atomic.Uint64 // monotonically increasing id counter
-	segSeq   atomic.Uint64 // monotonically increasing segment id counter
+	// scanSlots bounds concurrently open scan views (cap = MaxScanViews).
+	scanSlots chan struct{}
+	sealed    []*Segment
+	active    *Segment
+	index     *Index
+	idSeq     atomic.Uint64 // monotonically increasing id counter
+	segSeq    atomic.Uint64 // monotonically increasing segment id counter
 	// fenced, once set, is the first cause of an outcome-unknown failure; the
 	// collection then refuses reads and writes until reopen (see fence.go).
 	// Set under c.mu by foreground writers (lock-free by syncLoop), read
@@ -479,6 +489,12 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	if cfg.CompactDirtyPct <= 0 {
 		cfg.CompactDirtyPct = def.CompactDirtyPct
 	}
+	if cfg.MaxScanViews <= 0 {
+		cfg.MaxScanViews = DefaultMaxScanViews
+	}
+	if cfg.ScanViewMaxAge <= 0 {
+		cfg.ScanViewMaxAge = DefaultScanViewMaxAge
+	}
 	if cfg.SyncMode == "" {
 		cfg.SyncMode = SyncModeNone
 	}
@@ -521,21 +537,22 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	c := &Collection{
-		name:           name,
-		dir:            dir,
-		diskDir:        diskDir,
-		dirHandle:      dirHandle,
-		cfg:            cfg,
-		decisions:      cfg.decisions,
-		decisionsFn:    cfg.decisionsFn,
+		name:            name,
+		dir:             dir,
+		diskDir:         diskDir,
+		dirHandle:       dirHandle,
+		cfg:             cfg,
+		decisions:       cfg.decisions,
+		decisionsFn:     cfg.decisionsFn,
 		journalEpochStr: cfg.journalEpoch,
 		journalEpochFn:  cfg.journalEpochFn,
-		index:          newIndex(),
-		sidxMap:        make(map[string]*SecondaryIndex),
-		watchers:       make(map[uint64]*watcher),
-		compactC:       make(chan struct{}, 1),
-		closed:         make(chan struct{}),
-		persistC:       make(chan struct{}, 1),
+		index:           newIndex(),
+		scanSlots:       make(chan struct{}, cfg.MaxScanViews),
+		sidxMap:         make(map[string]*SecondaryIndex),
+		watchers:        make(map[uint64]*watcher),
+		compactC:        make(chan struct{}, 1),
+		closed:          make(chan struct{}),
+		persistC:        make(chan struct{}, 1),
 
 		sealedCov: make(map[string]SegmentCoverage),
 	}
@@ -765,6 +782,15 @@ func (c *Collection) persistIndexes() error {
 // load reads existing segments from disk, restores the index, and opens
 // or creates the active (write) segment.
 func (c *Collection) load() error {
+	// Collections built without OpenCollection's normalization still get the
+	// default scan-view bound.
+	if c.scanSlots == nil {
+		n := c.cfg.MaxScanViews
+		if n <= 0 {
+			n = DefaultMaxScanViews
+		}
+		c.scanSlots = make(chan struct{}, n)
+	}
 	// Roll forward (or discard) any compaction swap a crash interrupted,
 	// before the segment files are enumerated. When a swap was in flight the
 	// persisted indexes describe the pre-swap layout and must be rebuilt.
