@@ -997,16 +997,6 @@ func (c *Collection) load() error {
 	return nil
 }
 
-// tailMaxID returns the highest entry id in the newest non-empty segment of
-// all (oldest first), or 0 if none is readable. Ids are assigned monotonically
-// and appended in order, so that segment holds the most recently assigned id.
-// Walking back past empty segments matters after a crash between rotation
-// creating a fresh active segment and meta.json being persisted: the active
-// segment is empty, and the stale counter would otherwise reissue ids.
-func (c *Collection) tailMaxID(all []*Segment) uint64 {
-	id, _ := c.tailMaxIDAndTs(all)
-	return id
-}
 
 // tailMaxIDAndTs returns the highest entry id and newest entry timestamp (in
 // Unix nanoseconds) in the newest non-empty segment of all (oldest first). Ids

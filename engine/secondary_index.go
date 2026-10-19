@@ -354,20 +354,6 @@ func (s *SecondaryIndex) Lookup(value string) []uint64 {
 	return ids
 }
 
-// conflict reports whether value is already mapped to a live id other than the
-// given one. Used to enforce uniqueness before a write is applied. It only
-// considers other ids, so re-writing a record's own existing value is allowed.
-// Goroutine-safe.
-func (s *SecondaryIndex) conflict(value string, id uint64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for existing := range s.buckets[value] {
-		if existing != id {
-			return true
-		}
-	}
-	return false
-}
 
 // LookupRange returns the candidate IDs whose indexed field satisfies a range
 // predicate (op ∈ {gt,gte,lt,lte}) against queryVal, and whether the index could

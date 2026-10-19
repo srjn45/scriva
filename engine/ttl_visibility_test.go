@@ -13,9 +13,8 @@ import (
 // ttlClock is an injectable collection clock (CollectionConfig.nowFn).
 type ttlClock struct{ ns atomic.Int64 }
 
-func (k *ttlClock) set(t time.Time)     { k.ns.Store(t.UnixNano()) }
-func (k *ttlClock) now() time.Time      { return time.Unix(0, k.ns.Load()) }
-func (k *ttlClock) add(d time.Duration) { k.ns.Add(int64(d)) }
+func (k *ttlClock) set(t time.Time) { k.ns.Store(t.UnixNano()) }
+func (k *ttlClock) now() time.Time  { return time.Unix(0, k.ns.Load()) }
 func openClockCollection(t *testing.T, dir string, k *ttlClock) *Collection {
 	t.Helper()
 	return openClockCollectionTTL(t, dir, k, time.Minute)
