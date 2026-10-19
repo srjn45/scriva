@@ -402,16 +402,14 @@ When retrieving a record via an indexed offset (`Get`/`getStored`, `GetByKey`, o
 
 During scans (`ScanStream` and `streamLive`), if an entry in a segment is encountered whose physical offset disagrees with the primary index, the engine does not blindly skip it as stale: it verifies whether the index's target location points to a legitimate newer version of that record. If the target entry does not exist, fails to decode, or has a mismatched ID, the engine surfaces the integrity error immediately instead of silently shortening scan results.
 
-> **Known gap (hardening H8, confirmed).** The check above covers entries *seen* in
-> the captured segment list. `streamLive` copies the segment list and then consults
-> the *live* index, so a record updated after the scan began into a segment created
-> by a later rotation has its old entry classified as a stale version and the new
-> one is never visited: the scan returns `err=nil` and omits the record. The
-> ratified fix is a repeatable start-of-scan view (captured index copy, per-segment
-> end offsets, layout lease) — see
-> [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics).
-> Until it lands, do not rely on `Scan`/`Find`/`Aggregate` completeness under
-> concurrent writes plus rotation.
+### Stable scan view (hardening §3.5)
+
+`ScanStream`, `Scan`, `Find`, `Count` and `Aggregate` read from a **repeatable snapshot-at-start view** captured once under `layoutMu.RLock` + `c.mu.RLock`: a copy of the primary-index locations (or only the candidate ids served by a secondary index), the segment list, and each segment's committed end offset. The scan emits exactly the records, revisions and data that were live at capture — no omissions or duplicates — however inserts, updates, deletes, batches, rotations and compactions interleave afterwards (this closes the former H8 gap, where a record updated into a later-rotated segment could be silently omitted). `engine/scan_schedule_test.go` pins the schedules; `engine/scan_stress_test.go` checks every scan against a model snapshot under concurrent writers, rotation and compaction.
+
+- **Bounded in time and memory.** At most `MaxScanViews` (default 8) views are open per collection; further scans wait on a slot semaphore (and honour ctx cancellation while waiting). A view lives at most `ScanViewMaxAge` (default 10m); an older one fails with the retryable `ErrScanViewExpired` (gRPC `ABORTED`, reason `SCAN_VIEW_EXPIRED`). Restart the scan, or page with a cursor. A view costs O(live records) — about 100 bytes per record measured (`TestScanStress_ViewMemoryBounded`, `BenchmarkScanViewCapture`) — so peak memory is bounded by `MaxScanViews × live records`.
+- **No writer starvation.** Writers hold `c.mu` only for the short append/index update. A scan holds `c.mu` only while capturing and then holds `layoutMu.RLock` (not `c.mu`) while streaming; only compaction swaps, which `TryLock` the layout lease, are deferred (`ErrCompactionDeferred`) until the last view is released. See `TestScanStress_NoWriterStarvationBoundedPins`, `BenchmarkConcurrentScanWrite`.
+- **Cancellation releases immediately.** Context cancellation, a consumer error, expiry or completion release the layout lease, the slot and the captured index copy (`TestScanStress_CancellationUnderLoad`).
+- **Per-collection scope.** The limits and the view apply to one collection; a scan over several collections is not a cross-collection snapshot.
 
 At the network layer (`server/grpc.go`), `ErrIndexCorrupt` is mapped to `codes.DataLoss` rather than `NotFound` across `FindById`, `FindByKey`, `Find`, and `Aggregate`.
 
@@ -990,7 +988,7 @@ Both fsyncs are forced regardless of `SyncMode` (the decision must never reach d
 
 *Roots.* A new data directory is initialised in atomic mode (`xtx.format` with `created_by: default`). A directory that already holds `xtx.format` stays atomic. An existing legacy directory (collections but no `xtx.format`) keeps the old path, logs a startup warning and converts only with `--enable-atomic-batches`. A follower root is never initialised locally. Conversion is one-way ([downgrade playbook](operations.md#upgrade-downgrade-and-recovery-playbook)).
 
-*Reader visibility.* A batch commit holds the collection's `c.mu` exclusively from its first appended byte through its last index update. Every read that aggregates several records captures its view under `c.mu.RLock`: `ScanStream`/`Scan`/`Find`/aggregates copy the primary index and each segment's end offset at start and read only up to those offsets (`captureViewLocked` in `engine/scan.go`; a candidate set from a secondary index is captured the same way), and `Count(MatchAll)` and the indexed `Count` read under the same lock. A scan therefore sees a batch entirely or not at all, even when the batch commits while the scan is streaming (it returns the start-of-scan state; `TestBatchGate_ScanSeesBatchWholeAcrossCommit`, `TestBatchGate_ConcurrentWritersAndReaders`). The cost is an O(live records) index copy per full scan; the bounded-views/age limits of hardening §3.5 (`MaxScanViews`, `ScanViewMaxAge`) and its TTL clock are not part of this change. Single-record `Get` is trivially atomic. Across several separate calls (for example `Get` of two ids) no cross-call snapshot exists.
+*Reader visibility.* A batch commit holds the collection's `c.mu` exclusively from its first appended byte through its last index update. Every read that aggregates several records captures its view under `c.mu.RLock`: `ScanStream`/`Scan`/`Find`/aggregates copy the primary index and each segment's end offset at start and read only up to those offsets (`captureViewLocked` in `engine/scan.go`; a candidate set from a secondary index is captured the same way), and `Count(MatchAll)` and the indexed `Count` read under the same lock. A scan therefore sees a batch entirely or not at all, even when the batch commits while the scan is streaming (it returns the start-of-scan state; `TestBatchGate_ScanSeesBatchWholeAcrossCommit`, `TestBatchGate_ConcurrentWritersAndReaders`). The cost is an O(live records) index copy per full scan; the view is bounded by `MaxScanViews` and `ScanViewMaxAge` (see *Stable scan view* above). Single-record `Get` is trivially atomic. Across several separate calls (for example `Get` of two ids) no cross-call snapshot exists.
 
 *Evidence.* `engine/batch_gate_test.go` (crash after every step, power-loss cuts, phase hooks, injected faults, concurrency, repeated reopen), `engine/batch_kill_test.go` (real SIGKILL), `engine/batch_recovery_test.go`, `engine/batch_tools_test.go`, `engine/batch_replication_test.go`; summary in [release-readiness-batch.md](release-readiness-batch.md).
 
