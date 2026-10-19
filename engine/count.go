@@ -74,6 +74,9 @@ func (c *Collection) Exists(key string) (bool, error) {
 	if err := c.checkFenced(); err != nil {
 		return false, err
 	}
+	if err := c.keyConflict(); err != nil {
+		return false, err
+	}
 	ids, ok := c.indexLookup(KeyField, key)
 	return ok && len(ids) > 0, nil
 }

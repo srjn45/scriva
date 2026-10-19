@@ -712,6 +712,10 @@ func (c *Collection) applyEntry(e store.Entry) error {
 		c.mu.Unlock()
 		return nil // already applied at an equal-or-newer revision — idempotent
 	}
+	if err := c.replKeyConflictLocked(e, nil); err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	offset, err := c.appendLocked("apply", e)
 	if err != nil {
 		c.mu.Unlock()

@@ -1167,6 +1167,8 @@ func keyedErr(collection string, err error) error {
 		return status.Error(codes.DataLoss, err.Error())
 	case errors.Is(err, engine.ErrKeyNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, engine.ErrKeyIndexConflict):
+		return status.Error(codes.FailedPrecondition, "KEY_INDEX_CONFLICT: "+err.Error())
 	case errors.Is(err, engine.ErrDuplicateKey):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, engine.ErrReservedField):
