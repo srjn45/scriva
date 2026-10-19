@@ -27,6 +27,11 @@ Read-only users (no persist): `load()` fast path, `initEncryption` (`loadMeta`),
 `snapshot.go` (copies `meta.json`). Other users of `writeFileAtomic` (index, sidx, compact manifest, xtx format,
 repl state) use their own distinct paths, so only `meta.json.tmp` is shared between concurrent writers.
 
+> **Status: conflicts in rows 1, 2, 3, 6, 7, 8 and 10 and the shared `meta.json.tmp` are RESOLVED** by
+> `metadata-serialization` (`Collection.writeMeta` under `metaMu`, unique temp via `writeFileAtomicUnique`, memory updated only
+> after persist, persist errors surfaced: `PostCommitError` for rotation/`CommitTx`/xtx `post()`, logged for replication apply).
+> Row 4 (swallowed regeneration write, fail-closed classification) is deferred to the next task. The repro tests now assert.
+
 ## Findings relevant to the ratified design
 
 * **Rows 6–8 persist with no lock and swallow errors.** M4.1 makes `CommitTx` return `PostCommitError`; the xtx/replication

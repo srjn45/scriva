@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -639,7 +638,12 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 				}
 			}
 			if maxInsertIDs[c.name] > 0 {
-				_ = persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
+				// Committed and visible: a failed counter persist is a post-commit
+				// failure, reported like a failed rotation (recovery re-derives
+				// the counter from the segment tail).
+				if err := c.writeMeta(nil); err != nil && first == nil {
+					first = &PostCommitError{Op: "xtxCommit", Stage: "meta", Err: err}
+				}
 			}
 		}
 		return first

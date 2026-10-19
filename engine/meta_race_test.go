@@ -17,7 +17,7 @@ import (
 // behind knownMetaRaceBug so `make test` stays green until the
 // metadata-serialization change (metaMu/writeMeta) lands. That change must flip
 // the flag to false.
-const knownMetaRaceBug = true
+const knownMetaRaceBug = false
 
 func reportMetaRace(t *testing.T, format string, args ...any) {
 	t.Helper()
@@ -32,7 +32,6 @@ func reportMetaRace(t *testing.T, format string, args ...any) {
 // both orders around the snapshot→persist window; meta.json must end with both.
 func TestMetaStaleSnapshotOverwrite(t *testing.T) {
 	for _, first := range []string{"ttl", "enc"} {
-		first := first
 		t.Run("paused_"+first, func(t *testing.T) {
 			dir := t.TempDir()
 			kr, _ := crypto.NewKeyring("k1", mustKey(t))
@@ -73,27 +72,18 @@ func TestMetaStaleSnapshotOverwrite(t *testing.T) {
 			go func() { firstErr <- run[first]() }()
 			<-reached // `first` holds a snapshot taken before `other` runs
 			go func() { otherErr <- run[other]() }()
-			var errO error
-			gotO := false
-			if first == "ttl" {
-				// ttl holds no collection lock while paused, so enc runs to
-				// completion before ttl's stale snapshot lands. (When enc is
-				// paused it holds c.mu, so ttl serializes behind it today.)
-				errO, gotO = <-otherErr, true
-				// A record sealed under the new policy, before the stale write.
-				if id2, _, err = col.Insert(map[string]any{"email": "c@d.com", "pw": "secret"}); err != nil {
-					t.Fatal(err)
-				}
-			}
+			// With writeMeta the second persist serializes behind the first's
+			// metaMu (the paused one holds it), so it cannot finish before release.
 			close(release)
 			if err := <-firstErr; err != nil {
 				t.Fatalf("%s: %v", first, err)
 			}
-			if !gotO {
-				errO = <-otherErr
+			if err := <-otherErr; err != nil {
+				t.Fatalf("%s: %v", other, err)
 			}
-			if errO != nil {
-				t.Fatalf("%s: %v", other, errO)
+			// A record sealed after both persists landed.
+			if id2, _, err = col.Insert(map[string]any{"email": "c@d.com", "pw": "secret"}); err != nil {
+				t.Fatal(err)
 			}
 
 			m, err := loadMeta(metaPath(filepath.Join(dir, "users")))

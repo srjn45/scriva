@@ -14,7 +14,7 @@ func (c *Collection) metaSnapshot() collectionMeta {
 	return collectionMeta{
 		IDCounter:         c.idSeq.Load(),
 		CreatedAt:         c.createdAt,
-		DefaultTTLSeconds: c.explicitDefaultTTLSecs,
+		DefaultTTLSeconds: c.explicitDefaultTTLSecs.Load(),
 		// Carry the encryption block on every snapshot so no write path (rotate,
 		// tx commit, close) silently drops it from meta.json.
 		Encryption: c.encMeta.Load(),
@@ -28,8 +28,7 @@ func (c *Collection) applyPersistedDefaultTTL(secs int64) {
 	if secs <= 0 {
 		return
 	}
-	c.explicitDefaultTTLSecs = secs
-	c.cfg.DefaultTTL = time.Duration(secs) * time.Second
+	c.explicitDefaultTTLSecs.Store(secs)
 }
 
 // setDefaultTTL records an explicit per-collection default TTL, applies it to
@@ -39,15 +38,13 @@ func (c *Collection) setDefaultTTL(ttl time.Duration) error {
 	if ttl <= 0 {
 		return nil
 	}
-	c.mu.Lock()
-	c.explicitDefaultTTLSecs = int64(ttl / time.Second)
-	c.cfg.DefaultTTL = time.Duration(c.explicitDefaultTTLSecs) * time.Second
-	snap := c.metaSnapshot()
-	c.mu.Unlock()
-	if h := c.cfg.postMetaSnapshotHook; h != nil {
-		h("ttl")
-	}
-	return persistMeta(metaPath(c.dir), snap)
+	secs := int64(ttl / time.Second)
+	// Memory (explicitDefaultTTLSecs) changes only after meta.json is durable; a
+	// failed persist leaves the previous default in force. No collection lock is
+	// held: writeMeta's metaMu is the only serialization needed.
+	return c.writeMetaThen("ttl",
+		func(m *collectionMeta) { m.DefaultTTLSeconds = secs },
+		func() { c.explicitDefaultTTLSecs.Store(secs) })
 }
 
 // resolveInsertExpiry returns the Unix-nano deadline to stamp on a record: the
@@ -56,6 +53,9 @@ func (c *Collection) setDefaultTTL(ttl time.Duration) error {
 func (c *Collection) resolveInsertExpiry(explicit time.Time) int64 {
 	if !explicit.IsZero() {
 		return explicit.UnixNano()
+	}
+	if secs := c.explicitDefaultTTLSecs.Load(); secs > 0 {
+		return time.Now().UTC().Add(time.Duration(secs) * time.Second).UnixNano()
 	}
 	if c.cfg.DefaultTTL > 0 {
 		return time.Now().UTC().Add(c.cfg.DefaultTTL).UnixNano()

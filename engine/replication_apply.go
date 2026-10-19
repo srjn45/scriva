@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/srjn45/scriva/store"
@@ -301,7 +300,14 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 			_ = c.rotateSegment()
 		}
 		if bumped[c.name] {
-			_ = persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
+			// The batch is applied and durable, so apply must not report
+			// failure (the leader would re-ship it). The counter is
+			// re-derived from the segment tail on reopen; log and go on.
+			if err := c.writeMeta(nil); err != nil {
+				if l := c.cfg.Logger; l != nil {
+					l.Error("replication apply: persist meta failed", "collection", c.name, "err", err)
+				}
+			}
 		}
 	}
 	return true, nil
