@@ -383,6 +383,9 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if c.cfg.scanHook != nil {
+			c.cfg.scanHook(scanAtCandidate, id)
+		}
 		// Read the stored (undecrypted) form and match on it: the filter only ever
 		// references plaintext fields (encrypted fields are rejected at planning),
 		// which are identical in the stored form, and deferring decryption to the
@@ -418,6 +421,9 @@ const (
 	// scanAtLocated: the primary index was consulted for the entry, before the
 	// answer is acted on; arg is the entry's id.
 	scanAtLocated
+	// scanAtCandidate: an index-served scan is about to read a candidate; arg is
+	// its id.
+	scanAtCandidate
 )
 
 // streamLive reads every segment in insertion order and invokes visit for each
