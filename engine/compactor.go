@@ -17,6 +17,17 @@ const (
 	compactionRetryMaxDelay = 3 * time.Second
 )
 
+// Scan view defaults (CollectionConfig.MaxScanViews / ScanViewMaxAge).
+const (
+	DefaultMaxScanViews   = 8
+	DefaultScanViewMaxAge = 10 * time.Minute
+)
+
+// ErrScanViewExpired reports that a scan held its view longer than
+// CollectionConfig.ScanViewMaxAge and was aborted. It is retryable: nothing was
+// lost, a new scan captures a fresh view.
+var ErrScanViewExpired = errors.New("engine: scan view expired")
+
 // ErrCompactionDeferred reports that CompactNow could not start without
 // blocking active full scans. A background pass is rescheduled automatically.
 var ErrCompactionDeferred = errors.New("compactor: deferred by active scan")

@@ -307,6 +307,16 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *Sc
 	// the first appended byte through the last index update. A scan therefore
 	// sees a multi-entry batch entirely or not at all, never a prefix, however
 	// long it streams afterwards.
+	//
+	// The number of concurrently open views is bounded by MaxScanViews: the slot
+	// is taken before the lease and returned on every exit path, and a scan that
+	// cannot get one waits on ctx.
+	select {
+	case c.scanSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.scanSlots }()
 	c.layoutMu.RLock()
 	defer c.layoutMu.RUnlock()
 	c.mu.RLock()
@@ -323,6 +333,7 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *Sc
 
 // scanView is the state a scan reads from, captured once under c.mu.RLock.
 type scanView struct {
+	at     time.Time // capture time, for ScanViewMaxAge
 	segs   []*Segment
 	ends   []int64             // committed end offset of each segment at capture
 	byPath map[string]*Segment // captured segments by path
@@ -333,7 +344,7 @@ type scanView struct {
 // the primary-index locations: every id when ids is nil, otherwise only ids.
 // The caller holds layoutMu.RLock and c.mu.RLock.
 func (c *Collection) captureViewLocked(ids []uint64) *scanView {
-	v := &scanView{byPath: make(map[string]*Segment, len(c.sealed)+1)}
+	v := &scanView{at: time.Now(), byPath: make(map[string]*Segment, len(c.sealed)+1)}
 	v.segs = append(v.segs, c.sealed...)
 	v.segs = append(v.segs, c.active)
 	v.ends = make([]int64, len(v.segs))
@@ -354,6 +365,19 @@ func (c *Collection) captureViewLocked(ids []uint64) *scanView {
 	}
 	c.index.mu.RUnlock()
 	return v
+}
+
+// checkAge fails with ErrScanViewExpired once the view is older than
+// ScanViewMaxAge. The scan then returns, releasing its lease and slot.
+func (c *Collection) checkAge(v *scanView) error {
+	maxAge := c.cfg.ScanViewMaxAge
+	if maxAge <= 0 {
+		maxAge = DefaultScanViewMaxAge
+	}
+	if time.Since(v.at) > maxAge {
+		return ErrScanViewExpired
+	}
+	return nil
 }
 
 // indexCandidates returns a candidate id set from a secondary index when f is a
@@ -383,17 +407,29 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if c.cfg.scanHook != nil {
+			c.cfg.scanHook(scanAtCandidate, id)
+		}
+		if err := c.checkAge(view); err != nil {
+			return err
+		}
 		// Read the stored (undecrypted) form and match on it: the filter only ever
 		// references plaintext fields (encrypted fields are rejected at planning),
 		// which are identical in the stored form, and deferring decryption to the
 		// yield boundary keeps it to a single pass — matching streamLive.
 		loc, ok := view.locs[id]
+		if !ok || c.isExpired(loc) {
+			continue // absent or expired at capture
+		}
 		e, err := c.readLocated(id, loc, ok, view.byPath[loc.SegmentPath])
 		if err != nil {
-			if errors.Is(err, ErrIndexCorrupt) {
+			// A captured location that cannot be read is never skipped: the
+			// scan must not silently shorten.
+			var ie *IntegrityError
+			if errors.Is(err, ErrIndexCorrupt) || errors.As(err, &ie) {
 				return err
 			}
-			continue // absent or expired at capture
+			return &IntegrityError{ID: id, SegmentPath: loc.SegmentPath, Offset: loc.Offset}
 		}
 		stats.RowsScanned++ // a live candidate examined against the filter
 		if !f.Match(e.Data) {
@@ -418,6 +454,9 @@ const (
 	// scanAtLocated: the primary index was consulted for the entry, before the
 	// answer is acted on; arg is the entry's id.
 	scanAtLocated
+	// scanAtCandidate: an index-served scan is about to read a candidate; arg is
+	// its id.
+	scanAtCandidate
 )
 
 // streamLive reads every segment in insertion order and invokes visit for each
@@ -441,6 +480,9 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, view *scanV
 				return errViewEnd // appended after capture
 			}
 			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := c.checkAge(view); err != nil {
 				return err
 			}
 			if c.cfg.scanHook != nil {
@@ -498,6 +540,9 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, view *scanV
 			return visit(ScanResult{ID: e.ID, Rev: loc.Rev, Data: e.Data, Ts: e.Ts})
 		})
 		if err != nil && !errors.Is(err, errViewEnd) {
+			if errors.Is(err, ErrScanViewExpired) {
+				return err
+			}
 			return fmt.Errorf("collection: scan %q: %w", path, err)
 		}
 	}
