@@ -14,10 +14,13 @@ LDFLAGS      := -s -w
 EMBED_PKGS    := ./engine ./store ./query
 FORBIDDEN_DEPS := grpc|protobuf|prometheus|cobra|grpc-gateway|opentelemetry
 
-.PHONY: all build proto openapi test test-soak bench fuzz lint deps-check run cli clean release help
+.PHONY: all build proto openapi test test-soak test-crash bench bench-smoke fuzz fuzz-smoke lint deps-check run cli clean release help
 
 # FUZZTIME controls how long each fuzz target runs (override on the CLI).
 FUZZTIME     ?= 10s
+
+# BENCHTIME controls each benchmark's run length (bench-smoke uses 1x).
+BENCHTIME    ?= 1s
 
 # Model soak knobs (see `make test-soak`).
 SOAK_SEEDS   ?= 100
@@ -56,14 +59,27 @@ test-soak:
 	SCRIVA_MODEL_SEED_COUNT=$(SOAK_SEEDS) SCRIVA_MODEL_SEED_BASE=$(SOAK_BASE) SCRIVA_MODEL_STEPS=$(SOAK_STEPS) \
 		$(GO) test ./engine -race -count=1 -run 'TestModel$$' -timeout $(SOAK_TIMEOUT)
 
-## bench: run engine microbenchmarks (insert/find/scan) with allocation stats
-bench:
-	$(GO) test ./internal/engine -bench '.' -benchmem -run '^$$'
+## test-crash: crash matrix + kill -9 recovery tests (SCRIVA_KILL_SOAK=1 for a longer run)
+test-crash:
+	$(GO) test ./engine -race -count=1 -run 'TestCrashMatrix|TestKill9' -timeout $(SOAK_TIMEOUT)
 
-## fuzz: run engine crash-recovery + compaction fuzz targets (FUZZTIME=10s)
+## bench: run engine microbenchmarks with allocation stats (BENCHTIME=1s)
+bench:
+	$(GO) test ./engine -bench '.' -benchmem -benchtime=$(BENCHTIME) -run '^$$'
+
+## bench-smoke: run each engine benchmark once to prove they still build and run
+bench-smoke:
+	$(GO) test ./engine -bench '.' -benchtime=1x -run '^$$'
+
+## fuzz: run the engine fuzz targets (FUZZTIME=10s each)
 fuzz:
-	$(GO) test ./internal/engine -run '^$$' -fuzz 'FuzzSegmentRecovery$$' -fuzztime=$(FUZZTIME)
-	$(GO) test ./internal/engine -run '^$$' -fuzz 'FuzzCompaction$$'      -fuzztime=$(FUZZTIME)
+	$(GO) test ./engine -run '^$$' -fuzz 'FuzzSegmentRecovery$$'     -fuzztime=$(FUZZTIME)
+	$(GO) test ./engine -run '^$$' -fuzz 'FuzzCompaction$$'          -fuzztime=$(FUZZTIME)
+	$(GO) test ./engine -run '^$$' -fuzz 'FuzzScanSegmentTolerant$$' -fuzztime=$(FUZZTIME)
+
+## fuzz-smoke: deterministic replay of every fuzz seed + committed corpus, no mutation (PR tier)
+fuzz-smoke:
+	$(GO) test ./engine -race -count=1 -run 'Fuzz'
 
 ## lint: run golangci-lint
 lint:

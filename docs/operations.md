@@ -539,3 +539,26 @@ scriva-cli --host 127.0.0.1:5433 collection stats <collection-name>
 ```
 
 
+
+## Testing tiers and local commands
+
+| Tier | Where | What |
+|---|---|---|
+| PR / push | `.github/workflows/ci.yml` | `make test` (race), `make fuzz-smoke`, `make test-crash`, `make bench-smoke` |
+| Scheduled | `.github/workflows/scheduled-tests.yml` (nightly + weekly + `workflow_dispatch`) | mutation fuzzing of every target, `make test-soak`, `make test-crash` with `SCRIVA_KILL_SOAK=1`, scan-stress / write-outcome / benchmark resource checks |
+
+Local commands and knobs:
+
+```bash
+make bench                    # engine benchmarks; BENCHTIME=1s (e.g. BENCHTIME=3x)
+make bench-smoke              # every benchmark exactly once
+make fuzz                     # FuzzSegmentRecovery, FuzzCompaction, FuzzScanSegmentTolerant; FUZZTIME=10s each
+make fuzz FUZZTIME=5m         # longer mutation fuzzing
+make fuzz-smoke               # deterministic: replay seeds + committed corpus only
+make test-crash               # TestCrashMatrix_* + TestKill9_*; SCRIVA_KILL_SOAK=1 for more iterations
+make test-soak                # model soak; SOAK_SEEDS=100 SOAK_STEPS=500 SOAK_BASE=1000 SOAK_TIMEOUT=60m
+```
+
+A failing fuzz run writes the input to `engine/testdata/fuzz/<Target>/`; replay it with
+`go test ./engine -run 'FuzzX/<hash>'` and commit it as a regression seed once fixed (the scheduled
+job uploads it as a workflow artifact). Model-soak failures print `replay: SCRIVA_MODEL_SEED=<n>`.
