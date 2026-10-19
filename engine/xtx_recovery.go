@@ -417,10 +417,23 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 	} else if hasFormat {
 		decisions = make(map[string]string)
 	}
+	var epoch string
+	if xj != nil {
+		epoch = xj.epoch()
+	}
 	cfg.decisions = decisions
 	cfg.decisionsFn = db.decisionsMap
+	cfg.journalEpoch = epoch
+	cfg.journalEpochFn = func() string {
+		if j := db.journalOrNil(); j != nil {
+			return j.epoch()
+		}
+		return ""
+	}
 	db.defaultCfg.decisions = decisions
 	db.defaultCfg.decisionsFn = db.decisionsMap
+	db.defaultCfg.journalEpoch = epoch
+	db.defaultCfg.journalEpochFn = cfg.journalEpochFn
 
 	// A follower-applied transaction's COMMIT carries its replication LSN. A
 	// follower applies strictly in LSN order, so every LSN at or below the
@@ -449,6 +462,7 @@ func (db *DB) recoverCoordinator(cfg CollectionConfig) error {
 			return fmt.Errorf("db: open collection %q: %w", name, err)
 		}
 		col.broker = db.broker
+		col.db = db
 		db.collections[name] = col
 	}
 

@@ -76,6 +76,9 @@ type Config struct {
 	// Transactions
 	TxTimeout time.Duration `yaml:"tx_timeout"` // idle expiry for open transactions (default: 5m, 0 = disabled)
 
+	// Batches
+	EnableAtomicBatches bool `yaml:"enable_atomic_batches"` // opt legacy roots into atomic batches (default: false)
+
 	// TTL
 	DefaultTTL time.Duration `yaml:"default_ttl"` // default expiry for inserted records (default: 0 = never expire)
 
@@ -192,6 +195,8 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		// each collection at open time. Nil when none are configured, so unlimited
 		// collections pay nothing.
 		Quotas: c.engineQuotas(),
+
+		EnableAtomicBatches: c.EnableAtomicBatches,
 	}
 }
 

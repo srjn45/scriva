@@ -169,6 +169,8 @@ func serveCmd() *cobra.Command {
 						merged.ReplicationRingSize = cfg.ReplicationRingSize
 					case "promote-max-lag":
 						merged.PromoteMaxLag = cfg.PromoteMaxLag
+					case "enable-atomic-batches":
+						merged.EnableAtomicBatches = cfg.EnableAtomicBatches
 					}
 				})
 				cfg = merged
@@ -212,6 +214,7 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.FollowerID, "replicate-id", cfg.FollowerID, "Follower identity reported to the leader in ReplicationStatus (default: hostname)")
 	f.IntVar(&cfg.ReplicationRingSize, "replication-ring-size", cfg.ReplicationRingSize, "Leader-side buffer of recent committed entries for follower resume (0 = disable replication)")
 	f.Uint64Var(&cfg.PromoteMaxLag, "promote-max-lag", cfg.PromoteMaxLag, "Max follower replication lag (in LSNs) still eligible for Promote without --force (0 = must be fully caught up)")
+	f.BoolVar(&cfg.EnableAtomicBatches, "enable-atomic-batches", cfg.EnableAtomicBatches, "Convert an existing legacy data directory to use atomic batches")
 
 	return cmd
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,6 +119,39 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 	// before opening any collection, so collections open with a live broker.
 	db.initReplication(cfg.ReplicationRingSize)
 
+	// Check coordinator format: legacy root conversion and new-root initialization.
+	f, err := readXTxFormat(dataDir)
+	if err != nil {
+		_ = dl.release()
+		return nil, err
+	}
+	atomicRoot := f != nil
+	if f == nil {
+		hasCols, _ := dirHasExistingCollections(dataDir)
+		switch {
+		case cfg.EnableAtomicBatches:
+			// Operator-controlled opt-in conversion of legacy root.
+			if err := ensureXTxFormat(dataDir, "opt-in"); err != nil {
+				_ = dl.release()
+				return nil, err
+			}
+			if cfg.Logger != nil {
+				cfg.Logger.Info("converted legacy root to atomic batches", "data_dir", dataDir)
+			}
+			atomicRoot = true
+		case !hasCols && !cfg.Follower && atomicBatchWriterReady:
+			// New root: atomic batches are the default (hardening §3.1 item 8).
+			// A follower root is initialised by the leader's envelopes, never here.
+			if err := ensureXTxFormat(dataDir, "default"); err != nil {
+				_ = dl.release()
+				return nil, err
+			}
+			atomicRoot = true
+		case hasCols && cfg.Logger != nil:
+			cfg.Logger.Warn("legacy root opened: atomic batches disabled; run serve --enable-atomic-batches to convert", "data_dir", dataDir)
+		}
+	}
+
 	// Coordinator recovery (design §7): validate format gate, open journal,
 	// gather participant evidence, resolve truth table, truncate dead tail runs,
 	// replay committed entries, and open collections under the decision table.
@@ -131,7 +165,38 @@ func Open(dataDir string, cfg CollectionConfig) (*DB, error) {
 		_ = dl.release()
 		return nil, err
 	}
+
+	if atomicRoot && db.xtxJournal == nil {
+		if _, err := db.ensureXTxJournal(); err != nil {
+			for _, c := range db.collections {
+				_ = c.Close()
+			}
+			_ = dl.release()
+			return nil, err
+		}
+	}
 	return db, nil
+}
+
+func dirHasExistingCollections(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || isReservedXTxName(name) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // CreateCollection creates a new collection with the given name.
@@ -153,14 +218,22 @@ func (db *DB) CreateCollection(name string) (*Collection, error) {
 	}
 	colCfg := db.defaultCfg
 	colCfg.decisionsFn = db.decisionsMap
+	colCfg.journalEpochFn = func() string {
+		if j := db.journalOrNil(); j != nil {
+			return j.epoch()
+		}
+		return ""
+	}
 	if j := db.journalOrNil(); j != nil {
 		colCfg.decisions = j.decisionsMap()
+		colCfg.journalEpoch = j.epoch()
 	}
 	col, err := OpenCollection(name, db.dataDir, colCfg)
 	if err != nil {
 		return nil, err
 	}
 	col.broker = db.broker
+	col.db = db
 	db.collections[name] = col
 	return col, nil
 }
@@ -216,12 +289,20 @@ func (db *DB) CollectionWithConfig(name string, cfg CollectionConfig) (*Collecti
 	if j := db.journalOrNil(); j != nil {
 		cfg.decisions = j.decisionsMap()
 		cfg.decisionsFn = db.decisionsMap
+		cfg.journalEpoch = j.epoch()
+		cfg.journalEpochFn = func() string {
+			if j := db.journalOrNil(); j != nil {
+				return j.epoch()
+			}
+			return ""
+		}
 	}
 	col, err := OpenCollection(name, db.dataDir, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("db: open collection %q: %w", name, err)
 	}
 	col.broker = db.broker
+	col.db = db
 	db.collections[name] = col
 	return col, nil
 }

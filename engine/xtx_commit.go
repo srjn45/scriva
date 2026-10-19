@@ -19,6 +19,10 @@ type XTxOp struct {
 	Data        map[string]any `json:"data,omitempty"`
 	ExpectedRev uint64         `json:"expected_rev,omitempty"`
 	ExpiresAt   int64          `json:"expires_at,omitempty"`
+
+	// ts, when non-zero, is the shared record timestamp of a single-collection
+	// batch (InsertMany returns it to the caller). Zero means "now".
+	ts time.Time
 }
 
 // XTxOpResult is the committed outcome of one operation.
@@ -36,6 +40,10 @@ type XTxResult struct {
 	// Replayed is true when the result was returned for an idempotency key
 	// that had already committed: nothing was applied by this call.
 	Replayed bool `json:"replayed,omitempty"`
+	// postErr is the first failure of the post-lock maintenance (segment
+	// rotation). The transaction is committed regardless; single-collection
+	// batches surface it as *PostCommitError (hardening §3.2).
+	postErr error
 }
 
 // CommitXTx executes a cross-collection transaction across 2..N collections of this DB.
@@ -317,12 +325,14 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 	// S6: rotation, meta persistence and watch emission run after every
 	// participant lock is released (§6.1 rule 7); DB.mu.RLock is still held so
 	// no participant can be closed underneath them.
+	var postErr error
 	if post != nil {
-		post()
+		postErr = post()
 	}
 	if err != nil {
 		return nil, err
 	}
+	res.postErr = postErr
 	if key != "" {
 		db.xtxHandles.rememberResult(key, res)
 	}
@@ -333,7 +343,7 @@ func (db *DB) commitXTx(ctx context.Context, key string, ops []XTxOp, reads []xt
 // commitXTxLocked runs S0 validation through S5 apply. The caller holds
 // DB.mu.RLock and every lock in cols; participants are the write participants
 // in canonical order. The returned func is the S6 post-lock maintenance.
-func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xtxReadCheck, cols map[string]*Collection, participants []*Collection) (*XTxResult, func(), error) {
+func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xtxReadCheck, cols map[string]*Collection, participants []*Collection) (*XTxResult, func() error, error) {
 	db.xtxHookAt(xtxHookLocked, key, "")
 	// A fenced collection (§2.3) — participant or read-only — aborts the
 	// transaction before any byte or decision is written.
@@ -474,7 +484,11 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 	// With replication enabled the transaction is published as one envelope.
 	// Normalizing the payload and enforcing its size bound happens here, before
 	// any byte is written, so a transaction that commits can always be published.
-	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
+	if len(ops) > 0 && !ops[0].ts.IsZero() {
+		now = ops[0].ts.UTC()
+	}
+	nowStr := now.Format(time.RFC3339Nano)
 	var envOps []TxEnvelopeOp
 	if db.broker != nil {
 		nowTs, _ := time.Parse(time.RFC3339Nano, nowStr)
@@ -613,18 +627,22 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 	}
 
 	// S6: Post-lock maintenance and notifications
-	post := func() {
+	post := func() error {
 		for _, w := range watchEvents {
 			w.col.emit(w.event)
 		}
+		var first error
 		for _, c := range participants {
 			if needsRotate[c.name] {
-				_ = c.rotateSegment()
+				if err := c.rotateSegment(); err != nil && first == nil {
+					first = err
+				}
 			}
 			if maxInsertIDs[c.name] > 0 {
 				_ = persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
 			}
 		}
+		return first
 	}
 
 	return &XTxResult{TxID: txid, Ops: opResults}, post, nil

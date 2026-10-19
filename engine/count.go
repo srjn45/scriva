@@ -27,7 +27,11 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	// Whole-collection count: the primary index is exactly the set of live
 	// records, so its length is the answer without touching a segment.
 	if f == nil || f == query.MatchAll {
-		return uint64(c.index.Len()), nil
+		// Under c.mu.RLock so a batch commit (exclusive c.mu) is counted whole.
+		c.mu.RLock()
+		n := uint64(c.index.Len())
+		c.mu.RUnlock()
+		return n, nil
 	}
 
 	// Single equality predicate on an indexed field: the secondary index maps the
@@ -35,7 +39,10 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	// membership is exactly the records the filter would accept (see the eq case
 	// in indexCandidates), so this is scan-identical without any segment read.
 	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
-		if ids, hit := c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
+		c.mu.RLock()
+		ids, hit := c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value))
+		c.mu.RUnlock()
+		if hit {
 			return uint64(len(ids)), nil
 		}
 	}

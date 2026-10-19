@@ -42,6 +42,7 @@ embedding-specific contract.
 
 ### Added
 
+- **Crash-atomic single-collection batches (hardening §3.1, SR-D2 option A):** `InsertMany`, single-collection `CommitTx` and `LoadJSONL` of two or more entries now run as a one-participant cross-collection transaction. After a crash or power loss a batch is fully present or fully absent, never a prefix; a durable but unacknowledged batch recovers as committed. Same error model as XTx (`ErrXTxDurability` = proven abort, `ErrXTxOutcomeUnknown` resolved via `XTxStatus`, `BatchTxID(err)`, `*PostCommitError` for post-commit rotation failure). **Default-on for new data directories and roots that already hold `xtx.format`; existing legacy directories are unchanged until `scriva serve --enable-atomic-batches` (`enable_atomic_batches: true`) converts them — one-way, back up first.** New `ErrBatchNotAtomic` / `CollectionConfig.AllowNonAtomicBatch` for collections opened without a DB. Replicated as one envelope (one LSN) per batch. Scans, `Find`, aggregates and `Count` now read from a start-of-scan view, so they see a batch entirely or not at all (a scan that began before a commit returns the pre-commit state; costs an O(live records) index copy per full scan). Release gate evidence: `engine/batch_gate_test.go`, `engine/batch_kill_test.go`, [`docs/release-readiness-batch.md`](docs/release-readiness-batch.md); operations: [`docs/operations.md`](docs/operations.md#atomic-single-collection-batches-rollout-and-recovery).
 - **`DropCollection` refuses to drop XTx participants (hardening H6, interim fail-safe):** returns `ErrParticipantRetained` (gRPC `FAILED_PRECONDITION`, reason `PARTICIPANT_RETAINED`) while a non-retired committed cross-collection transaction names the collection; nothing is modified. Retirement at drop is not yet available, so there is no way to drop such a collection. See the "`PARTICIPANT_RETAINED`" runbook in `docs/operations.md`.
 - Documented lock hierarchy and drop/XTx/snapshot serialization (`docs/architecture.md`), with deterministic concurrency, snapshot, reopen and SIGKILL tests (`engine/drop_concurrency_test.go`).
 - **Write outcome durability contract & fail-stop collection fencing (hardening §2.3 / SR-D1):**
@@ -68,6 +69,10 @@ embedding-specific contract.
   - Id-counter recovery: metadata persist failure during rotation returns `*PostCommitError` without fencing; startup recovery rebuilds max ID from segment tails, preventing ID reuse.
 
 ## v1.5.1 — 2026-10-18
+
+### Changed
+
+- **Behavior change for batches on atomic-mode roots:** `InsertMany`/`CommitTx` above 1000 operations or 64 MiB now fail with `ErrXTxTooLarge` (`RESOURCE_EXHAUSTED`) instead of being written (and silently non-atomic); batches replicate as one envelope (one LSN) rather than one LSN per entry; and each batch pays a forced data fsync plus a decision fsync regardless of `sync_mode`. A new data directory now contains `xtx.format` and `xtx.journal` from its first open and is not downgradable to a release that predates cross-collection transactions.
 
 ### Fixed
 

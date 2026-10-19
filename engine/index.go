@@ -194,14 +194,14 @@ func (idx *Index) Coverage() []SegmentCoverage {
 
 // Snapshot copies the entries and captures coverage for segs. Callers must hold
 // the lock that stops writes to segs so the coverage matches the entries.
-func (idx *Index) Snapshot(segs []*Segment) (*IndexSnapshot, error) {
+func (idx *Index) Snapshot(segs []*Segment, decisionsAndEpoch ...any) (*IndexSnapshot, error) {
 	// segs end with the active segment; earlier ones are sealed and get the
 	// cheap tail fingerprint.
 	sealed := make(map[*Segment]bool, len(segs))
 	for i := 0; i+1 < len(segs); i++ {
 		sealed[segs[i]] = true
 	}
-	return idx.snapshotCached(segs, sealed, nil)
+	return idx.snapshotCached(segs, sealed, nil, decisionsAndEpoch...)
 }
 
 // snapshotCached is Snapshot for a periodic persister: coverage of sealed
@@ -210,7 +210,7 @@ func (idx *Index) Snapshot(segs []*Segment) (*IndexSnapshot, error) {
 // whole data set. segs must list sealed segments followed by the active one;
 // only the entries of segs that are in sealed are cached. A nil cache disables
 // caching. The cache must be cleared whenever sealed segment files are replaced.
-func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cache map[string]SegmentCoverage) (*IndexSnapshot, error) {
+func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cache map[string]SegmentCoverage, decisionsAndEpoch ...any) (*IndexSnapshot, error) {
 	cov := make([]SegmentCoverage, 0, len(segs))
 	for _, seg := range segs {
 		if cache != nil && sealed[seg] {
@@ -219,7 +219,7 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 				continue
 			}
 		}
-		c, err := captureCoverage(seg)
+		c, err := captureCoverage(seg, decisionsAndEpoch...)
 		if err != nil {
 			return nil, err
 		}
@@ -238,9 +238,19 @@ func (idx *Index) snapshotCached(segs []*Segment, sealed map[*Segment]bool, cach
 	return &IndexSnapshot{entries: snap, coverage: cov}, nil
 }
 
-// captureCoverage records the first Size() bytes of seg: its size and the full
-// SHA-256 of those bytes.
-func captureCoverage(seg *Segment) (SegmentCoverage, error) {
+// captureCoverage records the first Size() bytes of seg: its size, the full
+// SHA-256 of those bytes, and any visible XTx decisions applied within those bytes (§7.3).
+func captureCoverage(seg *Segment, decisionsAndEpoch ...any) (SegmentCoverage, error) {
+	var dec map[string]string
+	var epoch string
+	for _, arg := range decisionsAndEpoch {
+		switch v := arg.(type) {
+		case map[string]string:
+			dec = v
+		case string:
+			epoch = v
+		}
+	}
 	size := seg.Size()
 	f, err := os.Open(seg.Path())
 	if err != nil {
@@ -251,7 +261,28 @@ func captureCoverage(seg *Segment) (SegmentCoverage, error) {
 	if err != nil {
 		return SegmentCoverage{}, fmt.Errorf("index: coverage hash %q: %w", seg.Path(), err)
 	}
-	return SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: size, Checksum: sum}, nil
+	cov := SegmentCoverage{Segment: filepath.Base(seg.Path()), Size: size, Checksum: sum}
+
+	var txids []string
+	seen := make(map[string]bool)
+	_ = seg.ScanStampedFromOffset(0, func(offset int64, e store.Entry, tx *TxStamp) error {
+		if offset >= size {
+			return errStopScan
+		}
+		if tx != nil && tx.T != "" {
+			if entryVisible(tx, dec) && !seen[tx.T] {
+				seen[tx.T] = true
+				txids = append(txids, tx.T)
+			}
+		}
+		return nil
+	})
+	if len(txids) > 0 {
+		sort.Strings(txids)
+		cov.XTxApplied = txids
+		cov.XTxEpoch = epoch
+	}
+	return cov, nil
 }
 
 // prefixChecksum is the hex SHA-256 of the first size bytes of f; a file
