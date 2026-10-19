@@ -737,7 +737,13 @@ func (db *DB) validateXTxReadSet(ctx context.Context, reads []xtxReadCheck) erro
 		return err
 	}
 	defer unlock()
-	return validateXTxReads(cols, reads)
+	var now int64
+	for _, c := range cols {
+		if n := c.now(); n > now {
+			now = n
+		}
+	}
+	return validateXTxReads(cols, reads, now)
 }
 
 // liveRev returns the committed revision of id, or false when the document is

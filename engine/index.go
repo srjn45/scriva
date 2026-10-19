@@ -131,6 +131,40 @@ type Index struct {
 	// (possibly empty) is authoritative. False for v1 files and never-loaded
 	// indexes: "coverage unknown", which recovery treats as stale.
 	coverageKnown bool
+	// mayExpire is sticky: set once any entry with a TTL deadline has been
+	// seen, so a collection that never used TTL keeps O(1) Count(MatchAll).
+	mayExpire bool
+}
+
+// noteExpiringLocked refreshes mayExpire after a bulk entries replacement.
+// The caller holds idx.mu for writing.
+func (idx *Index) noteExpiringLocked() {
+	if idx.mayExpire {
+		return
+	}
+	for _, e := range idx.entries {
+		if e.ExpiresAt != 0 {
+			idx.mayExpire = true
+			return
+		}
+	}
+}
+
+// liveCount returns the number of records visible at now: Len when no entry
+// carries a deadline, otherwise an in-memory walk excluding expired entries.
+func (idx *Index) liveCount(now int64) int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if !idx.mayExpire {
+		return len(idx.entries)
+	}
+	n := 0
+	for _, e := range idx.entries {
+		if !expired(e.ExpiresAt, now) {
+			n++
+		}
+	}
+	return n
 }
 
 // newIndex creates an empty index.
@@ -142,6 +176,9 @@ func newIndex() *Index {
 func (idx *Index) Set(id uint64, entry IndexEntry) {
 	idx.mu.Lock()
 	idx.entries[id] = entry
+	if entry.ExpiresAt != 0 {
+		idx.mayExpire = true
+	}
 	idx.mu.Unlock()
 }
 
@@ -442,6 +479,7 @@ func (idx *Index) install(path string, file indexFile) error {
 
 	idx.mu.Lock()
 	idx.entries = entries
+	idx.noteExpiringLocked()
 	idx.coverage = file.Coverage
 	idx.coverageKnown = file.Version == indexFormatV2
 	idx.mu.Unlock()
@@ -486,6 +524,7 @@ func (idx *Index) Rebuild(segments []*Segment, decisions ...map[string]string) e
 	}
 	idx.mu.Lock()
 	idx.entries = fresh
+	idx.noteExpiringLocked()
 	idx.mu.Unlock()
 	return nil
 }

@@ -29,7 +29,7 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	if f == nil || f == query.MatchAll {
 		// Under c.mu.RLock so a batch commit (exclusive c.mu) is counted whole.
 		c.mu.RLock()
-		n := uint64(c.index.Len())
+		n := uint64(c.index.liveCount(c.now()))
 		c.mu.RUnlock()
 		return n, nil
 	}
@@ -40,7 +40,7 @@ func (c *Collection) Count(f query.Filter) (uint64, error) {
 	// in indexCandidates), so this is scan-identical without any segment read.
 	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
 		c.mu.RLock()
-		ids, hit := c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value))
+		ids, hit := c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value)) // visible ids at one now
 		c.mu.RUnlock()
 		if hit {
 			return uint64(len(ids)), nil

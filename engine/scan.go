@@ -334,6 +334,7 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *Sc
 // scanView is the state a scan reads from, captured once under c.mu.RLock.
 type scanView struct {
 	at     time.Time // capture time, for ScanViewMaxAge
+	now    int64     // TTL cutoff captured once with the view (Unix ns)
 	segs   []*Segment
 	ends   []int64             // committed end offset of each segment at capture
 	byPath map[string]*Segment // captured segments by path
@@ -344,7 +345,7 @@ type scanView struct {
 // the primary-index locations: every id when ids is nil, otherwise only ids.
 // The caller holds layoutMu.RLock and c.mu.RLock.
 func (c *Collection) captureViewLocked(ids []uint64) *scanView {
-	v := &scanView{at: time.Now(), byPath: make(map[string]*Segment, len(c.sealed)+1)}
+	v := &scanView{at: time.Now(), now: c.now(), byPath: make(map[string]*Segment, len(c.sealed)+1)}
 	v.segs = append(v.segs, c.sealed...)
 	v.segs = append(v.segs, c.active)
 	v.ends = make([]int64, len(v.segs))
@@ -391,7 +392,7 @@ func (c *Collection) indexCandidates(f query.Filter) ([]uint64, bool) {
 	}
 	switch ff.Op {
 	case query.OpEq:
-		return c.indexLookup(ff.Field, filterValueToIndexKey(ff.Value))
+		return c.indexLookupRaw(ff.Field, filterValueToIndexKey(ff.Value))
 	case query.OpGt, query.OpGte, query.OpLt, query.OpLte:
 		return c.indexRangeLookup(ff.Field, ff.Op, filterValueTyped(ff.Value))
 	default:
@@ -418,10 +419,10 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		// which are identical in the stored form, and deferring decryption to the
 		// yield boundary keeps it to a single pass — matching streamLive.
 		loc, ok := view.locs[id]
-		if !ok || c.isExpired(loc) {
+		if !ok || expired(loc.ExpiresAt, view.now) {
 			continue // absent or expired at capture
 		}
-		e, err := c.readLocated(id, loc, ok, view.byPath[loc.SegmentPath])
+		e, err := c.readLocated(id, loc, ok, view.byPath[loc.SegmentPath], view.now)
 		if err != nil {
 			// A captured location that cannot be read is never skipped: the
 			// scan must not silently shorten.
@@ -530,7 +531,7 @@ func (c *Collection) streamLive(ctx context.Context, f query.Filter, view *scanV
 			if e.Op == store.OpDelete {
 				return nil
 			}
-			if c.isExpired(loc) {
+			if expired(loc.ExpiresAt, view.now) {
 				return nil // TTL passed; hidden until the reaper reclaims it
 			}
 			stats.RowsScanned++ // a live record examined against the filter

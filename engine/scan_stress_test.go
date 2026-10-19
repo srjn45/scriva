@@ -314,7 +314,8 @@ func TestScanStress_CancellationUnderLoad(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				cutoff := rng.Intn(300)
 				if g%3 == 0 { // cancel while possibly queued for a slot
-					go func() { time.Sleep(time.Duration(rng.Intn(300)) * time.Microsecond); cancel() }()
+					delay := time.Duration(rng.Intn(300)) * time.Microsecond
+					go func() { time.Sleep(delay); cancel() }()
 				}
 				n := 0
 				_, err := col.ScanStream(ctx, ScanOptions{Filter: allV}, func(ScanResult) error {
