@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 )
 
+// afterAtomicTempCreate is a test seam (nil in production) invoked with the
+// temp path right after it is opened, before any data is written.
+var afterAtomicTempCreate func(tmp string)
+
 // writeFileAtomic writes data to path durably: it writes to a temp file, fsyncs
 // the temp file, renames it into place (atomic, so readers never observe a
 // partial file), and fsyncs the parent directory so the rename itself survives
@@ -18,6 +22,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return fmt.Errorf("atomic write: create temp: %w", err)
+	}
+	if h := afterAtomicTempCreate; h != nil {
+		h(tmp)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()

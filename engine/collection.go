@@ -253,6 +253,10 @@ type CollectionConfig struct {
 	// the scan holds its shared layout lease.
 	scanHook func(point scanHookPoint, arg uint64)
 
+	// test hook invoked between a metaSnapshot and its persistMeta by the
+	// setDefaultTTL ("ttl") and applyEncryptionChange ("enc") paths.
+	postMetaSnapshotHook func(src string)
+
 	// test hook invoked by the cross-collection commit path at each
 	// xtxHookPoint with the idempotency key and, once allocated, the txid.
 	xtxHook func(point xtxHookPoint, key, txid string)
