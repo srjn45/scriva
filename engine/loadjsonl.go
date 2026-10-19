@@ -43,6 +43,9 @@ func (c *Collection) LoadJSONL(r io.Reader, keyField string) (n int, err error) 
 		if err := c.ensureKeyIndex(); err != nil {
 			return 0, err
 		}
+		if err := c.keyConflict(); err != nil {
+			return 0, err
+		}
 	}
 
 	// Parse phase: decode and validate every record up front. Nothing is written

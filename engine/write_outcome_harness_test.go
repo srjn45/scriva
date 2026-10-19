@@ -182,9 +182,9 @@ func writeOutcomeOps() []writeOutcomeOp {
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.DeleteByKey("k1") }},
 		// The reaper's tombstone is committed like a Delete: synced, then
 		// dropped from the indexes, published and emitted. The expired base
-		// record is hidden before the pass; the delete shows in the raw index.
+		// record is hidden before the pass (also from IndexLookup, §6); the delete shows in the raw index.
 		{name: "reapExpired", followUp: bg, ratified: true, key: "k1", expired: true,
-			old:    recState{Indexed: true, Rev: 1, Tag: "old", ByKey: -1},
+			old:    recState{Indexed: true, Rev: 1, Tag: "none", ByKey: -1},
 			new:    keyed(gone, -1),
 			events: 1, lsn: 1,
 			run: func(e *woEnv) (uint64, error) { return e.base, e.col.reapExpired() }},

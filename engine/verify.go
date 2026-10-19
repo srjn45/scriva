@@ -99,6 +99,7 @@ const (
 	CodeSidxExtraEntry             FindingCode = "sidx-extra-entry"
 	CodeSidxWrongBucket            FindingCode = "sidx-wrong-bucket"
 	CodeSidxUniqueViolation        FindingCode = "sidx-unique-violation"
+	CodeKeyDuplicate               FindingCode = "key-duplicate"
 
 	// Cross-collection transactions.
 	CodeXTxUndecidedRun       FindingCode = "xtx-undecided-run"

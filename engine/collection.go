@@ -261,6 +261,9 @@ type CollectionConfig struct {
 	// the scan holds its shared layout lease.
 	scanHook func(point scanHookPoint, arg uint64)
 
+	// nowFn, when set, replaces the wall clock for TTL visibility (tests).
+	nowFn func() time.Time
+
 	// test hook invoked inside writeMeta, under metaMu, between the snapshot and
 	// its write; src is "ttl" (setDefaultTTL), "enc" (applyEncryptionChange) or "meta".
 	postMetaSnapshotHook func(src string)
@@ -356,6 +359,9 @@ type Collection struct {
 
 	journalEpochStr string
 	journalEpochFn  func() string
+
+	// clockFloor is the high-water mark of now(); see Collection.now.
+	clockFloor atomic.Int64
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -941,15 +947,22 @@ func (c *Collection) load() error {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
-		if amax := c.tailMaxID(all); amax > c.idSeq.Load() {
+		amax, maxTs := c.tailMaxIDAndTs(all)
+		if amax > c.idSeq.Load() {
 			c.idSeq.Store(amax)
+		}
+		if maxTs > c.clockFloor.Load() {
+			c.clockFloor.Store(maxTs)
 		}
 		return nil
 	}
 
 	// Slow path: meta.json is missing or corrupt and the collection shows no
 	// evidence of encryption — scan all entries for max id and regenerate it.
-	var maxID uint64
+	var (
+		maxID uint64
+		maxTs int64
+	)
 
 	c.index.mu.RLock()
 	for id := range c.index.entries {
@@ -961,13 +974,21 @@ func (c *Collection) load() error {
 
 	for _, seg := range all {
 		_ = seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
-			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
-				maxID = e.ID
+			if entryVisible(tx, c.currentDecisions()) {
+				if e.ID > maxID {
+					maxID = e.ID
+				}
+				if ts := e.Ts.UnixNano(); ts > maxTs {
+					maxTs = ts
+				}
 			}
 			return nil
 		})
 	}
 	c.idSeq.Store(maxID)
+	if maxTs > c.clockFloor.Load() {
+		c.clockFloor.Store(maxTs)
+	}
 	c.createdAt = time.Now().UTC()
 
 	// Write meta.json so the next startup can skip this scan.
@@ -976,26 +997,33 @@ func (c *Collection) load() error {
 	return nil
 }
 
-// tailMaxID returns the highest entry id in the newest non-empty segment of
-// all (oldest first), or 0 if none is readable. Ids are assigned monotonically
-// and appended in order, so that segment holds the most recently assigned id.
-// Walking back past empty segments matters after a crash between rotation
-// creating a fresh active segment and meta.json being persisted: the active
-// segment is empty, and the stale counter would otherwise reissue ids.
-func (c *Collection) tailMaxID(all []*Segment) uint64 {
+
+// tailMaxIDAndTs returns the highest entry id and newest entry timestamp (in
+// Unix nanoseconds) in the newest non-empty segment of all (oldest first). Ids
+// are monotonic and appended in order; Ts seeds the collection clock's floor so
+// a backwards wall-clock step across restart cannot un-expire a hidden record.
+func (c *Collection) tailMaxIDAndTs(all []*Segment) (uint64, int64) {
 	for i := len(all) - 1; i >= 0; i-- {
-		var maxID uint64
+		var (
+			maxID uint64
+			maxTs int64
+		)
 		_ = all[i].ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
-			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
-				maxID = e.ID
+			if entryVisible(tx, c.currentDecisions()) {
+				if e.ID > maxID {
+					maxID = e.ID
+				}
+				if ts := e.Ts.UnixNano(); ts > maxTs {
+					maxTs = ts
+				}
 			}
 			return nil
 		})
-		if maxID > 0 {
-			return maxID
+		if maxID > 0 || maxTs > 0 {
+			return maxID, maxTs
 		}
 	}
-	return 0
+	return 0, 0
 }
 
 // syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
@@ -1086,7 +1114,8 @@ func (c *Collection) InsertWithExpiry(data map[string]any, expiresAt time.Time) 
 // Unix-nano deadline (0 = never expires).
 func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.Time, error) {
 	id := c.idSeq.Add(1)
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 	e := store.NewInsert(id, data)
 	e.Ts = ts
 	e.Rev = 1 // a fresh record starts at revision 1
@@ -1158,8 +1187,9 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			return nil, time.Time{}, reservedFieldErr()
 		}
 	}
-	exp := c.resolveInsertExpiry(expiresAt)
-	ts := time.Now().UTC()
+	now := c.now()
+	exp := c.resolveInsertExpiryAt(expiresAt, now)
+	ts := time.Unix(0, now).UTC()
 
 	route, err := c.routeBatch(len(records))
 	if err != nil {
@@ -1326,7 +1356,8 @@ func (c *Collection) UpdateWithExpiry(id uint64, data map[string]any, expiresAt 
 // existing deadline is preserved (data-only update); otherwise expiresAt is
 // stamped as the new deadline.
 func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, keepExpiry bool) (time.Time, error) {
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 	e := store.NewUpdate(id, data)
 	e.Ts = ts
 
@@ -1345,9 +1376,19 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: id %d not found", id)
 	}
+	// Keep the record's reserved _key: an id-addressed update that omits it must
+	// not silently free the key. _key is never encrypted, so it is stamped into
+	// both the logical data and the sealed entry.
+	// The preserved key is not a new claim, so uniqueness is checked on the
+	// caller's data: a record in a legacy duplicate set stays updatable by id.
+	checkData := data
+	if kept := c.preserveReservedLocked(id, data); len(kept) != len(data) {
+		data = kept
+		e.Data = stampKey(e.Data, kept[KeyField].(string))
+	}
 	// Enforce unique indexes before writing so a rejected update appends nothing
 	// and mutates no index.
-	if err := c.sidxCheckUnique(id, data); err != nil {
+	if err := c.sidxCheckUnique(id, checkData); err != nil {
 		c.mu.Unlock()
 		return time.Time{}, err
 	}
@@ -1378,7 +1419,9 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 
 // Delete removes a record by id.
 func (c *Collection) Delete(id uint64) error {
+	now := c.now()
 	e := store.NewDelete(id)
+	e.Ts = time.Unix(0, now).UTC()
 
 	if err := c.checkFenced(); err != nil {
 		return err
@@ -1445,7 +1488,7 @@ func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 			c.mu.RUnlock()
 		}
 
-		e, err := c.readLocated(id, loc, ok, seg)
+		e, err := c.readLocated(id, loc, ok, seg, c.now())
 		if locked {
 			c.mu.RUnlock()
 			return e, loc, err
@@ -1459,13 +1502,13 @@ func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 // readLocated reads the record a primary-index lookup resolved to (loc, found,
 // seg), applying the not-found and TTL-expiry rules. The result is only
 // meaningful if no compaction swap ran since the lookup; getStored checks that.
-func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment) (store.Entry, error) {
+func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment, now int64) (store.Entry, error) {
 	if !found {
 		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	// Defensively hide records whose TTL has passed but which the reaper has not
 	// yet reclaimed, so an expired record is never observable.
-	if c.isExpired(loc) {
+	if expired(loc.ExpiresAt, now) {
 		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	if seg == nil {
@@ -1773,6 +1816,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		before[op.id], present[op.id] = c.index.Get(op.id)
 	}
 
+	txNow := c.now() // one TTL instant for every record this commit stamps
 	// Pre-validate: ensure every update/delete target still exists.
 	for _, op := range ops {
 		if op.kind == txOpUpdate || op.kind == txOpDelete {
@@ -1791,6 +1835,13 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		c.mu.Unlock()
 		return err
 	}
+	// Keep each updated record's reserved _key (see update). Done after the
+	// uniqueness check: a preserved key is not a new claim.
+	for i := range ops {
+		if ops[i].kind == txOpUpdate {
+			ops[i].data = c.preserveReservedLocked(ops[i].id, ops[i].data)
+		}
+	}
 
 	// Quota pre-check (S4): reject the whole commit atomically if its inserts
 	// would breach the collection's record/byte budget, before any op is applied.
@@ -1807,7 +1858,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				e := store.NewInsert(op.id, op.data)
 				e.Ts = op.ts
 				e.Rev = 1
-				e.ExpiresAt = c.resolveInsertExpiry(time.Time{})
+				e.ExpiresAt = c.resolveInsertExpiryAt(time.Time{}, txNow)
 				newBytes += c.entryQuotaBytes(e)
 			}
 		}
@@ -1859,7 +1910,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.Ts = op.ts
 			e.Rev = 1 // a fresh record starts at revision 1
 			e.Epoch = txEpoch
-			exp := c.resolveInsertExpiry(time.Time{})
+			exp := c.resolveInsertExpiryAt(time.Time{}, txNow)
 			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
@@ -2032,6 +2083,7 @@ func (c *Collection) Close() error {
 // c.mu (write lock) is held so the check and the subsequent index mutation are
 // atomic with respect to other writers.
 func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
+	now := c.now()
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 	for field, sidx := range c.sidxMap {
@@ -2039,11 +2091,11 @@ func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
 			continue
 		}
 		val, ok := data[field]
-		if !ok {
+		if !ok || !sidx.accepts(val) {
 			continue
 		}
 		key := toIndexKey(val)
-		if sidx.conflict(key, id) {
+		if c.sidxConflict(sidx, key, id, now) {
 			return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
 		}
 	}
@@ -2055,6 +2107,7 @@ func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
 // violation — either against already-committed data or against another op in
 // the same batch — returns an ErrDuplicateKey-wrapped error.
 func (c *Collection) txCheckUnique(ops []txOp) error {
+	now := c.now()
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 
@@ -2069,11 +2122,11 @@ func (c *Collection) txCheckUnique(ops []txOp) error {
 				continue
 			}
 			val, ok := op.data[field]
-			if !ok {
+			if !ok || !sidx.accepts(val) {
 				continue
 			}
 			key := toIndexKey(val)
-			if sidx.conflict(key, op.id) {
+			if c.sidxConflict(sidx, key, op.id, now) {
 				return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
 			}
 			byVal := claimed[field]
@@ -2221,6 +2274,16 @@ func (c *Collection) IndexLookup(field, value string) ([]uint64, bool) {
 // indexLookup is IndexLookup without the fence check, for internal callers that
 // have already checked (or hold c.mu and must see the index regardless).
 func (c *Collection) indexLookup(field, value string) ([]uint64, bool) {
+	ids, ok := c.indexLookupRaw(field, value)
+	if !ok {
+		return nil, false
+	}
+	return c.liveIDs(ids, c.now()), true
+}
+
+// indexLookupRaw returns the index bucket unfiltered. Only for callers that
+// re-validate each id against a captured view (scan candidates).
+func (c *Collection) indexLookupRaw(field, value string) ([]uint64, bool) {
 	c.sidxMu.RLock()
 	sidx, ok := c.sidxMap[field]
 	c.sidxMu.RUnlock()
@@ -2279,12 +2342,18 @@ func (c *Collection) UpdateIfMatch(key string, pred func(cur map[string]any) boo
 // under c.mu.Lock so it is atomic with respect to every other writer. A missing
 // key or a false predicate is reported as (false, nil).
 func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur map[string]any, curRev uint64) bool) (bool, error) {
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 
 	if err := c.checkFenced(); err != nil {
 		return false, err
 	}
 	c.mu.Lock()
+
+	if err := c.keyConflict(); err != nil {
+		c.mu.Unlock()
+		return false, err
+	}
 
 	// Resolve the key under the same lock that will perform the write. indexLookup
 	// takes sidxMu (read) after c.mu (write), matching the lock order used by the

@@ -38,6 +38,7 @@ type SecondaryIndex struct {
 	mu      sync.RWMutex
 	buckets map[string]map[uint64]struct{} // value → id set
 	reverse map[uint64]string              // id → value (fast removal on update/delete)
+	dups    map[string]struct{}            // bucket keys held by more than one id
 
 	// Ordered view for range queries. kind records the observed value type of
 	// the field; sorted holds the distinct bucket keys in ascending order under
@@ -136,7 +137,53 @@ func newSecondaryIndex(field string, unique bool) *SecondaryIndex {
 		unique:  unique,
 		buckets: make(map[string]map[uint64]struct{}),
 		reverse: make(map[uint64]string),
+		dups:    make(map[string]struct{}),
 	}
+}
+
+// accepts reports whether val participates in the index. The reserved _key
+// index holds only string keys; any other value there is legacy data that the
+// index ignores and leaves intact.
+func (s *SecondaryIndex) accepts(val any) bool {
+	if s.field != KeyField {
+		return true
+	}
+	_, ok := val.(string)
+	return ok
+}
+
+// noteLocked refreshes the duplicate marker for bucket key. Caller holds s.mu.
+func (s *SecondaryIndex) noteLocked(key string) {
+	if len(s.buckets[key]) > 1 {
+		s.dups[key] = struct{}{}
+	} else {
+		delete(s.dups, key)
+	}
+}
+
+// firstDuplicate returns the smallest bucket key shared by more than one live
+// id, with up to maxIDs of its ids in ascending order. Goroutine-safe.
+func (s *SecondaryIndex) firstDuplicate(maxIDs int) (string, []uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.dups) == 0 {
+		return "", nil, false
+	}
+	first := ""
+	for k := range s.dups {
+		if first == "" || k < first {
+			first = k
+		}
+	}
+	ids := make([]uint64, 0, len(s.buckets[first]))
+	for id := range s.buckets[first] {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if len(ids) > maxIDs {
+		ids = ids[:maxIDs]
+	}
+	return first, ids, true
 }
 
 // orderLessKey reports whether a sorts before b in the ordered view.
@@ -220,6 +267,9 @@ type sidxPayload struct {
 
 // add records id under value. Goroutine-safe.
 func (s *SecondaryIndex) add(value any, id uint64) {
+	if !s.accepts(value) {
+		return
+	}
 	key := toIndexKey(value)
 	_, normVal := valKind(value)
 	s.mu.Lock()
@@ -233,6 +283,7 @@ func (s *SecondaryIndex) add(value any, id uint64) {
 	if newBucket {
 		s.orderedInsert(key, normVal)
 	}
+	s.noteLocked(key)
 	s.mu.Unlock()
 }
 
@@ -248,6 +299,7 @@ func (s *SecondaryIndex) remove(id uint64) {
 			delete(s.buckets, value)
 			s.orderedRemove(value)
 		}
+		s.noteLocked(value)
 		delete(s.reverse, id)
 	}
 	s.mu.Unlock()
@@ -256,6 +308,10 @@ func (s *SecondaryIndex) remove(id uint64) {
 // update atomically moves id from its old bucket to newValue's bucket.
 // Goroutine-safe.
 func (s *SecondaryIndex) update(id uint64, newValue any) {
+	if !s.accepts(newValue) {
+		s.remove(id)
+		return
+	}
 	newKey := toIndexKey(newValue)
 	_, normVal := valKind(newValue)
 	s.mu.Lock()
@@ -266,6 +322,7 @@ func (s *SecondaryIndex) update(id uint64, newValue any) {
 			delete(s.buckets, oldKey)
 			s.orderedRemove(oldKey)
 		}
+		s.noteLocked(oldKey)
 	}
 	newBucket := s.buckets[newKey] == nil
 	if newBucket {
@@ -277,6 +334,7 @@ func (s *SecondaryIndex) update(id uint64, newValue any) {
 	if newBucket {
 		s.orderedInsert(newKey, normVal)
 	}
+	s.noteLocked(newKey)
 	s.mu.Unlock()
 }
 
@@ -296,20 +354,6 @@ func (s *SecondaryIndex) Lookup(value string) []uint64 {
 	return ids
 }
 
-// conflict reports whether value is already mapped to a live id other than the
-// given one. Used to enforce uniqueness before a write is applied. It only
-// considers other ids, so re-writing a record's own existing value is allowed.
-// Goroutine-safe.
-func (s *SecondaryIndex) conflict(value string, id uint64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for existing := range s.buckets[value] {
-		if existing != id {
-			return true
-		}
-	}
-	return false
-}
 
 // LookupRange returns the candidate IDs whose indexed field satisfies a range
 // predicate (op ∈ {gt,gte,lt,lte}) against queryVal, and whether the index could
@@ -394,7 +438,7 @@ func (s *SecondaryIndex) rebuild(segs []*Segment, tolerant bool, decisions ...ma
 		if r.deleted {
 			continue
 		}
-		if val, ok := r.data[s.field]; ok {
+		if val, ok := r.data[s.field]; ok && s.accepts(val) {
 			key := toIndexKey(val)
 			if fresh[key] == nil {
 				fresh[key] = make(map[uint64]struct{})
@@ -409,10 +453,22 @@ func (s *SecondaryIndex) rebuild(segs []*Segment, tolerant bool, decisions ...ma
 	s.mu.Lock()
 	s.buckets = fresh
 	s.reverse = freshRev
+	s.dups = dupsOf(fresh)
 	s.kind = freshKind
 	s.sorted = buildSorted(fresh, freshKind)
 	s.mu.Unlock()
 	return nil
+}
+
+// dupsOf returns the set of bucket keys held by more than one id.
+func dupsOf(buckets map[string]map[uint64]struct{}) map[string]struct{} {
+	d := make(map[string]struct{})
+	for k, b := range buckets {
+		if len(b) > 1 {
+			d[k] = struct{}{}
+		}
+	}
+	return d
 }
 
 // buildSorted materialises the ordered view from a bucket map for a homogeneous
@@ -565,6 +621,7 @@ func (s *SecondaryIndex) Load(path string) error {
 	s.mu.Lock()
 	s.buckets = fresh
 	s.reverse = freshRev
+	s.dups = dupsOf(fresh)
 	s.kind = kind
 	s.sorted = buildSorted(fresh, kind)
 	s.coverage = f.Coverage

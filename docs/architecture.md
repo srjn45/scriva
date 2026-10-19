@@ -756,12 +756,20 @@ Two mechanisms make expiry effective:
 1. **Defensive read filtering** — `Get` (hence `FindByID`/`GetByKey` and indexed
    scan candidates) and the streaming scan liveness check both drop any record
    whose deadline has passed. This makes a record invisible **the instant** it
-   expires, before any background work runs. Each read currently takes its own
-   `time.Now()` (a long scan has a moving cutoff) and `Count`/unique checks do not
-   apply the same predicate (hardening H11); the ratified contract — one
-   predicate, one captured `now` per operation, a monotonic floor and a reclaim
-   grace — is in
-   [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics).
+   expires, before any background work runs. Visibility is one predicate
+   (`expired(deadline, now)`: hidden iff `deadline != 0 && now >= deadline`) over
+   **one `now` captured per operation** from the collection clock
+   (`Collection.now`: wall clock floored by an in-process high-water mark,
+   seeded at open from the active segment tail Ts, so a backwards clock step
+   cannot un-expire a hidden record; `CollectionConfig.nowFn` is the test
+   seam). `Get`, scans/`Find` (captured with the scan view, so a long scan has
+   a fixed cutoff), `Count` (`MatchAll` is O(1) until any TTL record has been
+   seen, then an in-memory index walk; the eq fast path filters bucket ids
+   through the primary index), `IndexLookup`/`Exists`, unique-index checks (an
+   expired holder is vacant, so `InsertWithKey` over an expired key succeeds),
+   a batch/`CommitTx` stamp and a cross-collection commit all use it. Still open
+   from [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics):
+   the reclaim grace.
 2. **Reaping + reclamation** — a reaper runs on the compactor cadence
    (`reapExpired`), appends delete tombstones for expired ids, and removes them
    from the primary and secondary indexes. Compaction additionally drops expired
@@ -1701,3 +1709,7 @@ The recovery, integrity, append, poison, lock, and transaction series follow the
 `recoverIndex` is the single choke point where open might touch history. A tail replay applies only the bytes after the persisted coverage; a strict decode failure there falls through to a full rebuild. Every full rebuild first runs `integrityGate`: one tolerant scan of all segments through the same checks as `Verify` (bad regions, glued lines, duplicate/conflicting ids, revision regressions). Findings of severity `data-corruption` or `conflict` make open return `*engine.OpenIntegrityError` (matches `engine.ErrIntegrity`, carries the `CollectionReport`) under `fail`/`rebuild-index-only`; under `report` the index and secondary indexes are rebuilt from the salvaged records instead and the report is kept on `Collection.OpenIntegrityReport()`. A refused open closes the files it opened and releases the directory lock. Conflicts inside a trusted persisted-index tail are not re-derived at open (that would defeat O(tail) reopen); `Verify` reports them.
 
 For **distributed tracing** (opt-in OpenTelemetry, `--otlp-endpoint`), which complements these pull-based metrics with per-request spans across the gateway → gRPC → engine-scan hops, see [Tracing (OpenTelemetry)](#tracing-opentelemetry) above.
+
+### Reserved `_key` invariant
+
+`_key` is set only by the keyed API and never changes. Id-addressed writes (`Update`, `UpdateWithExpiry`, single-collection `CommitTx`, XTx update) re-stamp the record's current `_key` under the collection lock when the collection has a `_key` index; supplying `_key` in caller data is `ErrReservedField` on every path, including XTx stage ops. Only string `_key` values are indexed. If legacy data, import or replication leaves two live records sharing a `_key`, the keyed API (`InsertWithKey`, `FindByKey`, `UpdateByKey`, `DeleteByKey`, `Upsert`, `Exists`, `UpdateIfRev`/`UpdateIfMatch`, keyed `LoadJSONL`) returns `*KeyIndexConflictError` (`errors.Is(err, ErrKeyIndexConflict)`, gRPC `FAILED_PRECONDITION`) — the engine never picks a winner; `Verify` reports `key-duplicate`; resolve by deleting or rewriting one record by id. A replicated entry that would violate `_key` uniqueness stops the stream with the same typed error.

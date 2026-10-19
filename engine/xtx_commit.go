@@ -169,11 +169,11 @@ func (db *DB) lockXTxCollections(ctx context.Context, key string, names []string
 
 // validateXTxReads checks point observations against the locked collections.
 // A mismatch is ErrXTxConflict carrying an *XTxConflictError.
-func validateXTxReads(cols map[string]*Collection, reads []xtxReadCheck) error {
+func validateXTxReads(cols map[string]*Collection, reads []xtxReadCheck, now int64) error {
 	for _, rc := range reads {
 		c := cols[rc.Collection]
 		loc, ok := c.index.Get(rc.ID)
-		present := ok && !c.isExpired(loc)
+		present := ok && !expired(loc.ExpiresAt, now)
 		var rev uint64
 		if present {
 			rev = loc.Rev
@@ -351,7 +351,15 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 			return nil, nil, xtxErr("", ErrXTxDurability, err)
 		}
 	}
-	if err := validateXTxReads(cols, reads); err != nil {
+	// One TTL instant for the whole commit, shared by read validation, target
+	// checks and stamping on every participant.
+	var ttlNow int64
+	for _, c := range participants {
+		if n := c.now(); n > ttlNow {
+			ttlNow = n
+		}
+	}
+	if err := validateXTxReads(cols, reads, ttlNow); err != nil {
 		return nil, nil, err
 	}
 
@@ -395,7 +403,7 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 				colRevs[i] = 1
 				exp := op.ExpiresAt
 				if exp == 0 {
-					exp = c.resolveInsertExpiry(time.Time{})
+					exp = c.resolveInsertExpiryAt(time.Time{}, ttlNow)
 				}
 				colExps[i] = exp
 				colSealed[i] = op.Data
@@ -420,7 +428,12 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 				if !ok {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: update target id %d not found", c.name, op.ID))
 				}
-				if c.isExpired(loc) {
+				// Keep the record's reserved _key (see Collection.update). Stored
+				// back into colOps so apply, watch and replication see it too.
+				claimData := op.Data // uniqueness is checked on the caller's data
+				op.Data = c.preserveReservedLocked(op.ID, op.Data)
+				colOps[i].Data = op.Data
+				if expired(loc.ExpiresAt, ttlNow) {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: update target id %d expired", c.name, op.ID))
 				}
 				if op.ExpectedRev != 0 && loc.Rev != op.ExpectedRev {
@@ -440,14 +453,14 @@ func (db *DB) commitXTxLocked(j *xtxJournal, key string, ops []XTxOp, reads []xt
 					}
 					colSealed[i] = sd
 				}
-				txOps = append(txOps, txOp{kind: txOpUpdate, id: op.ID, data: op.Data, ts: time.Now().UTC()})
+				txOps = append(txOps, txOp{kind: txOpUpdate, id: op.ID, data: claimData, ts: time.Now().UTC()})
 
 			case store.OpDelete:
 				loc, ok := c.index.Get(op.ID)
 				if !ok {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: delete target id %d not found", c.name, op.ID))
 				}
-				if c.isExpired(loc) {
+				if expired(loc.ExpiresAt, ttlNow) {
 					return nil, nil, xtxErr("", ErrXTxConflict, fmt.Errorf("collection %q: delete target id %d expired", c.name, op.ID))
 				}
 				if op.ExpectedRev != 0 && loc.Rev != op.ExpectedRev {
