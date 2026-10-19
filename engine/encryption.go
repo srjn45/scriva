@@ -528,7 +528,7 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		c.enc.Store(newEncryptor(c.name, cfg.Encryption.Mode, *cfg.Encryption, cfg.KeyProvider, 1))
 		// Persist the encryption block immediately so a crash right after enabling
 		// still records the policy and key-check.
-		if err := persistMeta(metaPath(c.dir), c.metaSnapshot()); err != nil {
+		if err := c.writeMeta(nil); err != nil {
 			return fmt.Errorf("engine: persist encryption meta for %q: %w", c.name, err)
 		}
 		return nil

@@ -1086,10 +1086,14 @@ func TestRotation_AncillaryBoundary_MetadataPersistFailure(t *testing.T) {
 		t.Fatalf("CreateCollection: %v", err)
 	}
 
-	// Block persistMeta by creating "meta.json.tmp" as a directory.
-	tmpPath := filepath.Join(dir, "c", metaFilename+".tmp")
+	// Block persistMeta's final rename by replacing meta.json with a directory
+	// (renaming a file over a directory fails).
+	tmpPath := filepath.Join(dir, "c", metaFilename)
+	if err := os.Remove(tmpPath); err != nil {
+		t.Fatalf("remove meta.json: %v", err)
+	}
 	if err := os.Mkdir(tmpPath, 0o755); err != nil {
-		t.Fatalf("mkdir meta.json.tmp: %v", err)
+		t.Fatalf("mkdir meta.json: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(tmpPath) })
 

@@ -89,8 +89,9 @@ func loadMeta(path string) (collectionMeta, error) {
 	return m, nil
 }
 
-// persistMeta writes m to path as JSON, atomically and durably (temp file →
-// fsync → rename → fsync dir). A corrupt or partial write still degrades
+// persistMeta writes m to path as JSON, atomically and durably (unique temp file →
+// fsync → rename → fsync dir). Live collections go through Collection.writeMeta,
+// which serializes callers; offline code (repair) calls this directly. A corrupt or partial write still degrades
 // gracefully: the next startup falls back to the full segment scan and rewrites
 // a fresh meta.json.
 func persistMeta(path string, m collectionMeta) error {
@@ -98,5 +99,40 @@ func persistMeta(path string, m collectionMeta) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, data, 0o644)
+	return writeFileAtomicUnique(path, data, 0o644)
+}
+
+// writeMeta is the single persist path for a live collection's meta.json. Under
+// the leaf metaMu it takes the snapshot, applies mut to it, and writes it
+// durably, so concurrent persists can neither interleave nor persist a stale
+// snapshot over a newer one. mut may be nil.
+func (c *Collection) writeMeta(mut func(*collectionMeta)) error {
+	return c.writeMetaThen("meta", mut, nil)
+}
+
+// writeMetaThen is writeMeta plus a commit step: commit runs still under metaMu,
+// only after the write succeeded, and installs the in-memory counterpart of what
+// mut put into the snapshot — so memory changes only once the state is durable,
+// and no other persist can snapshot between the write and the install. src
+// labels the caller for the postMetaSnapshotHook test seam.
+//
+// Lock order: encAdminMu → c.mu → metaMu (leaf). Nothing else is acquired while
+// metaMu is held; the snapshot reads only atomics and immutables.
+func (c *Collection) writeMetaThen(src string, mut func(*collectionMeta), commit func()) error {
+	c.metaMu.Lock()
+	defer c.metaMu.Unlock()
+	snap := c.metaSnapshot()
+	if mut != nil {
+		mut(&snap)
+	}
+	if h := c.cfg.postMetaSnapshotHook; h != nil {
+		h(src)
+	}
+	if err := persistMeta(metaPath(c.dir), snap); err != nil {
+		return err
+	}
+	if commit != nil {
+		commit()
+	}
+	return nil
 }

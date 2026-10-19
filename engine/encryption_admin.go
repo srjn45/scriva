@@ -180,14 +180,13 @@ func (c *Collection) applyEncryptionChange(readMode EncryptionMode, writePolicy 
 		m.KeyCheck = keyOverride.KeyCheck
 		m.CurrentKeyID = keyOverride.CurrentKeyID
 	}
-	c.encMeta.Store(m)
-	snap := c.metaSnapshot()
-	if h := c.cfg.postMetaSnapshotHook; h != nil {
-		h("enc")
-	}
-	if err := persistMeta(metaPath(c.dir), snap); err != nil {
-		// Roll back the meta pointer so the in-memory state matches what is on disk.
-		c.encMeta.Store(prev)
+	// The candidate block is installed in the snapshot by the mutator and in
+	// memory (encMeta) only after the write succeeded, both under metaMu, so no
+	// concurrent persist can write an uncommitted block or miss a committed one.
+	err := c.writeMetaThen("enc",
+		func(s *collectionMeta) { s.Encryption = m },
+		func() { c.encMeta.Store(m) })
+	if err != nil {
 		c.mu.Unlock()
 		return fmt.Errorf("engine: persist encryption meta for %q: %w", c.name, err)
 	}
