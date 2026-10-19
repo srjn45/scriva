@@ -220,6 +220,41 @@ func TestTTLVisibility_CountFastPathWithoutTTL(t *testing.T) {
 	}
 }
 
+// A backward clock step across reopen keeps the expired record hidden because
+// the tail segment's Ts seeds the collection clock's floor.
+func TestTTLVisibility_BackwardClockStepAcrossReopen(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	dl := base.Add(time.Minute)
+	k := &ttlClock{}
+	k.set(base)
+	dir := t.TempDir()
+	c := openClockCollection(t, dir, k)
+	c.EnsureIndex("tag")
+	permID, _, _ := c.InsertWithExpiry(map[string]any{"tag": "perm"}, base.Add(1000*time.Hour))
+	id, _, err := c.InsertWithKey("k1", map[string]any{"tag": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Advance clock past deadline and update the permanent record in the tail segment.
+	k.set(dl.Add(10 * time.Second))
+	if _, err := c.Update(permID, map[string]any{"tag": "perm", "v": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clock steps backward 1 hour.
+	k.set(base.Add(-time.Hour))
+	c = openClockCollection(t, dir, k)
+	defer c.Close()
+
+	// The record "k1" must remain expired/hidden across all surfaces.
+	if v := ttlSurfaces(t, c, id); v != [6]bool{} {
+		t.Fatalf("after reopen with 1h backward clock step, record visible: %v", v)
+	}
+}
+
 func (c *Collection) allSegmentsForTest() []*Segment {
 	return append(append([]*Segment(nil), c.sealed...), c.active)
 }

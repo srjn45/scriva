@@ -177,6 +177,7 @@ func (c *Collection) reapExpired() error {
 			continue // resurrected or refreshed since we snapshotted — leave it be
 		}
 		e := store.NewDelete(id)
+		e.Ts = time.Unix(0, now).UTC()
 		if _, err := c.appendLocked("reap", e); err != nil {
 			if errors.Is(err, ErrWriteOutcomeUnknown) || errors.Is(err, ErrCollectionFenced) {
 				c.mu.Unlock()

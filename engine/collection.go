@@ -947,15 +947,22 @@ func (c *Collection) load() error {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
-		if amax := c.tailMaxID(all); amax > c.idSeq.Load() {
+		amax, maxTs := c.tailMaxIDAndTs(all)
+		if amax > c.idSeq.Load() {
 			c.idSeq.Store(amax)
+		}
+		if maxTs > c.clockFloor.Load() {
+			c.clockFloor.Store(maxTs)
 		}
 		return nil
 	}
 
 	// Slow path: meta.json is missing or corrupt and the collection shows no
 	// evidence of encryption — scan all entries for max id and regenerate it.
-	var maxID uint64
+	var (
+		maxID uint64
+		maxTs int64
+	)
 
 	c.index.mu.RLock()
 	for id := range c.index.entries {
@@ -967,13 +974,21 @@ func (c *Collection) load() error {
 
 	for _, seg := range all {
 		_ = seg.ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
-			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
-				maxID = e.ID
+			if entryVisible(tx, c.currentDecisions()) {
+				if e.ID > maxID {
+					maxID = e.ID
+				}
+				if ts := e.Ts.UnixNano(); ts > maxTs {
+					maxTs = ts
+				}
 			}
 			return nil
 		})
 	}
 	c.idSeq.Store(maxID)
+	if maxTs > c.clockFloor.Load() {
+		c.clockFloor.Store(maxTs)
+	}
 	c.createdAt = time.Now().UTC()
 
 	// Write meta.json so the next startup can skip this scan.
@@ -989,19 +1004,36 @@ func (c *Collection) load() error {
 // creating a fresh active segment and meta.json being persisted: the active
 // segment is empty, and the stale counter would otherwise reissue ids.
 func (c *Collection) tailMaxID(all []*Segment) uint64 {
+	id, _ := c.tailMaxIDAndTs(all)
+	return id
+}
+
+// tailMaxIDAndTs returns the highest entry id and newest entry timestamp (in
+// Unix nanoseconds) in the newest non-empty segment of all (oldest first). Ids
+// are monotonic and appended in order; Ts seeds the collection clock's floor so
+// a backwards wall-clock step across restart cannot un-expire a hidden record.
+func (c *Collection) tailMaxIDAndTs(all []*Segment) (uint64, int64) {
 	for i := len(all) - 1; i >= 0; i-- {
-		var maxID uint64
+		var (
+			maxID uint64
+			maxTs int64
+		)
 		_ = all[i].ScanStampedFromOffset(0, func(_ int64, e store.Entry, tx *TxStamp) error {
-			if entryVisible(tx, c.currentDecisions()) && e.ID > maxID {
-				maxID = e.ID
+			if entryVisible(tx, c.currentDecisions()) {
+				if e.ID > maxID {
+					maxID = e.ID
+				}
+				if ts := e.Ts.UnixNano(); ts > maxTs {
+					maxTs = ts
+				}
 			}
 			return nil
 		})
-		if maxID > 0 {
-			return maxID
+		if maxID > 0 || maxTs > 0 {
+			return maxID, maxTs
 		}
 	}
-	return 0
+	return 0, 0
 }
 
 // syncActiveLocked fsyncs the active segment when SyncModeAlways is configured.
@@ -1092,7 +1124,8 @@ func (c *Collection) InsertWithExpiry(data map[string]any, expiresAt time.Time) 
 // Unix-nano deadline (0 = never expires).
 func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.Time, error) {
 	id := c.idSeq.Add(1)
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 	e := store.NewInsert(id, data)
 	e.Ts = ts
 	e.Rev = 1 // a fresh record starts at revision 1
@@ -1164,8 +1197,9 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			return nil, time.Time{}, reservedFieldErr()
 		}
 	}
-	exp := c.resolveInsertExpiry(expiresAt)
-	ts := time.Now().UTC()
+	now := c.now()
+	exp := c.resolveInsertExpiryAt(expiresAt, now)
+	ts := time.Unix(0, now).UTC()
 
 	route, err := c.routeBatch(len(records))
 	if err != nil {
@@ -1332,7 +1366,8 @@ func (c *Collection) UpdateWithExpiry(id uint64, data map[string]any, expiresAt 
 // existing deadline is preserved (data-only update); otherwise expiresAt is
 // stamped as the new deadline.
 func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, keepExpiry bool) (time.Time, error) {
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 	e := store.NewUpdate(id, data)
 	e.Ts = ts
 
@@ -1394,7 +1429,9 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 
 // Delete removes a record by id.
 func (c *Collection) Delete(id uint64) error {
+	now := c.now()
 	e := store.NewDelete(id)
+	e.Ts = time.Unix(0, now).UTC()
 
 	if err := c.checkFenced(); err != nil {
 		return err
@@ -2315,7 +2352,8 @@ func (c *Collection) UpdateIfMatch(key string, pred func(cur map[string]any) boo
 // under c.mu.Lock so it is atomic with respect to every other writer. A missing
 // key or a false predicate is reported as (false, nil).
 func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur map[string]any, curRev uint64) bool) (bool, error) {
-	ts := time.Now().UTC()
+	now := c.now()
+	ts := time.Unix(0, now).UTC()
 
 	if err := c.checkFenced(); err != nil {
 		return false, err

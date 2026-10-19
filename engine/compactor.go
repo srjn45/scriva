@@ -196,7 +196,7 @@ func (c *Collection) compactLocked(force bool) error {
 	c.compactRetryExp.Store(0)
 
 	// --- Step 3: Replay all entries, keep latest committed/plain value per id ---
-	resolved, err := resolveCompactEntries(toCompact, c.currentDecisions())
+	resolved, err := resolveCompactEntries(toCompact, c.currentDecisions(), c.now())
 	if err != nil {
 		return fmt.Errorf("compactor: resolve: %w", err)
 	}
@@ -575,7 +575,7 @@ type compactEntry struct {
 // or unretired committed transaction evidence in original log order. Stamped
 // committed evidence remains the materialized survivor until the coordinator
 // can be atomically checkpointed; aborted stamped entries are omitted.
-func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]compactEntry, error) {
+func resolveCompactEntries(segs []*Segment, decisions map[string]string, nowOpt ...int64) ([]compactEntry, error) {
 	latest := make(map[uint64]store.Entry)
 	var evidence []compactEntry
 	hasEvidence := make(map[uint64]bool)
@@ -602,7 +602,12 @@ func resolveCompactEntries(segs []*Segment, decisions map[string]string) ([]comp
 		}
 	}
 
-	now := time.Now().UnixNano()
+	var now int64
+	if len(nowOpt) > 0 && nowOpt[0] != 0 {
+		now = nowOpt[0]
+	} else {
+		now = time.Now().UnixNano()
+	}
 	live := make([]store.Entry, 0, len(latest))
 	for _, e := range latest {
 		if !hasEvidence[e.ID] && (e.Op == store.OpDelete || expired(e.ExpiresAt, now)) {

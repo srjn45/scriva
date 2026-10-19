@@ -759,17 +759,17 @@ Two mechanisms make expiry effective:
    expires, before any background work runs. Visibility is one predicate
    (`expired(deadline, now)`: hidden iff `deadline != 0 && now >= deadline`) over
    **one `now` captured per operation** from the collection clock
-   (`Collection.now`: wall clock floored by an in-process high-water mark, so a
-   backwards clock step cannot un-expire a hidden record; `CollectionConfig.nowFn`
-   is the test seam). `Get`, scans/`Find` (captured with the scan view, so a long
-   scan has a fixed cutoff), `Count` (`MatchAll` is O(1) until any TTL record has
-   been seen, then an in-memory index walk; the eq fast path filters bucket ids
+   (`Collection.now`: wall clock floored by an in-process high-water mark,
+   seeded at open from the active segment tail Ts, so a backwards clock step
+   cannot un-expire a hidden record; `CollectionConfig.nowFn` is the test
+   seam). `Get`, scans/`Find` (captured with the scan view, so a long scan has
+   a fixed cutoff), `Count` (`MatchAll` is O(1) until any TTL record has been
+   seen, then an in-memory index walk; the eq fast path filters bucket ids
    through the primary index), `IndexLookup`/`Exists`, unique-index checks (an
-   expired holder is vacant, so `InsertWithKey` over an expired key succeeds), a
-   batch/`CommitTx` stamp and a cross-collection commit all use it. Still open
+   expired holder is vacant, so `InsertWithKey` over an expired key succeeds),
+   a batch/`CommitTx` stamp and a cross-collection commit all use it. Still open
    from [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics):
-   the open-time tail-`Ts` clock floor, the reclaim grace, and publishing reaper
-   deletes to replication.
+   the reclaim grace.
 2. **Reaping + reclamation** — a reaper runs on the compactor cadence
    (`reapExpired`), appends delete tombstones for expired ids, and removes them
    from the primary and secondary indexes. Compaction additionally drops expired
