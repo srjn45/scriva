@@ -648,6 +648,17 @@ func (db *DB) Promote(maxLag uint64, force bool) (PromoteResult, error) {
 // created on the leader replicate automatically). The entry is written verbatim,
 // preserving its id, revision, timestamp, and expiry.
 func (db *DB) ApplyReplication(collection string, e store.Entry) error {
+	if carriesEncryption(e) {
+		// Checked before ensureReplCollection so a refused entry does not even
+		// create the (block-less) collection.
+		col, err := db.Collection(collection)
+		if err != nil {
+			return fmt.Errorf("apply replication: %w: collection %q", ErrReplicationNeedsBootstrap, collection)
+		}
+		if err := col.checkReplEncryption(e); err != nil {
+			return fmt.Errorf("apply replication: %w", err)
+		}
+	}
 	col, err := db.ensureReplCollection(collection)
 	if err != nil {
 		return fmt.Errorf("apply replication: %w", err)

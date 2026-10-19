@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/srjn45/scriva/crypto"
 	"github.com/srjn45/scriva/store"
 )
 
@@ -17,6 +18,13 @@ var (
 	// stream must stop and the follower be re-bootstrapped; nothing is applied
 	// and the applied LSN does not advance.
 	ErrReplicationDivergence = errors.New("engine: replicated transaction diverges from the locally applied transaction")
+	// ErrReplicationNeedsBootstrap: a replicated entry carries encrypted data
+	// (epoch > 0 or an envelope) but this follower's collection has no valid
+	// encryption block, so applying it would leave ciphertext the follower could
+	// not reopen (fail-closed, hardening §3.4). Nothing is written and the
+	// applied LSN does not advance; the follower recovers by re-bootstrapping
+	// from a snapshot, which carries meta.json and the encryption sentinel.
+	ErrReplicationNeedsBootstrap = errors.New("engine: replicated encrypted entry but the local collection has no encryption metadata; re-bootstrap from a snapshot")
 	// ErrReplicationPromoted: the node was promoted to leader; it no longer
 	// accepts replicated writes.
 	ErrReplicationPromoted = errors.New("engine: node was promoted; replicated transactions are no longer applied")
@@ -38,6 +46,29 @@ func (db *DB) ensureReplCollection(name string) (*Collection, error) {
 		return nil, err
 	}
 	return col, nil
+}
+
+// carriesEncryption reports whether a replicated entry holds encrypted data.
+func carriesEncryption(e store.Entry) bool {
+	if e.Epoch > 0 {
+		return true
+	}
+	for _, v := range e.Data {
+		if s, ok := v.(string); ok && crypto.IsEncrypted(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkReplEncryption refuses an entry that carries encryption evidence when the
+// local collection has no valid encryption block. It runs before anything is
+// written.
+func (c *Collection) checkReplEncryption(e store.Entry) error {
+	if c.encMeta.Load() != nil || !carriesEncryption(e) {
+		return nil
+	}
+	return fmt.Errorf("%w: collection %q", ErrReplicationNeedsBootstrap, c.name)
 }
 
 // ApplyReplicatedTx applies one replicated cross-collection transaction (a
@@ -115,6 +146,21 @@ func (db *DB) applyReplicatedTxLocked(lsn uint64, env *TxEnvelope) (bool, error)
 			if _, ok := op.Entry.Data[KeyField]; ok {
 				keyed[op.Collection] = true
 			}
+		}
+	}
+	// Fail closed before creating or writing anything: every participant that
+	// receives encrypted data must already hold an encryption block. A missing
+	// collection has none, so it counts as lacking one.
+	for _, op := range env.Ops {
+		if !carriesEncryption(op.Entry) {
+			continue
+		}
+		col, err := db.Collection(op.Collection)
+		if err != nil {
+			return false, fmt.Errorf("%w: collection %q", ErrReplicationNeedsBootstrap, op.Collection)
+		}
+		if err := col.checkReplEncryption(op.Entry); err != nil {
+			return false, err
 		}
 	}
 	for _, name := range names {
