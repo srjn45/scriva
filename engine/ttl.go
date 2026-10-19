@@ -44,6 +44,9 @@ func (c *Collection) setDefaultTTL(ttl time.Duration) error {
 	c.cfg.DefaultTTL = time.Duration(c.explicitDefaultTTLSecs) * time.Second
 	snap := c.metaSnapshot()
 	c.mu.Unlock()
+	if h := c.cfg.postMetaSnapshotHook; h != nil {
+		h("ttl")
+	}
 	return persistMeta(metaPath(c.dir), snap)
 }
 

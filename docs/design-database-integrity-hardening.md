@@ -254,6 +254,8 @@ Decision source: SR-D4. Both H7 defects are confirmed: a **stale snapshot overwr
 
 **Lock order.** `encAdminMu` → `c.mu` → `metaMu` (new leaf). `writeMeta` acquires nothing else while holding `metaMu` (all snapshot inputs are atomics/immutables). Callers already holding `c.mu` (`rotateSegment`, `Close`, `applyEncryptionChange`) keep fsyncing under it as today; `setDefaultTTL` and `CommitTx` call it with no collection lock. `persistMu` stays ordered `compactMu → persistMu → c.mu`.
 
+**Inventory and reproductions.** Every `meta.json` writer, its lock context and error handling, and the deterministic barrier tests that reproduce both H7 defects are recorded in [`metadata-persistence-inventory.md`](metadata-persistence-inventory.md).
+
 **Acceptance** (full list: SR-D4 M4.1…M4.6): the evidence-recheck reproductions are the first tests — the ordered `setDefaultTTL`/`SetEncryptionPolicy` schedule released in both orders leaves a `meta.json` with both the TTL and the encryption block and reopen decrypts existing records; a 300-iteration free-concurrency hammer produces no corrupt JSON and no `ENOENT` rename error under `-race`; rename failure in `writeMeta` returns an error with `EncryptionStatus()` unchanged and a concurrent persist writing the old policy; corrupt/missing meta of an encrypted collection (E1, E2, E3 variants, including legacy epoch-0 ciphertext and a lower meta epoch) → `ErrEncryptionMetaIntegrity` with bytes unchanged and a `.corrupt-*` copy, while a plaintext collection with the same corruption opens and regenerates; rotation persist failure returns `PostCommitError` with the record visible after reopen.
 
 ### 3.5 Stable scan view and shared expiration semantics

@@ -181,7 +181,11 @@ func (c *Collection) applyEncryptionChange(readMode EncryptionMode, writePolicy 
 		m.CurrentKeyID = keyOverride.CurrentKeyID
 	}
 	c.encMeta.Store(m)
-	if err := persistMeta(metaPath(c.dir), c.metaSnapshot()); err != nil {
+	snap := c.metaSnapshot()
+	if h := c.cfg.postMetaSnapshotHook; h != nil {
+		h("enc")
+	}
+	if err := persistMeta(metaPath(c.dir), snap); err != nil {
 		// Roll back the meta pointer so the in-memory state matches what is on disk.
 		c.encMeta.Store(prev)
 		c.mu.Unlock()
