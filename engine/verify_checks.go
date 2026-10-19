@@ -449,7 +449,7 @@ func (tb *truthBuilder) fold(ctx context.Context, in *verifyInput, sink *finding
 			}
 			*rec = truthRec{seg: s.name, off: se.Offset, rev: rev, lastRev: e.Rev, exp: e.ExpiresAt, epoch: e.Epoch, hash: h, live: true}
 			for _, f := range tb.fields {
-				if val, ok := e.Data[f]; ok {
+				if val, ok := e.Data[f]; ok && (f != KeyField || isStringValue(val)) {
 					if rec.keys == nil {
 						rec.keys = map[string]string{}
 					}
@@ -637,6 +637,11 @@ func reportUnique(sink *findingSink, field string, byKey map[string][]uint64) {
 	for _, k := range keys {
 		ids := byKey[k]
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		if field == KeyField {
+			sink.add(SeverityConflict, CodeKeyDuplicate, Location{Field: field, ID: ids[0]},
+				"%d live records share _key %q: ids %v; resolve by deleting or rewriting all but one by id", len(ids), k, ids)
+			continue
+		}
 		sink.add(SeverityConflict, CodeSidxUniqueViolation, Location{Field: field, ID: ids[0]},
 			"unique index on %q has %d live records sharing value %q: ids %v", field, len(ids), k, ids)
 	}
@@ -769,4 +774,9 @@ func checkCoverage(in *verifyInput, sink *findingSink, kind string, base Locatio
 		sink.add(SeverityRepairableIndex, code("segment-unlisted"), loc,
 			"segment %s is older than covered segments but absent from the %s; open rebuilds from all segments", s.name, kind)
 	}
+}
+
+func isStringValue(v any) bool {
+	_, ok := v.(string)
+	return ok
 }
