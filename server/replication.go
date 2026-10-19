@@ -105,6 +105,9 @@ func Bootstrap(ctx context.Context, client pb.ScrivaClient, dataDir string) (uin
 var (
 	maxSnapshotEntries  = 1 << 20
 	maxSnapshotFileSize = int64(8) << 30
+	// maxSnapshotTotalSize caps the decompressed bytes across all entries, so a
+	// bomb of many individually-legal files cannot exhaust the disk.
+	maxSnapshotTotalSize = int64(64) << 30
 )
 
 // extractSnapshot unpacks a gzip-compressed tar snapshot stream into dataDir.
@@ -151,6 +154,7 @@ func extractSnapshot(r io.Reader, dataDir string) (err error) {
 	defer func() { _ = gz.Close() }()
 
 	seen := make(map[string]struct{})
+	var total int64
 	tr := tar.NewReader(gz)
 	for n := 0; ; n++ {
 		hdr, nerr := tr.Next()
@@ -168,6 +172,9 @@ func extractSnapshot(r io.Reader, dataDir string) (err error) {
 		}
 		if hdr.Size < 0 || hdr.Size > maxSnapshotFileSize {
 			return fmt.Errorf("snapshot entry %q: size %d exceeds the %d byte limit", hdr.Name, hdr.Size, maxSnapshotFileSize)
+		}
+		if total += hdr.Size; total > maxSnapshotTotalSize {
+			return fmt.Errorf("snapshot exceeds the %d byte total decompressed limit", maxSnapshotTotalSize)
 		}
 		rel, verr := checkSnapshotEntryName(hdr.Name)
 		if verr != nil {
@@ -193,6 +200,12 @@ func extractSnapshot(r io.Reader, dataDir string) (err error) {
 		if cerr := f.Close(); cerr != nil {
 			return fmt.Errorf("close %q: %w", dest, cerr)
 		}
+	}
+
+	// tar stops at its end marker without reading the gzip trailer; drain the
+	// remainder (bounded) so a truncated or corrupt stream fails its checksum.
+	if _, derr := io.Copy(io.Discard, io.LimitReader(gz, 1<<20)); derr != nil {
+		return fmt.Errorf("snapshot trailer: %w", derr)
 	}
 
 	return promoteRestore(tmp, dataDir)
