@@ -30,7 +30,7 @@ repl state) use their own distinct paths, so only `meta.json.tmp` is shared betw
 > **Status: conflicts in rows 1, 2, 3, 6, 7, 8 and 10 and the shared `meta.json.tmp` are RESOLVED** by
 > `metadata-serialization` (`Collection.writeMeta` under `metaMu`, unique temp via `writeFileAtomicUnique`, memory updated only
 > after persist, persist errors surfaced: `PostCommitError` for rotation/`CommitTx`/xtx `post()`, logged for replication apply).
-> Row 4 (swallowed regeneration write, fail-closed classification) is deferred to the next task. The repro tests now assert.
+> Row 4 (swallowed regeneration write, fail-closed classification) is RESOLVED by `encryption-fail-closed`: `load()` calls `checkEncryptionMeta` before regenerating, and a collection with evidence of encryption fails with `ErrEncryptionMetaIntegrity` without any write. The repro tests now assert.
 
 ## Findings relevant to the ratified design
 

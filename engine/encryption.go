@@ -499,6 +499,14 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		}
 		c.encMeta.Store(m.Encryption)
 		c.enc.Store(newEncryptor(c.name, m.Encryption.readMode(), m.Encryption.Policy, cfg.KeyProvider, m.Encryption.Epoch))
+		// Self-heal the sentinel (E2) now that a valid block and key are in hand.
+		// A failure only costs the extra evidence — meta.json is intact — so it
+		// is logged rather than failing a healthy open (e.g. a read-only mount).
+		if _, err := ensureSentinel(c.dir); err != nil {
+			if l := c.cfg.Logger; l != nil {
+				l.Warn("could not restore encryption sentinel", "collection", c.name, "file", encryptionSentinelFile, "err", err)
+			}
+		}
 		return nil
 
 	case cfg.Encryption != nil:
@@ -530,6 +538,12 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		// still records the policy and key-check.
 		if err := c.writeMeta(nil); err != nil {
 			return fmt.Errorf("engine: persist encryption meta for %q: %w", c.name, err)
+		}
+		// The sentinel follows the block (never precedes it: a crash between
+		// them must not leave a sentinel next to a plaintext meta) and still
+		// lands before open returns, i.e. before any encrypted write exists.
+		if _, err := ensureSentinel(c.dir); err != nil {
+			return fmt.Errorf("engine: enable encryption on %q: %w", c.name, err)
 		}
 		return nil
 

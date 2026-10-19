@@ -226,6 +226,40 @@ the first read.
 The KDF salt and key-check are non-secret and safe to store in cleartext; they
 reveal nothing without the passphrase.
 
+### Fail-closed open: `ErrEncryptionMetaIntegrity` (hardening §3.4)
+
+`meta.json` is the only place the encryption block lives, so losing it must never
+make an encrypted collection look like plaintext (which would return ciphertext
+envelopes as data and accept plaintext writes). **Open classifies `meta.json`
+before it may rewrite anything.** The collection is treated as encrypted when any
+of this evidence exists:
+
+| | Evidence | Checked |
+|---|---|---|
+| E1 | a primary-index entry stamped with `epoch > 0` | always |
+| E2 | the sentinel file `encryption.sentinel` in the collection directory | always |
+| E3 | the on-disk envelope marker (`\u0000scrivaenc:`) in a segment | only when `meta.json` is missing or unparseable (catches legacy epoch-0 ciphertext) |
+
+If evidence exists and `meta.json` is missing, unparseable, lacks the `encryption`
+block, or records an epoch lower than the entries' maximum, open fails with
+**`engine.ErrEncryptionMetaIntegrity`** — distinct from `ErrWrongEncryptionKey` and
+`ErrKeyUnavailable`, and not tolerated by any `IntegrityPolicy`. Open never infers
+plaintext and never rewrites the file; an unparseable file is copied to
+`meta.json.corrupt-<unixnano>` and the original is left in place. The error and
+logs carry only the collection name, the evidence kind and the file name. A
+plaintext collection with the same damage still opens and regenerates `meta.json`.
+
+The **sentinel** is a new, empty-of-secrets marker file written (file + directory
+fsync) before the first encrypted write takes effect — after the `encryption`
+block when enabling at open, before it for `SetEncryptionPolicy` (removed again if
+the meta write fails). It is never deleted, is carried by snapshots, restore and
+follower bootstrap (it is in the snapshot allow-list), survives compaction, and is
+recreated by open when a valid block is found without it. `Verify` reports
+`encryption-meta-lost` and `Repair` refuses to regenerate `meta.json` for a
+collection that has a sentinel (`AllowMetaReset` does not override this). An older
+binary ignores the sentinel (same exposure as before); `meta.json` is unchanged in
+shape. See the runbook in [`operations.md`](operations.md#runbook-errencryptionmetaintegrity).
+
 ---
 
 ## 7. Key rotation

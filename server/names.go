@@ -22,6 +22,9 @@ func isNameError(err error) bool {
 // policy refuses is InvalidArgument (it can never exist), anything else keeps
 // the NotFound the call sites always returned.
 func notFoundOrInvalid(err error) error {
+	if errors.Is(err, engine.ErrEncryptionMetaIntegrity) {
+		return status.Errorf(codes.DataLoss, "%v", err)
+	}
 	if isNameError(err) {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}
@@ -29,8 +32,12 @@ func notFoundOrInvalid(err error) error {
 }
 
 // createErr maps a CreateCollection failure: policy refusals are
-// InvalidArgument; everything else (a name that is taken) stays AlreadyExists.
+// InvalidArgument; an encrypted collection whose metadata was lost is DataLoss;
+// everything else (a name that is taken) stays AlreadyExists.
 func createErr(err error) error {
+	if errors.Is(err, engine.ErrEncryptionMetaIntegrity) {
+		return status.Errorf(codes.DataLoss, "%v", err)
+	}
 	if isNameError(err) {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}
