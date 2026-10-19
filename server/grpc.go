@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -835,6 +836,9 @@ func (s *GRPCServer) Compact(_ context.Context, req *pb.CompactRequest) (*pb.Com
 // database to the client. The tar body is buffered so each streamed message
 // carries a sizeable chunk rather than one message per tiny gzip/tar write.
 func (s *GRPCServer) Snapshot(_ *pb.SnapshotRequest, stream pb.Scriva_SnapshotServer) error {
+	if err := negotiateReplicationProtocols(stream.Context(), nil, stream.SetHeader); err != nil {
+		return err
+	}
 	bw := bufio.NewWriterSize(&snapshotChunkWriter{stream: stream}, 64*1024)
 	if err := s.db.SnapshotTo(bw); err != nil {
 		if st := outcomeStatus("", err); st != nil {
@@ -870,6 +874,11 @@ func (w *snapshotChunkWriter) Write(p []byte) (int, error) {
 // too far behind for the leader's buffer — or one whose consumer overflows — is
 // told to re-bootstrap from a Snapshot via FAILED_PRECONDITION.
 func (s *GRPCServer) Replicate(req *pb.ReplicateRequest, stream pb.Scriva_ReplicateServer) error {
+	// Negotiate before subscribing: an incompatible follower fails closed here
+	// rather than being served a feed it cannot decode.
+	if err := negotiateReplicationProtocols(stream.Context(), req.ProtocolVersions, stream.SetHeader); err != nil {
+		return err
+	}
 	rs, backlog, ok := s.db.SubscribeReplication(req.FromLsn, req.FollowerId)
 	if !ok {
 		return status.Error(codes.FailedPrecondition,
@@ -934,7 +943,10 @@ func sendReplRecord(stream pb.Scriva_ReplicateServer, rs *engine.ReplicationStre
 }
 
 // ReplicationStatus returns the leader's current LSN and per-follower progress.
-func (s *GRPCServer) ReplicationStatus(_ context.Context, _ *pb.ReplicationStatusRequest) (*pb.ReplicationStatusResponse, error) {
+func (s *GRPCServer) ReplicationStatus(ctx context.Context, _ *pb.ReplicationStatusRequest) (*pb.ReplicationStatusResponse, error) {
+	if err := negotiateReplicationProtocols(ctx, nil, func(md metadata.MD) error { return grpc.SetHeader(ctx, md) }); err != nil {
+		return nil, err
+	}
 	st := s.db.ReplicationStatus()
 	// applied_lsn is this node's follower watermark (0 on a leader). It lets a
 	// read-replica client bound staleness by diffing it against the leader's LSN.

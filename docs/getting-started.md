@@ -1693,9 +1693,27 @@ Flags (all optional):
 | Flag | Config key | Meaning |
 |---|---|---|
 | `--replicate-from <addr>` | `replicate_from` | Run as a follower tailing the leader's gRPC address. Empty = leader. |
+| `--replicate-tls` | `replicate_tls` | Dial the leader over TLS (system roots unless `--replicate-ca` is set). |
+| `--replicate-ca <pem>` | `replicate_ca` | CA bundle trusted for the leader's certificate (implies TLS). |
+| `--replicate-cert <pem>` / `--replicate-key <pem>` | `replicate_cert` / `replicate_key` | Client certificate for mTLS to the leader (set together). |
+| `--replicate-server-name <name>` | `replicate_server_name` | Expected leader certificate name (default: host of `--replicate-from`). |
+| `--replicate-api-key <key>` | `replicate_api_key` | Dedicated replication API key (default: `--api-key`). |
+| `--replicate-insecure` | `replicate_insecure` | Explicit override to replicate from a non-loopback leader over plaintext / without credentials (logs an INSECURE warning). Cannot be combined with TLS settings. |
 | `--replicate-id <id>` | `follower_id` | Label reported to the leader in `ReplicationStatus` (default: hostname). |
 | `--replication-ring-size <n>` | `replication_ring_size` | Leader's in-memory buffer of recent entries for follower resume (default 8192; 0 disables replication). |
 | `--promote-max-lag <n>` | `promote_max_lag` | Max follower lag (in LSNs) still eligible for `Promote` without `--force` (default 0 = must be fully caught up). |
+
+**Secure replication transport.** A follower refuses to start when `--replicate-from`
+is a non-loopback address unless it uses TLS (`--replicate-tls` / `--replicate-ca`)
+*and* presents credentials (API key or `--replicate-cert`/`--replicate-key`), or you
+pass `--replicate-insecure`. Once a follower has replicated over TLS, its data
+directory records it (`.replication-transport`); restarting it in plaintext fails
+with a downgrade error until you delete that file. Follower and leader exchange the
+supported replication protocol versions (`x-scriva-replication-protocols` header,
+plus `ReplicateRequest.protocol_versions`); if they do not overlap, bootstrap and
+the stream fail with `FAILED_PRECONDITION` / `REPLICATION_PROTOCOL_UNSUPPORTED`
+instead of downgrading. A leader that rejects the follower's credentials
+(`Unauthenticated`/`PermissionDenied`) stops the follower rather than retrying.
 
 Notes and current scope (R1–R3):
 

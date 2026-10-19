@@ -99,6 +99,17 @@ type Config struct {
 	// at this gRPC address and applies its committed entries. Empty (the default)
 	// runs as a leader.
 	ReplicateFrom string `yaml:"replicate_from"`
+
+	// Follower→leader transport security. A non-loopback leader requires TLS
+	// (ReplicateTLS/ReplicateCA/…) and credentials (API key or client cert),
+	// otherwise the follower refuses to start unless ReplicateInsecure is set.
+	ReplicateTLS        bool   `yaml:"replicate_tls"`         // dial the leader over TLS (system roots unless ReplicateCA is set)
+	ReplicateCA         string `yaml:"replicate_ca"`          // PEM CA bundle trusted for the leader's certificate (implies TLS)
+	ReplicateCert       string `yaml:"replicate_cert"`        // client certificate presented to the leader (mTLS)
+	ReplicateKey        string `yaml:"replicate_key"`         // client private key for ReplicateCert
+	ReplicateServerName string `yaml:"replicate_server_name"` // expected leader certificate name (default: host of ReplicateFrom)
+	ReplicateAPIKey     string `yaml:"replicate_api_key"`     // dedicated replication API key (default: APIKey)
+	ReplicateInsecure   bool   `yaml:"replicate_insecure"`    // explicit override: allow a remote leader without TLS/credentials (INSECURE)
 	// FollowerID is an optional label a follower reports to the leader, surfaced in
 	// ReplicationStatus. Defaults to the hostname when empty.
 	FollowerID string `yaml:"follower_id"`
@@ -263,6 +274,13 @@ type fileConfig struct {
 	DefaultTTL           string `yaml:"default_ttl"`
 
 	ReplicateFrom       string `yaml:"replicate_from"`
+	ReplicateTLS        bool   `yaml:"replicate_tls"`
+	ReplicateCA         string `yaml:"replicate_ca"`
+	ReplicateCert       string `yaml:"replicate_cert"`
+	ReplicateKey        string `yaml:"replicate_key"`
+	ReplicateServerName string `yaml:"replicate_server_name"`
+	ReplicateAPIKey     string `yaml:"replicate_api_key"`
+	ReplicateInsecure   bool   `yaml:"replicate_insecure"`
 	FollowerID          string `yaml:"follower_id"`
 	ReplicationRingSize int    `yaml:"replication_ring_size"`
 	PromoteMaxLag       uint64 `yaml:"promote_max_lag"`
@@ -317,6 +335,13 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:           defaults.DefaultTTL.String(),
 
 		ReplicateFrom:       defaults.ReplicateFrom,
+		ReplicateTLS:        defaults.ReplicateTLS,
+		ReplicateCA:         defaults.ReplicateCA,
+		ReplicateCert:       defaults.ReplicateCert,
+		ReplicateKey:        defaults.ReplicateKey,
+		ReplicateServerName: defaults.ReplicateServerName,
+		ReplicateAPIKey:     defaults.ReplicateAPIKey,
+		ReplicateInsecure:   defaults.ReplicateInsecure,
 		FollowerID:          defaults.FollowerID,
 		ReplicationRingSize: defaults.ReplicationRingSize,
 		PromoteMaxLag:       defaults.PromoteMaxLag,
@@ -395,6 +420,13 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:           defaultTTL,
 
 		ReplicateFrom:       fc.ReplicateFrom,
+		ReplicateTLS:        fc.ReplicateTLS,
+		ReplicateCA:         fc.ReplicateCA,
+		ReplicateCert:       fc.ReplicateCert,
+		ReplicateKey:        fc.ReplicateKey,
+		ReplicateServerName: fc.ReplicateServerName,
+		ReplicateAPIKey:     fc.ReplicateAPIKey,
+		ReplicateInsecure:   fc.ReplicateInsecure,
 		FollowerID:          fc.FollowerID,
 		ReplicationRingSize: fc.ReplicationRingSize,
 		PromoteMaxLag:       fc.PromoteMaxLag,
