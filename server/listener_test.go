@@ -241,3 +241,48 @@ func TestCORS(t *testing.T) {
 		t.Fatal("explicit * opt-in should work")
 	}
 }
+
+// TestLegacyConfigMigration pins the upgrade path for config files written
+// before secure defaults: explicit binds are kept, unset fields take loopback
+// defaults, and the rejection text names the listener and the override.
+func TestLegacyConfigMigration(t *testing.T) {
+	load := func(body string) Config {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfigFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	// Legacy file with only an api_key and a data dir: loopback defaults, starts.
+	cfg := load("data_dir: /var/lib/scriva\napi_key: k\n")
+	if w, err := ValidateListeners(cfg); err != nil || len(w) != 0 {
+		t.Fatalf("legacy keyed config: warnings=%v err=%v", w, err)
+	}
+
+	// Explicit wildcard bind with an API key keeps its bind and starts.
+	cfg = load("grpc_addr: \":5433\"\napi_key: k\n")
+	if cfg.GRPCAddr != ":5433" {
+		t.Fatalf("explicit bind rewritten: %q", cfg.GRPCAddr)
+	}
+	if w, err := ValidateListeners(cfg); err != nil || len(w) != 0 {
+		t.Fatalf("keyed wildcard: warnings=%v err=%v", w, err)
+	}
+
+	// Explicit wildcard bind with no auth is refused with an actionable error.
+	cfg = load("grpc_addr: \":5433\"\n")
+	_, err := ValidateListeners(cfg)
+	if err == nil {
+		t.Fatal("open wildcard bind must be refused")
+	}
+	for _, want := range []string{"grpc_addr", ":5433", "--insecure-allow-remote", "--api-key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}

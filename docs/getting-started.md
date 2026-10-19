@@ -55,11 +55,17 @@ All flags and their defaults:
 | `--data` | `./data` | Data directory |
 | `--grpc-addr` | `127.0.0.1:5433` | TCP gRPC listen address |
 | `--rest-addr` | `127.0.0.1:8080` | REST gateway listen address |
-| `--socket` | `/tmp/scriva.sock` | Unix domain socket path |
+| `--socket` | `/tmp/scriva.sock` | Unix domain socket path (created `0600`) |
 | `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth) |
-| `--metrics-addr` | `127.0.0.1:9090` |
+| `--metrics-addr` | `127.0.0.1:9090` | Prometheus metrics address (empty = disabled) |
 | `--insecure-allow-remote` | `false` | Allow non-loopback listeners with no API key and no TLS (INSECURE; logs a warning) |
-| `--cors-allowed-origin` | none | Origin allowed to call REST cross-origin (repeatable) | Prometheus metrics address (empty = disabled) |
+| `--cors-allowed-origin` | none | Origin allowed to call REST cross-origin (repeatable; `*` = any) |
+
+> **Secure by default.** All TCP listeners bind `127.0.0.1`. Binding a non-loopback
+> address requires an API key or TLS, otherwise the server refuses to start; REST
+> bodies are capped (`max_request_body_bytes`, 32 MiB), HTTP servers have timeouts,
+> and CORS is off unless origins are listed. Upgrading an existing deployment? See
+> [Upgrading to secure server defaults](operations.md#upgrading-to-secure-server-defaults).
 | `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key` | *(none)* | Path to TLS private key PEM file |
 | `--tls-client-ca` | *(none)* | Path to PEM CA bundle that signs trusted client certs (enables mTLS) |
