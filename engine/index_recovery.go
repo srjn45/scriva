@@ -123,6 +123,7 @@ func (c *Collection) recoverIndex(all []*Segment, indexPath string, forceRebuild
 			}
 			replayed += st.seg.Size() - st.from
 		}
+		c.index.noteExpiringLocked()
 		c.index.mu.Unlock()
 	}
 

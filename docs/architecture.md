@@ -756,12 +756,20 @@ Two mechanisms make expiry effective:
 1. **Defensive read filtering** — `Get` (hence `FindByID`/`GetByKey` and indexed
    scan candidates) and the streaming scan liveness check both drop any record
    whose deadline has passed. This makes a record invisible **the instant** it
-   expires, before any background work runs. Each read currently takes its own
-   `time.Now()` (a long scan has a moving cutoff) and `Count`/unique checks do not
-   apply the same predicate (hardening H11); the ratified contract — one
-   predicate, one captured `now` per operation, a monotonic floor and a reclaim
-   grace — is in
-   [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics).
+   expires, before any background work runs. Visibility is one predicate
+   (`expired(deadline, now)`: hidden iff `deadline != 0 && now >= deadline`) over
+   **one `now` captured per operation** from the collection clock
+   (`Collection.now`: wall clock floored by an in-process high-water mark, so a
+   backwards clock step cannot un-expire a hidden record; `CollectionConfig.nowFn`
+   is the test seam). `Get`, scans/`Find` (captured with the scan view, so a long
+   scan has a fixed cutoff), `Count` (`MatchAll` is O(1) until any TTL record has
+   been seen, then an in-memory index walk; the eq fast path filters bucket ids
+   through the primary index), `IndexLookup`/`Exists`, unique-index checks (an
+   expired holder is vacant, so `InsertWithKey` over an expired key succeeds), a
+   batch/`CommitTx` stamp and a cross-collection commit all use it. Still open
+   from [hardening §3.5](design-database-integrity-hardening.md#35-stable-scan-view-and-shared-expiration-semantics):
+   the open-time tail-`Ts` clock floor, the reclaim grace, and publishing reaper
+   deletes to replication.
 2. **Reaping + reclamation** — a reaper runs on the compactor cadence
    (`reapExpired`), appends delete tombstones for expired ids, and removes them
    from the primary and secondary indexes. Compaction additionally drops expired

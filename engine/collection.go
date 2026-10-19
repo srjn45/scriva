@@ -261,6 +261,9 @@ type CollectionConfig struct {
 	// the scan holds its shared layout lease.
 	scanHook func(point scanHookPoint, arg uint64)
 
+	// nowFn, when set, replaces the wall clock for TTL visibility (tests).
+	nowFn func() time.Time
+
 	// test hook invoked inside writeMeta, under metaMu, between the snapshot and
 	// its write; src is "ttl" (setDefaultTTL), "enc" (applyEncryptionChange) or "meta".
 	postMetaSnapshotHook func(src string)
@@ -356,6 +359,9 @@ type Collection struct {
 
 	journalEpochStr string
 	journalEpochFn  func() string
+
+	// clockFloor is the high-water mark of now(); see Collection.now.
+	clockFloor atomic.Int64
 
 	// explicitDefaultTTLSecs, when > 0, is a per-collection default record TTL
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
@@ -1455,7 +1461,7 @@ func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 			c.mu.RUnlock()
 		}
 
-		e, err := c.readLocated(id, loc, ok, seg)
+		e, err := c.readLocated(id, loc, ok, seg, c.now())
 		if locked {
 			c.mu.RUnlock()
 			return e, loc, err
@@ -1469,13 +1475,13 @@ func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 // readLocated reads the record a primary-index lookup resolved to (loc, found,
 // seg), applying the not-found and TTL-expiry rules. The result is only
 // meaningful if no compaction swap ran since the lookup; getStored checks that.
-func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment) (store.Entry, error) {
+func (c *Collection) readLocated(id uint64, loc IndexEntry, found bool, seg *Segment, now int64) (store.Entry, error) {
 	if !found {
 		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	// Defensively hide records whose TTL has passed but which the reaper has not
 	// yet reclaimed, so an expired record is never observable.
-	if c.isExpired(loc) {
+	if expired(loc.ExpiresAt, now) {
 		return store.Entry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	if seg == nil {
@@ -1783,6 +1789,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		before[op.id], present[op.id] = c.index.Get(op.id)
 	}
 
+	txNow := c.now() // one TTL instant for every record this commit stamps
 	// Pre-validate: ensure every update/delete target still exists.
 	for _, op := range ops {
 		if op.kind == txOpUpdate || op.kind == txOpDelete {
@@ -1824,7 +1831,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				e := store.NewInsert(op.id, op.data)
 				e.Ts = op.ts
 				e.Rev = 1
-				e.ExpiresAt = c.resolveInsertExpiry(time.Time{})
+				e.ExpiresAt = c.resolveInsertExpiryAt(time.Time{}, txNow)
 				newBytes += c.entryQuotaBytes(e)
 			}
 		}
@@ -1876,7 +1883,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e.Ts = op.ts
 			e.Rev = 1 // a fresh record starts at revision 1
 			e.Epoch = txEpoch
-			exp := c.resolveInsertExpiry(time.Time{})
+			exp := c.resolveInsertExpiryAt(time.Time{}, txNow)
 			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
 			if err != nil {
@@ -2049,6 +2056,7 @@ func (c *Collection) Close() error {
 // c.mu (write lock) is held so the check and the subsequent index mutation are
 // atomic with respect to other writers.
 func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
+	now := c.now()
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 	for field, sidx := range c.sidxMap {
@@ -2060,7 +2068,7 @@ func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
 			continue
 		}
 		key := toIndexKey(val)
-		if sidx.conflict(key, id) {
+		if c.sidxConflict(sidx, key, id, now) {
 			return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
 		}
 	}
@@ -2072,6 +2080,7 @@ func (c *Collection) sidxCheckUnique(id uint64, data map[string]any) error {
 // violation — either against already-committed data or against another op in
 // the same batch — returns an ErrDuplicateKey-wrapped error.
 func (c *Collection) txCheckUnique(ops []txOp) error {
+	now := c.now()
 	c.sidxMu.RLock()
 	defer c.sidxMu.RUnlock()
 
@@ -2090,7 +2099,7 @@ func (c *Collection) txCheckUnique(ops []txOp) error {
 				continue
 			}
 			key := toIndexKey(val)
-			if sidx.conflict(key, op.id) {
+			if c.sidxConflict(sidx, key, op.id, now) {
 				return fmt.Errorf("%w: field %q value %q", ErrDuplicateKey, field, key)
 			}
 			byVal := claimed[field]
@@ -2238,6 +2247,16 @@ func (c *Collection) IndexLookup(field, value string) ([]uint64, bool) {
 // indexLookup is IndexLookup without the fence check, for internal callers that
 // have already checked (or hold c.mu and must see the index regardless).
 func (c *Collection) indexLookup(field, value string) ([]uint64, bool) {
+	ids, ok := c.indexLookupRaw(field, value)
+	if !ok {
+		return nil, false
+	}
+	return c.liveIDs(ids, c.now()), true
+}
+
+// indexLookupRaw returns the index bucket unfiltered. Only for callers that
+// re-validate each id against a captured view (scan candidates).
+func (c *Collection) indexLookupRaw(field, value string) ([]uint64, bool) {
 	c.sidxMu.RLock()
 	sidx, ok := c.sidxMap[field]
 	c.sidxMu.RUnlock()

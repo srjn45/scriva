@@ -51,16 +51,44 @@ func (c *Collection) setDefaultTTL(ttl time.Duration) error {
 // explicit instant when one is supplied, else now+DefaultTTL when a default TTL
 // is configured, else 0 (the record never expires).
 func (c *Collection) resolveInsertExpiry(explicit time.Time) int64 {
+	return c.resolveInsertExpiryAt(explicit, c.now())
+}
+
+// resolveInsertExpiryAt is resolveInsertExpiry against a caller-captured now, so
+// a batch stamps every record from one instant.
+func (c *Collection) resolveInsertExpiryAt(explicit time.Time, now int64) int64 {
 	if !explicit.IsZero() {
 		return explicit.UnixNano()
 	}
 	if secs := c.explicitDefaultTTLSecs.Load(); secs > 0 {
-		return time.Now().UTC().Add(time.Duration(secs) * time.Second).UnixNano()
+		return now + int64(time.Duration(secs)*time.Second)
 	}
 	if c.cfg.DefaultTTL > 0 {
-		return time.Now().UTC().Add(c.cfg.DefaultTTL).UnixNano()
+		return now + int64(c.cfg.DefaultTTL)
 	}
 	return 0
+}
+
+// now is the collection's TTL clock in Unix nanoseconds: the wall clock (or the
+// nowFn test hook) floored by an in-process high-water mark, so a backwards wall
+// step can never un-expire a record that was already hidden. Every operation
+// calls it once and applies that single value to every row it examines.
+func (c *Collection) now() int64 {
+	var t int64
+	if c.cfg.nowFn != nil {
+		t = c.cfg.nowFn().UnixNano()
+	} else {
+		t = time.Now().UnixNano()
+	}
+	for {
+		f := c.clockFloor.Load()
+		if t <= f {
+			return f
+		}
+		if c.clockFloor.CompareAndSwap(f, t) {
+			return t
+		}
+	}
 }
 
 // expired reports whether a Unix-nano deadline has passed as of now. A zero
@@ -70,10 +98,40 @@ func expired(deadline, now int64) bool {
 }
 
 // isExpired reports whether the record located by loc has passed its TTL as of
-// the current wall-clock time. Reads consult this to hide expired records that
-// the reaper has not yet reclaimed.
+// a fresh read of the collection clock. Single-record operations use it; any
+// operation touching many rows captures now once and calls expired directly.
 func (c *Collection) isExpired(loc IndexEntry) bool {
-	return expired(loc.ExpiresAt, time.Now().UnixNano())
+	return expired(loc.ExpiresAt, c.now())
+}
+
+// liveIDs returns ids filtered to those present in the primary index and not
+// expired as of now. The shared visibility predicate for index-derived id sets.
+func (c *Collection) liveIDs(ids []uint64, now int64) []uint64 {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := ids[:0:0]
+	c.index.mu.RLock()
+	for _, id := range ids {
+		if loc, ok := c.index.entries[id]; ok && !expired(loc.ExpiresAt, now) {
+			out = append(out, id)
+		}
+	}
+	c.index.mu.RUnlock()
+	return out
+}
+
+// sidxConflict is SecondaryIndex.conflict with expired holders treated as vacant.
+func (c *Collection) sidxConflict(sidx *SecondaryIndex, value string, id uint64, now int64) bool {
+	for _, other := range sidx.Lookup(value) {
+		if other == id {
+			continue
+		}
+		if loc, ok := c.index.Get(other); ok && !expired(loc.ExpiresAt, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // reapExpired tombstones every record whose TTL has passed and drops it from the
@@ -92,7 +150,7 @@ func (c *Collection) reapExpired() error {
 	if err := c.checkFenced(); err != nil {
 		return err
 	}
-	now := time.Now().UnixNano()
+	now := c.now()
 
 	// Collect expired ids under the index read lock; do not mutate while iterating.
 	c.index.mu.RLock()
