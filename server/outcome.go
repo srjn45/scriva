@@ -37,6 +37,21 @@ func outcomeStatus(collection string, err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, engine.ErrScanViewExpired):
+		// Retryable: a new scan captures a fresh view.
+		st := status.New(codes.Aborted, err.Error()+"; retry the scan")
+		withInfo, derr := st.WithDetails(&errdetails.ErrorInfo{
+			Reason: "SCAN_VIEW_EXPIRED",
+			Domain: writeoutcome.Domain,
+			Metadata: map[string]string{
+				writeoutcome.MetaCollection: collection,
+				writeoutcome.MetaRetrySafe:  "true",
+			},
+		})
+		if derr != nil {
+			return st.Err()
+		}
+		return withInfo.Err()
 	case errors.Is(err, engine.ErrWriteOutcomeUnknown):
 		code, reason = codes.Unknown, writeoutcome.ReasonOutcomeUnknown
 		hint = "; the write may or may not have been applied and the collection is now fenced — do not blind-retry, read the record back after the server reopens the collection"

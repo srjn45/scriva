@@ -100,3 +100,19 @@ func TestCommittedTreatsPostCommitAsSuccess(t *testing.T) {
 		t.Errorf("headerSafe = %q", got)
 	}
 }
+
+// TestOutcomeStatusScanViewExpired: an aged-out scan view maps to ABORTED with
+// reason SCAN_VIEW_EXPIRED, marked retry-safe.
+func TestOutcomeStatusScanViewExpired(t *testing.T) {
+	err := outcomeStatus("c", fmt.Errorf("wrap: %w", engine.ErrScanViewExpired))
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("code = %v, want Aborted", status.Code(err))
+	}
+	var info *errdetails.ErrorInfo
+	for _, d := range status.Convert(err).Details() {
+		info, _ = d.(*errdetails.ErrorInfo)
+	}
+	if info == nil || info.Reason != "SCAN_VIEW_EXPIRED" || info.Metadata[writeoutcome.MetaRetrySafe] != "true" {
+		t.Fatalf("ErrorInfo = %v", info)
+	}
+}

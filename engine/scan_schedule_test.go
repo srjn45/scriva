@@ -18,15 +18,11 @@ import (
 // compaction interleave afterwards. Schedules are driven by scanHook; nothing
 // here sleeps to order events.
 
-// knownScanViewBug gates assertions for ScanViewMaxAge / MaxScanViews, which the
-// engine does not implement yet. Flip to false when the limits land.
-const knownScanViewBug = true
-
 var allV = &query.FieldFilter{Field: "v", Op: query.OpGte, Value: "0"}
 
 // schedCol opens a collection whose background compactor is stopped, with a
 // hook installed that the test can set after construction through *hook.
-func schedCol(t *testing.T, hook *func(scanHookPoint, uint64), index bool) *Collection {
+func schedCol(t *testing.T, hook *func(scanHookPoint, uint64), index bool, opts ...func(*CollectionConfig)) *Collection {
 	t.Helper()
 	cfg := defaultConfig()
 	cfg.CompactInterval = time.Hour
@@ -37,6 +33,9 @@ func schedCol(t *testing.T, hook *func(scanHookPoint, uint64), index bool) *Coll
 		if h := *hook; h != nil {
 			h(p, a)
 		}
+	}
+	for _, o := range opts {
+		o(&cfg)
 	}
 	col, err := OpenCollection("sched", t.TempDir(), cfg)
 	if err != nil {
@@ -293,7 +292,7 @@ func holdScans(t *testing.T, col *Collection, hook *func(scanHookPoint, uint64),
 	gate := make(chan struct{})
 	var seen atomic.Int32
 	*hook = func(p scanHookPoint, a uint64) {
-		if !((p == scanAtSegment && a == 0) || p == scanAtCandidate) {
+		if (p != scanAtSegment || a != 0) && p != scanAtCandidate {
 			return
 		}
 		if int(seen.Add(1)) <= n {
@@ -342,13 +341,57 @@ func TestScanSchedule_ConcurrentViewsAndLimits(t *testing.T) {
 		t.Fatal("views released but lease retained")
 	}
 	col.layoutMu.Unlock()
+	t.Run("max-views-bounds-concurrency", func(t *testing.T) {
+		var hook func(scanHookPoint, uint64)
+		col := schedCol(t, &hook, false, func(c *CollectionConfig) { c.MaxScanViews = 2 })
+		seed(t, col, 3)
+		release := holdScans(t, col, &hook, 2)
 
-	t.Run("limits", func(t *testing.T) {
-		if knownScanViewBug {
-			t.Skip("ScanViewMaxAge/MaxScanViews not implemented (hardening §3.5, SR-D5): " +
-				"expect scan N+1 beyond MaxScanViews to fail fast and a view older than ScanViewMaxAge to be aborted with its lease released")
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_, err := col.ScanStream(ctx, ScanOptions{Filter: allV}, func(ScanResult) error { return nil })
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("scan beyond MaxScanViews = %v, want context.DeadlineExceeded", err)
 		}
+		for _, err := range release() {
+			if err != nil {
+				t.Fatalf("held scan: %v", err)
+			}
+		}
+		hook = nil
+		if got := len(scanAll(t, col)); got != 3 {
+			t.Fatalf("scan after release returned %d rows, want 3", got)
+		}
+		if !col.layoutMu.TryLock() {
+			t.Fatal("lease retained")
+		}
+		col.layoutMu.Unlock()
 	})
+
+	for _, m := range schedModes {
+		t.Run("max-age-"+m.name, func(t *testing.T) {
+			var hook func(scanHookPoint, uint64)
+			col := schedCol(t, &hook, m.index, func(c *CollectionConfig) { c.ScanViewMaxAge = 20 * time.Millisecond })
+			seed(t, col, 3)
+			hook = func(p scanHookPoint, a uint64) {
+				if (p == scanAtSegment && a == 0) || (p == scanAtCandidate && a == 1) {
+					time.Sleep(60 * time.Millisecond) // age the view past its limit
+				}
+			}
+			_, err := col.ScanStream(context.Background(), ScanOptions{Filter: allV}, func(ScanResult) error { return nil })
+			if !errors.Is(err, ErrScanViewExpired) {
+				t.Fatalf("aged scan = %v, want ErrScanViewExpired", err)
+			}
+			if !col.layoutMu.TryLock() {
+				t.Fatal("expired view retained its lease")
+			}
+			col.layoutMu.Unlock()
+			hook = nil
+			if _, err := col.Count(allV); err != nil {
+				t.Fatalf("fresh scan after expiry: %v", err)
+			}
+		})
+	}
 }
 
 // V5.7: Count and Scan taken from views captured before concurrent writes both
@@ -366,7 +409,7 @@ func TestScanSchedule_CountEqualsScanUnderWrites(t *testing.T) {
 			gate := make(chan struct{})
 			hook = func(p scanHookPoint, a uint64) {
 				// First point of each scan: segment 0, or candidate id 1.
-				if !((p == scanAtSegment && a == 0) || (p == scanAtCandidate && a == 1)) {
+				if (p != scanAtSegment || a != 0) && (p != scanAtCandidate || a != 1) {
 					return
 				}
 				if arrived.Add(1) == 2 {
