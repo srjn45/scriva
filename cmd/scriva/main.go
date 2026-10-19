@@ -111,6 +111,10 @@ func serveCmd() *cobra.Command {
 						merged.RESTAddr = cfg.RESTAddr
 					case "socket":
 						merged.UnixSocket = cfg.UnixSocket
+					case "insecure-allow-remote":
+						merged.InsecureAllowRemote = cfg.InsecureAllowRemote
+					case "cors-allowed-origin":
+						merged.CORSAllowedOrigins = cfg.CORSAllowedOrigins
 					case "api-key":
 						merged.APIKey = cfg.APIKey
 					case "segment-size":
@@ -185,6 +189,8 @@ func serveCmd() *cobra.Command {
 	f.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	f.StringVar(&cfg.RESTAddr, "rest-addr", cfg.RESTAddr, "REST listen address")
 	f.StringVar(&cfg.UnixSocket, "socket", cfg.UnixSocket, "Unix socket path")
+	f.BoolVar(&cfg.InsecureAllowRemote, "insecure-allow-remote", cfg.InsecureAllowRemote, "Allow non-loopback listeners without an API key or TLS (INSECURE; logs a warning)")
+	f.StringSliceVar(&cfg.CORSAllowedOrigins, "cors-allowed-origin", cfg.CORSAllowedOrigins, "Origin allowed to call the REST gateway cross-origin (repeatable; default none)")
 	f.StringVar(&cfg.APIKey, "api-key", envkey.APIKey(), "API key (env: SCRIVA_API_KEY)")
 	f.Int64Var(&cfg.SegmentMaxSize, "segment-size", cfg.SegmentMaxSize, "Max segment file size in bytes")
 	f.DurationVar(&cfg.CompactInterval, "compact-interval", cfg.CompactInterval, "Compaction interval")
@@ -236,6 +242,14 @@ func serve(cfg server.Config, configFile string) error {
 	logger, err := server.NewLogger(os.Stderr, cfg.LogLevel, cfg.LogFormat)
 	if err != nil {
 		return err
+	}
+
+	listenWarnings, err := server.ValidateListeners(cfg)
+	if err != nil {
+		return err
+	}
+	for _, w := range listenWarnings {
+		logger.Warn(w)
 	}
 
 	// Set up Prometheus metrics.
@@ -360,7 +374,7 @@ func serve(cfg server.Config, configFile string) error {
 	if cfg.MetricsAddr != "" {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", metrics.Handler(reg))
-		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux}
+		metricsSrv := server.NewHTTPServer(cfg.MetricsAddr, metricsMux)
 		go func() {
 			logger.Info("metrics listening", "addr", cfg.MetricsAddr+"/metrics")
 			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -526,8 +540,7 @@ func serve(cfg server.Config, configFile string) error {
 	pb.RegisterScrivaServer(unixGrpcSrv, unixAPI)
 	healthSvc.Register(unixGrpcSrv)
 
-	_ = os.Remove(cfg.UnixSocket)
-	unixLn, err := net.Listen("unix", cfg.UnixSocket)
+	unixLn, err := server.ListenUnix(cfg.UnixSocket)
 	if err != nil {
 		logger.Warn("unix socket unavailable, skipping", "err", err)
 	} else {
@@ -548,19 +561,20 @@ func serve(cfg server.Config, configFile string) error {
 	// gateway over the local unix socket (always insecure, local-only) instead so
 	// REST keeps working; the client's x-api-key header is still forwarded.
 	var restHandler http.Handler
+	restOpts := server.RESTOptions{CORSAllowedOrigins: cfg.CORSAllowedOrigins, MaxBodyBytes: cfg.MaxRequestBodyBytes}
 	if mtlsRequireCert && unixLn != nil {
-		restHandler, err = server.NewRESTGatewayUnix(ctx, cfg.UnixSocket, ready)
+		restHandler, err = server.NewRESTGatewayUnix(ctx, cfg.UnixSocket, ready, restOpts)
 		logger.Info("REST gateway dialing gRPC over unix socket (mTLS require mode)", "socket", cfg.UnixSocket)
 	} else {
 		if mtlsRequireCert {
 			logger.Warn("mTLS require mode with no unix socket: REST gateway cannot present a client cert and will be unavailable")
 		}
-		restHandler, err = server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds, ready)
+		restHandler, err = server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds, ready, restOpts)
 	}
 	if err != nil {
 		return fmt.Errorf("rest gateway: %w", err)
 	}
-	restSrv := &http.Server{Addr: cfg.RESTAddr, Handler: restHandler}
+	restSrv := server.NewHTTPServer(cfg.RESTAddr, restHandler)
 	go func() {
 		logger.Info("REST listening", "addr", cfg.RESTAddr)
 		if err := restSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

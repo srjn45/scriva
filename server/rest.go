@@ -47,20 +47,18 @@ func newGatewayMux() *runtime.ServeMux {
 	)
 }
 
-// corsMiddleware adds permissive CORS headers so browser clients (e.g. the
-// web UI dev server at :5173) can call the REST gateway at :8080.
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-api-key, x-xtx-id")
-		w.Header().Set("Access-Control-Expose-Headers", writeoutcome.HeaderPostCommit)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// RESTOptions tunes the REST gateway's HTTP hardening.
+type RESTOptions struct {
+	CORSAllowedOrigins []string // exact origins allowed cross-origin ("*" = any); empty = none
+	MaxBodyBytes       int64    // request body cap; <= 0 uses DefaultMaxRequestBodyBytes
+}
+
+func wrapREST(h http.Handler, opts []RESTOptions) http.Handler {
+	var o RESTOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return limitBody(o.MaxBodyBytes, corsMiddleware(o.CORSAllowedOrigins, h))
 }
 
 // registerProbes wires GET /healthz (liveness) and GET /readyz (readiness) onto
@@ -83,7 +81,7 @@ func registerProbes(mux *runtime.ServeMux, ready func() error) error {
 // server listening on grpcAddr via the grpc-gateway. It also exposes the
 // process probes GET /healthz and GET /readyz (the latter gated by ready).
 // creds controls how the gateway dials gRPC (pass insecure.NewCredentials() when TLS is off).
-func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials, ready func() error) (http.Handler, error) {
+func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials, ready func() error, ropts ...RESTOptions) (http.Handler, error) {
 	mux := newGatewayMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
@@ -103,14 +101,14 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 		_ = conn.Close()
 	}()
 
-	return corsMiddleware(watchInterceptor(mux, conn)), nil
+	return wrapREST(watchInterceptor(mux, conn), ropts), nil
 }
 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
 // Unix domain socket. Unix sockets are always local, so insecure credentials
 // are used regardless of the server's TLS setting. ready gates GET /readyz (nil
 // = always ready).
-func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() error) (http.Handler, error) {
+func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() error, ropts ...RESTOptions) (http.Handler, error) {
 	mux := newGatewayMux()
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -139,5 +137,5 @@ func NewRESTGatewayUnix(ctx context.Context, socketPath string, ready func() err
 		_ = conn.Close()
 	}()
 
-	return corsMiddleware(watchInterceptor(mux, conn)), nil
+	return wrapREST(watchInterceptor(mux, conn), ropts), nil
 }

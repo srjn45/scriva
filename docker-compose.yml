@@ -10,8 +10,8 @@ services:
     environment:
       # API key for both gRPC and REST; clients must send the same value.
       SCRIVA_API_KEY: ${SCRIVA_API_KEY:-dev-key}
-    # The image entrypoint is ["scriva", "serve", "--data", "/data"], which
-    # already listens on :5433 (gRPC) and :8080 (REST) on all interfaces.
+    # The image entrypoint binds 0.0.0.0:5433 (gRPC) and 0.0.0.0:8080 (REST);
+    # the server refuses to start that way without an API key or TLS.
     volumes:
       - scriva-data:/data
 
