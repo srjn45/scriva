@@ -36,6 +36,7 @@ const DefaultReplicationBackoff = time.Second
 // call it makes to the leader (Snapshot, ReplicationStatus, Replicate). An empty
 // key yields the context unchanged (the leader has auth disabled).
 func ReplicationAuthContext(ctx context.Context, apiKey string) context.Context {
+	ctx = metadata.AppendToOutgoingContext(ctx, ReplicationProtocolsHeader, formatProtocols(followerProtocolVersions))
 	if apiKey == "" {
 		return ctx
 	}
@@ -53,15 +54,24 @@ func ReplicationAuthContext(ctx context.Context, apiKey string) context.Context 
 // are left untouched — a follower that already has data resumes from its
 // persisted applied-LSN instead of re-bootstrapping.
 func Bootstrap(ctx context.Context, client pb.ScrivaClient, dataDir string) (uint64, error) {
-	st, err := client.ReplicationStatus(ctx, &pb.ReplicationStatusRequest{})
+	var statusHdr metadata.MD
+	st, err := client.ReplicationStatus(ctx, &pb.ReplicationStatusRequest{}, grpc.Header(&statusHdr))
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: read leader lsn: %w", err)
+	}
+	if err := checkLeaderProtocols(statusHdr); err != nil {
+		return 0, fmt.Errorf("bootstrap: %w", err)
 	}
 	watermark := st.LeaderLsn
 
 	stream, err := client.Snapshot(ctx, &pb.SnapshotRequest{})
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: open snapshot: %w", err)
+	}
+	if hdr, herr := stream.Header(); herr != nil {
+		return 0, fmt.Errorf("bootstrap: open snapshot: %w", herr)
+	} else if err := checkLeaderProtocols(hdr); err != nil {
+		return 0, fmt.Errorf("bootstrap: %w", err)
 	}
 
 	pr, pw := io.Pipe()
@@ -321,6 +331,11 @@ func (f *Follower) Run(ctx context.Context) error {
 					"err", err, "applied_lsn", f.db.AppliedLSN())
 				return err
 			}
+			if isLeaderRejection(err) {
+				f.logger.Error("replication stopped: leader rejected credentials; not retrying",
+					"err", err, "applied_lsn", f.db.AppliedLSN())
+				return err
+			}
 			if status.Code(err) == codes.FailedPrecondition {
 				f.logger.Error("replication needs re-bootstrap; stopping follower",
 					"err", err, "applied_lsn", f.db.AppliedLSN())
@@ -346,13 +361,25 @@ func (f *Follower) stream(ctx context.Context) error {
 	// a fresh last-known-leader watermark even while this follower is catching up
 	// or the leader is otherwise idle. Best-effort: a failure just leaves the
 	// watermark at its previous value.
-	if st, serr := f.client.ReplicationStatus(authCtx, &pb.ReplicationStatusRequest{}); serr == nil {
+	var statusHdr metadata.MD
+	st, serr := f.client.ReplicationStatus(authCtx, &pb.ReplicationStatusRequest{}, grpc.Header(&statusHdr))
+	if serr == nil {
+		if err := checkLeaderProtocols(statusHdr); err != nil {
+			return err
+		}
 		f.db.NoteLeaderLSN(st.LeaderLsn)
+	} else if isLeaderRejection(serr) {
+		return serr
 	}
 	rs, err := f.client.Replicate(authCtx,
 		&pb.ReplicateRequest{FromLsn: from, FollowerId: f.id, ProtocolVersions: followerProtocolVersions},
 		grpc.MaxCallRecvMsgSize(replicationMaxRecvMsg))
 	if err != nil {
+		return err
+	}
+	if hdr, herr := rs.Header(); herr != nil {
+		return herr
+	} else if err := checkLeaderProtocols(hdr); err != nil {
 		return err
 	}
 	f.logger.Info("replication stream opened", "from_lsn", from, "follower_id", f.id)
@@ -409,4 +436,11 @@ func (f *Follower) stream(ctx context.Context) error {
 			f.logger.Warn("persist applied lsn failed", "err", err, "lsn", rec.Lsn)
 		}
 	}
+}
+
+// isLeaderRejection reports a leader refusal of this follower's credentials. Retrying
+// with the same credentials cannot succeed, so the follower stops (fail closed).
+func isLeaderRejection(err error) bool {
+	c := status.Code(err)
+	return c == codes.Unauthenticated || c == codes.PermissionDenied
 }

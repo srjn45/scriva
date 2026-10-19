@@ -15,16 +15,27 @@ data_dir: ./data
 # --- Network ----------------------------------------------------------------
 
 # gRPC (TCP) listen address.
-grpc_addr: ":5433"
+# Defaults to loopback. Binding a non-loopback address (e.g. ":5433") requires
+# an API key or TLS, or insecure_allow_remote: true.
+grpc_addr: "127.0.0.1:5433"
 
 # REST gateway listen address.
-rest_addr: ":8080"
+rest_addr: "127.0.0.1:8080"
+
+# Origins allowed to call the REST gateway from a browser (default: none).
+# cors_allowed_origins: ["http://localhost:5173"]
+
+# Cap on REST request body size in bytes (default 33554432).
+# max_request_body_bytes: 33554432
+
+# INSECURE override: allow non-loopback listeners with no API key and no TLS.
+# insecure_allow_remote: false
 
 # Unix socket path; the local CLI prefers this over TCP when available.
 unix_socket: /tmp/scriva.sock
 
 # Prometheus metrics listen address. Leave empty to disable metrics.
-metrics_addr: ":9090"
+metrics_addr: "127.0.0.1:9090"
 
 # --- TLS (optional) ---------------------------------------------------------
 # Both tls_cert and tls_key must be set to enable TLS on the gRPC listener.

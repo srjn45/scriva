@@ -13,4 +13,6 @@ WORKDIR /data
 
 EXPOSE 5433 8080
 
-ENTRYPOINT ["scriva", "serve", "--data", "/data"]
+# Inside a container the listeners must bind all interfaces; the server refuses
+# to start this way unless an API key or TLS is configured (SCRIVA_API_KEY).
+ENTRYPOINT ["scriva", "serve", "--data", "/data", "--grpc-addr", "0.0.0.0:5433", "--rest-addr", "0.0.0.0:8080"]

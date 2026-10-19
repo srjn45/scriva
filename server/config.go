@@ -34,10 +34,19 @@ type Config struct {
 	DataDir string `yaml:"data_dir"` // default: ./data
 
 	// Network
-	GRPCAddr    string `yaml:"grpc_addr"`    // default: :5433
-	RESTAddr    string `yaml:"rest_addr"`    // default: :8080
+	GRPCAddr    string `yaml:"grpc_addr"`    // default: 127.0.0.1:5433
+	RESTAddr    string `yaml:"rest_addr"`    // default: 127.0.0.1:8080
 	UnixSocket  string `yaml:"unix_socket"`  // default: /tmp/scriva.sock
-	MetricsAddr string `yaml:"metrics_addr"` // default: :9090
+	MetricsAddr string `yaml:"metrics_addr"` // default: 127.0.0.1:9090
+
+	// InsecureAllowRemote is an explicit, audited override that permits
+	// non-loopback listeners with no API key and no TLS (a warning is logged).
+	InsecureAllowRemote bool `yaml:"insecure_allow_remote"`
+	// CORSAllowedOrigins lists origins allowed to call the REST gateway from a
+	// browser. Empty (default) emits no CORS headers; "*" opts in to any origin.
+	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
+	// MaxRequestBodyBytes caps REST request bodies (0 = default 32 MiB).
+	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
 
 	// TLS (optional — both cert and key must be set to enable)
 	TLSCert string `yaml:"tls_cert"` // path to PEM certificate file
@@ -90,6 +99,17 @@ type Config struct {
 	// at this gRPC address and applies its committed entries. Empty (the default)
 	// runs as a leader.
 	ReplicateFrom string `yaml:"replicate_from"`
+
+	// Follower→leader transport security. A non-loopback leader requires TLS
+	// (ReplicateTLS/ReplicateCA/…) and credentials (API key or client cert),
+	// otherwise the follower refuses to start unless ReplicateInsecure is set.
+	ReplicateTLS        bool   `yaml:"replicate_tls"`         // dial the leader over TLS (system roots unless ReplicateCA is set)
+	ReplicateCA         string `yaml:"replicate_ca"`          // PEM CA bundle trusted for the leader's certificate (implies TLS)
+	ReplicateCert       string `yaml:"replicate_cert"`        // client certificate presented to the leader (mTLS)
+	ReplicateKey        string `yaml:"replicate_key"`         // client private key for ReplicateCert
+	ReplicateServerName string `yaml:"replicate_server_name"` // expected leader certificate name (default: host of ReplicateFrom)
+	ReplicateAPIKey     string `yaml:"replicate_api_key"`     // dedicated replication API key (default: APIKey)
+	ReplicateInsecure   bool   `yaml:"replicate_insecure"`    // explicit override: allow a remote leader without TLS/credentials (INSECURE)
 	// FollowerID is an optional label a follower reports to the leader, surfaced in
 	// ReplicationStatus. Defaults to the hostname when empty.
 	FollowerID string `yaml:"follower_id"`
@@ -135,10 +155,10 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		DataDir:         "./data",
-		GRPCAddr:        ":5433",
-		RESTAddr:        ":8080",
+		GRPCAddr:        "127.0.0.1:5433",
+		RESTAddr:        "127.0.0.1:8080",
 		UnixSocket:      "/tmp/scriva.sock",
-		MetricsAddr:     ":9090",
+		MetricsAddr:     "127.0.0.1:9090",
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: 5 * time.Minute,
 		CompactDirtyPct: 0.30,
@@ -227,22 +247,25 @@ func (c Config) engineQuotas() map[string]engine.Quota {
 // fileConfig mirrors Config but uses a string for CompactInterval so yaml.v3
 // can unmarshal human-readable durations like "5m" or "1h30m".
 type fileConfig struct {
-	DataDir         string         `yaml:"data_dir"`
-	GRPCAddr        string         `yaml:"grpc_addr"`
-	RESTAddr        string         `yaml:"rest_addr"`
-	UnixSocket      string         `yaml:"unix_socket"`
-	MetricsAddr     string         `yaml:"metrics_addr"`
-	TLSCert         string         `yaml:"tls_cert"`
-	TLSKey          string         `yaml:"tls_key"`
-	TLSClientCA     string         `yaml:"tls_client_ca"`
-	TLSClientAuth   string         `yaml:"tls_client_auth"`
-	APIKey          string         `yaml:"api_key"`
-	Keys            []APIKeyConfig `yaml:"keys"`
-	SegmentMaxSize  int64          `yaml:"segment_max_size"`
-	CompactInterval string         `yaml:"compact_interval"`
-	CompactDirtyPct float64        `yaml:"compact_dirty_pct"`
-	SyncMode        string         `yaml:"sync_mode"`
-	SyncInterval    string         `yaml:"sync_interval"`
+	DataDir             string         `yaml:"data_dir"`
+	GRPCAddr            string         `yaml:"grpc_addr"`
+	RESTAddr            string         `yaml:"rest_addr"`
+	UnixSocket          string         `yaml:"unix_socket"`
+	MetricsAddr         string         `yaml:"metrics_addr"`
+	InsecureAllowRemote bool           `yaml:"insecure_allow_remote"`
+	CORSAllowedOrigins  []string       `yaml:"cors_allowed_origins"`
+	MaxRequestBodyBytes int64          `yaml:"max_request_body_bytes"`
+	TLSCert             string         `yaml:"tls_cert"`
+	TLSKey              string         `yaml:"tls_key"`
+	TLSClientCA         string         `yaml:"tls_client_ca"`
+	TLSClientAuth       string         `yaml:"tls_client_auth"`
+	APIKey              string         `yaml:"api_key"`
+	Keys                []APIKeyConfig `yaml:"keys"`
+	SegmentMaxSize      int64          `yaml:"segment_max_size"`
+	CompactInterval     string         `yaml:"compact_interval"`
+	CompactDirtyPct     float64        `yaml:"compact_dirty_pct"`
+	SyncMode            string         `yaml:"sync_mode"`
+	SyncInterval        string         `yaml:"sync_interval"`
 
 	IndexPersistInterval string `yaml:"index_persist_interval"`
 	IntegrityPolicy      string `yaml:"integrity_policy"`
@@ -251,6 +274,13 @@ type fileConfig struct {
 	DefaultTTL           string `yaml:"default_ttl"`
 
 	ReplicateFrom       string `yaml:"replicate_from"`
+	ReplicateTLS        bool   `yaml:"replicate_tls"`
+	ReplicateCA         string `yaml:"replicate_ca"`
+	ReplicateCert       string `yaml:"replicate_cert"`
+	ReplicateKey        string `yaml:"replicate_key"`
+	ReplicateServerName string `yaml:"replicate_server_name"`
+	ReplicateAPIKey     string `yaml:"replicate_api_key"`
+	ReplicateInsecure   bool   `yaml:"replicate_insecure"`
 	FollowerID          string `yaml:"follower_id"`
 	ReplicationRingSize int    `yaml:"replication_ring_size"`
 	PromoteMaxLag       uint64 `yaml:"promote_max_lag"`
@@ -305,6 +335,13 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:           defaults.DefaultTTL.String(),
 
 		ReplicateFrom:       defaults.ReplicateFrom,
+		ReplicateTLS:        defaults.ReplicateTLS,
+		ReplicateCA:         defaults.ReplicateCA,
+		ReplicateCert:       defaults.ReplicateCert,
+		ReplicateKey:        defaults.ReplicateKey,
+		ReplicateServerName: defaults.ReplicateServerName,
+		ReplicateAPIKey:     defaults.ReplicateAPIKey,
+		ReplicateInsecure:   defaults.ReplicateInsecure,
 		FollowerID:          defaults.FollowerID,
 		ReplicationRingSize: defaults.ReplicationRingSize,
 		PromoteMaxLag:       defaults.PromoteMaxLag,
@@ -356,22 +393,25 @@ func LoadConfigFile(path string) (Config, error) {
 	}
 
 	return Config{
-		DataDir:         fc.DataDir,
-		GRPCAddr:        fc.GRPCAddr,
-		RESTAddr:        fc.RESTAddr,
-		UnixSocket:      fc.UnixSocket,
-		MetricsAddr:     fc.MetricsAddr,
-		TLSCert:         fc.TLSCert,
-		TLSKey:          fc.TLSKey,
-		TLSClientCA:     fc.TLSClientCA,
-		TLSClientAuth:   fc.TLSClientAuth,
-		APIKey:          fc.APIKey,
-		Keys:            fc.Keys,
-		SegmentMaxSize:  fc.SegmentMaxSize,
-		CompactInterval: d,
-		CompactDirtyPct: fc.CompactDirtyPct,
-		SyncMode:        fc.SyncMode,
-		SyncInterval:    syncInterval,
+		DataDir:             fc.DataDir,
+		GRPCAddr:            fc.GRPCAddr,
+		RESTAddr:            fc.RESTAddr,
+		UnixSocket:          fc.UnixSocket,
+		MetricsAddr:         fc.MetricsAddr,
+		InsecureAllowRemote: fc.InsecureAllowRemote,
+		CORSAllowedOrigins:  fc.CORSAllowedOrigins,
+		MaxRequestBodyBytes: fc.MaxRequestBodyBytes,
+		TLSCert:             fc.TLSCert,
+		TLSKey:              fc.TLSKey,
+		TLSClientCA:         fc.TLSClientCA,
+		TLSClientAuth:       fc.TLSClientAuth,
+		APIKey:              fc.APIKey,
+		Keys:                fc.Keys,
+		SegmentMaxSize:      fc.SegmentMaxSize,
+		CompactInterval:     d,
+		CompactDirtyPct:     fc.CompactDirtyPct,
+		SyncMode:            fc.SyncMode,
+		SyncInterval:        syncInterval,
 
 		IndexPersistInterval: indexPersistInterval,
 		IntegrityPolicy:      fc.IntegrityPolicy,
@@ -380,6 +420,13 @@ func LoadConfigFile(path string) (Config, error) {
 		DefaultTTL:           defaultTTL,
 
 		ReplicateFrom:       fc.ReplicateFrom,
+		ReplicateTLS:        fc.ReplicateTLS,
+		ReplicateCA:         fc.ReplicateCA,
+		ReplicateCert:       fc.ReplicateCert,
+		ReplicateKey:        fc.ReplicateKey,
+		ReplicateServerName: fc.ReplicateServerName,
+		ReplicateAPIKey:     fc.ReplicateAPIKey,
+		ReplicateInsecure:   fc.ReplicateInsecure,
 		FollowerID:          fc.FollowerID,
 		ReplicationRingSize: fc.ReplicationRingSize,
 		PromoteMaxLag:       fc.PromoteMaxLag,

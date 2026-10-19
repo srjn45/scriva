@@ -6,6 +6,26 @@ Operator runbooks for running ScrivaDB in production. Start with
 
 ---
 
+## Upgrading to secure server defaults
+
+Secure defaults (hardening §3.8) change what a default-config server exposes. Work
+through this list when upgrading a deployment that predates them.
+
+| Area | New behaviour | What to do |
+|---|---|---|
+| TCP binds | gRPC `127.0.0.1:5433`, REST `127.0.0.1:8080`, metrics `127.0.0.1:9090` | Explicit `grpc_addr`/`rest_addr`/`metrics_addr` are kept unchanged. If you relied on the old all-interface default, clients now get *connection refused* — set the address explicitly. |
+| Exposure rule | A non-loopback listener (`:port`, `0.0.0.0`, `[::]`, external IP/host) with no API key and no TLS is **refused at startup**; the error names each listener | Configure `--api-key`/`keys:` or `--tls-cert`/`--tls-key` (recommended), or bind loopback. Last resort: `--insecure-allow-remote` (`insecure_allow_remote: true`), which logs an `INSECURE` warning on every start. |
+| Unix socket | Created `0600`; a pre-existing path is replaced only if it is a socket | Co-located clients under another user must be given access deliberately (group/ACL on the socket's directory) or use TCP. Anyone who can open the socket is authenticated as local when keys are disabled. |
+| Metrics | Loopback by default | To scrape remotely bind `metrics_addr` to a routable address and satisfy the exposure rule; or scrape via a local agent/sidecar. |
+| CORS | No CORS headers unless the origin is in `cors_allowed_origins` (`--cors-allowed-origin`, repeatable) | List each browser origin; `"*"` is an explicit opt-in. |
+| HTTP limits | REST/metrics: read-header 10s, read 60s, write 60s (lifted for watch streams), idle 120s; REST body cap `max_request_body_bytes` (default 32 MiB) | Raise `max_request_body_bytes` for large `LoadJSONL`/bulk bodies; slow clients are disconnected. |
+| Replication | A follower of a **non-loopback** leader needs TLS (`--replicate-tls`/`--replicate-ca`, optional mTLS via `--replicate-cert/--replicate-key`) and credentials (`--replicate-api-key` or `--api-key`), else it refuses to start. A data-dir marker prevents a later silent TLS→plaintext downgrade. | Roll out TLS on the leader first, then restart followers with `--replicate-ca`. Plaintext over an untrusted network only with `--replicate-insecure` (logs `INSECURE`; cannot be combined with TLS flags). |
+
+Rolling upgrade: upgrade followers before leader only if both sides keep the same
+transport; replication protocol versions are negotiated (no overlap fails the
+follower with `REPLICATION_PROTOCOL_UNSUPPORTED` rather than corrupting state).
+Config files from earlier releases load unchanged (`TestLegacyConfigMigration`).
+
 ## Manual failover (promoting a follower)
 
 ScrivaDB replicates a **leader** to one or more read-only **followers** (see

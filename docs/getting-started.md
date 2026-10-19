@@ -37,8 +37,8 @@ make build
 scriva serve \
   --data ./data \
   --api-key my-secret-key \
-  --grpc-addr :5433 \
-  --rest-addr :8080
+  --grpc-addr 0.0.0.0:5433 \
+  --rest-addr 0.0.0.0:8080
 ```
 
 Environment variable alternative:
@@ -53,11 +53,19 @@ All flags and their defaults:
 | Flag | Default | Description |
 |---|---|---|
 | `--data` | `./data` | Data directory |
-| `--grpc-addr` | `:5433` | TCP gRPC listen address |
-| `--rest-addr` | `:8080` | REST gateway listen address |
-| `--socket` | `/tmp/scriva.sock` | Unix domain socket path |
+| `--grpc-addr` | `127.0.0.1:5433` | TCP gRPC listen address |
+| `--rest-addr` | `127.0.0.1:8080` | REST gateway listen address |
+| `--socket` | `/tmp/scriva.sock` | Unix domain socket path (created `0600`) |
 | `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth) |
-| `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled) |
+| `--metrics-addr` | `127.0.0.1:9090` | Prometheus metrics address (empty = disabled) |
+| `--insecure-allow-remote` | `false` | Allow non-loopback listeners with no API key and no TLS (INSECURE; logs a warning) |
+| `--cors-allowed-origin` | none | Origin allowed to call REST cross-origin (repeatable; `*` = any) |
+
+> **Secure by default.** All TCP listeners bind `127.0.0.1`. Binding a non-loopback
+> address requires an API key or TLS, otherwise the server refuses to start; REST
+> bodies are capped (`max_request_body_bytes`, 32 MiB), HTTP servers have timeouts,
+> and CORS is off unless origins are listed. Upgrading an existing deployment? See
+> [Upgrading to secure server defaults](operations.md#upgrading-to-secure-server-defaults).
 | `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key` | *(none)* | Path to TLS private key PEM file |
 | `--tls-client-ca` | *(none)* | Path to PEM CA bundle that signs trusted client certs (enables mTLS) |
@@ -92,11 +100,11 @@ You can put all server options in a YAML file and load it with `--config`:
 ```yaml
 # scriva.yaml
 data_dir: ./data
-grpc_addr: :5433
-rest_addr: :8080
+grpc_addr: 127.0.0.1:5433
+rest_addr: 127.0.0.1:8080
 unix_socket: /tmp/scriva.sock
 api_key: my-secret-key
-metrics_addr: :9090
+metrics_addr: 127.0.0.1:9090
 segment_max_size: 4194304   # 4 MiB
 compact_interval: 5m
 compact_dirty_pct: 0.30
@@ -1691,9 +1699,27 @@ Flags (all optional):
 | Flag | Config key | Meaning |
 |---|---|---|
 | `--replicate-from <addr>` | `replicate_from` | Run as a follower tailing the leader's gRPC address. Empty = leader. |
+| `--replicate-tls` | `replicate_tls` | Dial the leader over TLS (system roots unless `--replicate-ca` is set). |
+| `--replicate-ca <pem>` | `replicate_ca` | CA bundle trusted for the leader's certificate (implies TLS). |
+| `--replicate-cert <pem>` / `--replicate-key <pem>` | `replicate_cert` / `replicate_key` | Client certificate for mTLS to the leader (set together). |
+| `--replicate-server-name <name>` | `replicate_server_name` | Expected leader certificate name (default: host of `--replicate-from`). |
+| `--replicate-api-key <key>` | `replicate_api_key` | Dedicated replication API key (default: `--api-key`). |
+| `--replicate-insecure` | `replicate_insecure` | Explicit override to replicate from a non-loopback leader over plaintext / without credentials (logs an INSECURE warning). Cannot be combined with TLS settings. |
 | `--replicate-id <id>` | `follower_id` | Label reported to the leader in `ReplicationStatus` (default: hostname). |
 | `--replication-ring-size <n>` | `replication_ring_size` | Leader's in-memory buffer of recent entries for follower resume (default 8192; 0 disables replication). |
 | `--promote-max-lag <n>` | `promote_max_lag` | Max follower lag (in LSNs) still eligible for `Promote` without `--force` (default 0 = must be fully caught up). |
+
+**Secure replication transport.** A follower refuses to start when `--replicate-from`
+is a non-loopback address unless it uses TLS (`--replicate-tls` / `--replicate-ca`)
+*and* presents credentials (API key or `--replicate-cert`/`--replicate-key`), or you
+pass `--replicate-insecure`. Once a follower has replicated over TLS, its data
+directory records it (`.replication-transport`); restarting it in plaintext fails
+with a downgrade error until you delete that file. Follower and leader exchange the
+supported replication protocol versions (`x-scriva-replication-protocols` header,
+plus `ReplicateRequest.protocol_versions`); if they do not overlap, bootstrap and
+the stream fail with `FAILED_PRECONDITION` / `REPLICATION_PROTOCOL_UNSUPPORTED`
+instead of downgrading. A leader that rejects the follower's credentials
+(`Unauthenticated`/`PermissionDenied`) stops the follower rather than retrying.
 
 Notes and current scope (R1–R3):
 

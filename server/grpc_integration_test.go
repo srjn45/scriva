@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"google.golang.org/grpc"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -2673,14 +2673,23 @@ func TestIntegration_WriteOutcome_FencedStatusGolden(t *testing.T) {
 			_, err := c.InsertMany(ctx(), &pb.InsertManyRequest{Collection: "c", Records: []*structpb.Struct{data, data}})
 			return err
 		}},
-		{"Update", func() error { _, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "c", Id: id, Data: data}); return err }},
+		{"Update", func() error {
+			_, err := c.Update(ctx(), &pb.UpdateRequest{Collection: "c", Id: id, Data: data})
+			return err
+		}},
 		{"Delete", func() error { _, err := c.Delete(ctx(), &pb.DeleteRequest{Collection: "c", Id: id}); return err }},
-		{"Upsert", func() error { _, err := c.Upsert(ctx(), &pb.UpsertRequest{Collection: "c", Key: "k1", Data: data}); return err }},
+		{"Upsert", func() error {
+			_, err := c.Upsert(ctx(), &pb.UpsertRequest{Collection: "c", Key: "k1", Data: data})
+			return err
+		}},
 		{"UpdateByKey", func() error {
 			_, err := c.UpdateByKey(ctx(), &pb.UpdateByKeyRequest{Collection: "c", Key: "k1", Data: data})
 			return err
 		}},
-		{"DeleteByKey", func() error { _, err := c.DeleteByKey(ctx(), &pb.DeleteByKeyRequest{Collection: "c", Key: "k1"}); return err }},
+		{"DeleteByKey", func() error {
+			_, err := c.DeleteByKey(ctx(), &pb.DeleteByKeyRequest{Collection: "c", Key: "k1"})
+			return err
+		}},
 		{"UpdateIfRev", func() error {
 			_, err := c.UpdateIfRev(ctx(), &pb.UpdateIfRevRequest{Collection: "c", Key: "k1", ExpectedRev: 1, Data: data})
 			return err
@@ -2689,7 +2698,10 @@ func TestIntegration_WriteOutcome_FencedStatusGolden(t *testing.T) {
 		{"CommitXTx", func() error { _, err := c.CommitXTx(ctx(), &pb.CommitXTxRequest{XtxId: xtx.XtxId}); return err }},
 		{"Compact", func() error { _, err := c.Compact(ctx(), &pb.CompactRequest{Collection: "c"}); return err }},
 		{"FindById", func() error { _, err := c.FindById(ctx(), &pb.FindByIdRequest{Collection: "c", Id: id}); return err }},
-		{"FindByKey", func() error { _, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "c", Key: "k1"}); return err }},
+		{"FindByKey", func() error {
+			_, err := c.FindByKey(ctx(), &pb.FindByKeyRequest{Collection: "c", Key: "k1"})
+			return err
+		}},
 		{"Find", func() error {
 			return stream(func() (interface{ RecvMsg(any) error }, error) {
 				return c.Find(ctx(), &pb.FindRequest{Collection: "c"})

@@ -36,6 +36,9 @@ func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		collection := parts[1]
 
+		// Watch is long-lived: lift the server-wide write deadline.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 		// C1: Decode the JSON request body to extract an optional filter.
 		req := &pb.WatchRequest{Collection: collection}
 		if r.Body != nil {

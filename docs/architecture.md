@@ -1,5 +1,23 @@
 # ScrivaDB — Architecture
 
+## Listener security
+
+All TCP listeners (gRPC, REST, metrics) default to `127.0.0.1`. At startup
+`server.ValidateListeners` refuses to start if any listener is bound to a
+non-loopback address (wildcard `:port`, `0.0.0.0`, `[::]`, or an external IP)
+unless an API key (`--api-key` / `keys:`) or TLS (`--tls-cert`/`--tls-key`) is
+configured. `--insecure-allow-remote` / `insecure_allow_remote: true` is an
+explicit override that logs an `INSECURE` warning. **Migration:** deployments
+that relied on the old `:5433`/`:8080`/`:9090` wildcard defaults must set an API
+key or TLS (recommended), bind explicitly, or use the override.
+
+The unix socket is created `0600` (umask-tightened during bind) and a stale
+socket is replaced only if the path is a socket. REST and metrics use
+`http.Server` with read-header/read/write/idle timeouts (watch streams lift the
+write deadline), REST request bodies are capped (`max_request_body_bytes`,
+default 32 MiB), and CORS headers are emitted only for origins listed in
+`cors_allowed_origins` (default none; `"*"` is an explicit opt-in).
+
 ## Overview
 
 ScrivaDB is a lightweight, append-only, file-based document database written in Go. It exposes a gRPC API (with a REST gateway) and stores data as human-readable NDJSON files on disk.
@@ -1546,6 +1564,7 @@ admin ACLs land in S3.
 ```
 
 - **TCP gRPC listener** — optional TLS via `--tls-cert` / `--tls-key`. `server.ServerTLSConfig` builds the `*tls.Config`: when both flags are set, `credentials.NewTLS()` is used; otherwise `insecure.NewCredentials()`. When `--tls-client-ca` and a non-`off` `--tls-client-auth` are also set, it adds the client-CA pool and the `tls.ClientAuthType` (**mutual TLS**, S1) — see [Mutual TLS](#mutual-tls-s1).
+- **Replication transport** — a follower dials its leader with `server.ReplicationTransport`: TLS/mTLS from `--replicate-*`, fail-closed validation for non-loopback leaders, a `.replication-transport` data-dir marker that blocks a silent TLS→plaintext downgrade, and protocol-version negotiation through the `x-scriva-replication-protocols` header on `Replicate`/`Snapshot`/`ReplicationStatus` (no overlap → `FAILED_PRECONDITION`, `REPLICATION_PROTOCOL_UNSUPPORTED`; rejected credentials stop the follower instead of retrying).
 - **REST gateway** — dials the TCP gRPC server on the internal loopback. Uses `InsecureSkipVerify` for this internal hop (the cert may be self-signed). Under `--tls-client-auth require` the TCP server would reject this certless loopback dial, so the gateway is routed over the Unix socket (`NewRESTGatewayUnix`) instead.
 - **Default exposure (hardening H2/H12, confirmed code facts).** The default binds are all-interface (`:5433`, `:8080`, `:9090`), an empty API key disables auth, the metrics listener is unauthenticated, REST CORS is `*`, the HTTP servers set no timeouts, replication followers dial without TLS, and the default socket is `/tmp/scriva.sock`. Whether this is a vulnerability depends on deployment topology. The ratified staged policy (warn + opt-in, then loopback/secure defaults, then enforced TLS+auth for exposed listeners) is in [hardening §3.8](design-database-integrity-hardening.md#38-secure-deployment-and-archive-handling); the defaults described in this section remain current behavior until it lands.
 - **Unix socket** — always uses `insecure.NewCredentials()`. The CLI auto-detects this socket and prefers it for zero-overhead local connections.
