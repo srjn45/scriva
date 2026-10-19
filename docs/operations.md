@@ -177,7 +177,13 @@ Single-entry traffic keeps flowing to old followers until the first transaction.
 | `FAILED_PRECONDITION` "re-bootstrap" | fell out of the leader's ring, or the leader restarted/crashed (its ring is empty and a recovered transaction is never republished) | wipe the follower's data dir and restart with `--replicate-from`; it snapshot-bootstraps |
 | `ErrEnvelopeApplyFailed` wrapping `ErrReplicationDivergence` | the follower's history and the leader's disagree for an applied LSN/txid | re-bootstrap the follower; investigate how it diverged (e.g. it was promoted, or pointed at a different leader) |
 | `ErrEnvelopeDigest` / `ErrEnvelopeInvalid` / unknown record version | corrupted or newer-protocol record | nothing was applied; check versions and the network path, then restart |
+| `ErrReplicationNeedsBootstrap` ("replication needs re-bootstrap") | a streamed record carries encrypted data (epoch > 0 / envelope) but the follower's collection has no encryption block, e.g. the leader created or encrypted the collection while the follower was streaming. Nothing was written and the applied LSN did not advance (an XTx halts as a whole) | re-bootstrap from a snapshot (carries `meta.json` and `encryption.sentinel`), starting the follower with the encryption key |
 | `ErrReplicationPromoted` | the node was promoted and refuses replicated writes | expected after failover; stop the old apply loop |
+
+> **Upgrade note:** a follower that stream-created or stream-encrypted a
+> collection under an older version holds epoch > 0 entries without an
+> encryption block and now refuses to open (`ErrEncryptionMetaIntegrity`).
+> Re-bootstrap such followers from a snapshot before or at upgrade.
 
 ### Failover with transactions
 
@@ -392,6 +398,36 @@ root will fail to reopen (`ErrXTxRecoveryRequired` / `OpenIntegrityError`).
    normally; the refusal is per collection.
 
 Verify the root any time with `scriva verify`.
+
+## Runbook: `ErrEncryptionMetaIntegrity`
+
+**Symptom.** `scriva serve` (or an embedded `Open`) refuses to start with
+`collection "<name>" holds encrypted data (evidence: index-epoch|sentinel|segment-marker) but meta.json is missing|unparseable|lacks the encryption block|epoch behind stored entries`
+(gRPC `DATA_LOSS` where it surfaces on a call). It is *not* a wrong-key error and no
+integrity-policy setting (not even `report`) bypasses it: the collection holds ciphertext but the
+file that says how to read it is gone or stale, and opening it would serve
+envelopes as data and accept plaintext writes.
+
+**Nothing was modified.** Open never rewrites `meta.json`; if it was unparseable a
+copy sits beside it as `meta.json.corrupt-<unixnano>`.
+
+1. Stop the server. Do not delete `encryption.sentinel`, and do not try to reset the metadata
+   with `Repair`'s `AllowMetaReset` (it refuses encrypted collections).
+2. Restore `meta.json` for that collection from a backup or snapshot (it holds the
+   non-secret `encryption` block, the id counter and default TTL; the key itself is
+   backed up separately). Check `meta.json.corrupt-*` first — a partially damaged
+   file may be hand-repairable JSON.
+3. If the restored file is older than the data, an `epoch behind stored entries`
+   error means the policy epoch moved on after the backup (e.g. a key rotation);
+   restore a newer copy, or restore the whole collection directory from one
+   consistent backup.
+4. Start the server with the correct key. A lower id counter is reconciled from the
+   segments on open, so ids are not reused.
+5. `scriva verify` reports `encryption-meta-lost` for this state before you start.
+
+If the collection is verifiably **not** encrypted (a stray sentinel from manual
+copying), move `encryption.sentinel` away and reopen — only do this when you are
+certain no ciphertext was ever written.
 
 ## Segment rotation errors and fenced collections
 

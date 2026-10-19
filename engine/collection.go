@@ -253,6 +253,10 @@ type CollectionConfig struct {
 	// the scan holds its shared layout lease.
 	scanHook func(point scanHookPoint, arg uint64)
 
+	// test hook invoked inside writeMeta, under metaMu, between the snapshot and
+	// its write; src is "ttl" (setDefaultTTL), "enc" (applyEncryptionChange) or "meta".
+	postMetaSnapshotHook func(src string)
+
 	// test hook invoked by the cross-collection commit path at each
 	// xtxHookPoint with the idempotency key and, once allocated, the txid.
 	xtxHook func(point xtxHookPoint, key, txid string)
@@ -313,7 +317,12 @@ type Collection struct {
 	diskDir   string
 	dirHandle *os.File // pins dir on Linux; see openContainedDir
 	cfg       CollectionConfig
+	// createdAt is written only by load() before the collection is shared, then
+	// immutable, so metaSnapshot reads it without a lock.
 	createdAt time.Time
+	// metaMu serializes meta.json snapshot+write (see writeMeta). It is a leaf in
+	// the lock order encAdminMu → c.mu → metaMu.
+	metaMu    sync.Mutex
 	mu        sync.RWMutex
 	// layoutMu excludes a full segment scan from a compaction swap. Unlike mu it
 	// is not held by ordinary writers, so a slow client consuming ScanStream
@@ -342,7 +351,8 @@ type Collection struct {
 	// (in seconds) set at CreateCollection time and persisted in meta.json. It
 	// overrides the server-wide default for this collection. Zero means the
 	// collection inherits the live global default (cfg.DefaultTTL as passed).
-	explicitDefaultTTLSecs int64
+	// Atomic so metaSnapshot and resolveInsertExpiry read it lock-free.
+	explicitDefaultTTLSecs atomic.Int64
 
 	// Watch subscribers.
 	watchMu      sync.Mutex
@@ -895,8 +905,13 @@ func (c *Collection) load() error {
 	// highest id present in the active segment, which always holds the most
 	// recently assigned id (ids are monotonic and appended in order). This
 	// scan is cheap: the active segment is bounded by SegmentMaxSize.
-	metaPath := filepath.Join(c.dir, metaFilename)
-	if meta, err := loadMeta(metaPath); err == nil {
+	// Classify meta.json against the evidence of encryption BEFORE anything may
+	// regenerate it: a lost block must never read as "plaintext" (§3.4).
+	meta, metaOK, err := c.checkEncryptionMeta(all)
+	if err != nil {
+		return err
+	}
+	if metaOK {
 		c.idSeq.Store(meta.IDCounter)
 		c.createdAt = meta.CreatedAt
 		c.applyPersistedDefaultTTL(meta.DefaultTTLSeconds)
@@ -906,7 +921,8 @@ func (c *Collection) load() error {
 		return nil
 	}
 
-	// Slow path: meta.json is missing or corrupt — scan all entries for max id.
+	// Slow path: meta.json is missing or corrupt and the collection shows no
+	// evidence of encryption — scan all entries for max id and regenerate it.
 	var maxID uint64
 
 	c.index.mu.RLock()
@@ -929,7 +945,7 @@ func (c *Collection) load() error {
 	c.createdAt = time.Now().UTC()
 
 	// Write meta.json so the next startup can skip this scan.
-	_ = persistMeta(metaPath, c.metaSnapshot())
+	_ = c.writeMeta(nil)
 
 	return nil
 }
@@ -1641,8 +1657,7 @@ func (c *Collection) rotateSegment() error {
 	}
 
 	// Persist the id counter now that a segment boundary has been crossed.
-	metaErr := persistMeta(filepath.Join(c.dir, metaFilename),
-		c.metaSnapshot())
+	metaErr := c.writeMeta(nil)
 
 	// Signal the compactor, and ask the persist loop to record the sealed
 	// segment in the on-disk index off the write path.
@@ -1902,18 +1917,22 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		c.emit(ev)
 	}
 
+	// The commit is durable; a failed counter persist is reported as a
+	// *PostCommitError (recovery re-derives the counter from the segment tail).
+	var postErr error
 	if maxInsertID > 0 {
-		_ = persistMeta(filepath.Join(c.dir, metaFilename),
-			c.metaSnapshot())
-	}
-
-	if needRotate {
-		if err := c.rotateSegment(); err != nil {
-			return &PostCommitError{Op: "commitTx", Stage: "rotate", Err: err}
+		if err := c.writeMeta(nil); err != nil {
+			postErr = &PostCommitError{Op: "commitTx", Stage: "meta", Err: err}
 		}
 	}
 
-	return nil
+	if needRotate {
+		if err := c.rotateSegment(); err != nil && postErr == nil {
+			postErr = &PostCommitError{Op: "commitTx", Stage: "rotate", Err: err}
+		}
+	}
+
+	return postErr
 }
 
 // Name returns the collection name.
@@ -1958,7 +1977,7 @@ func (c *Collection) Close() error {
 		if err := c.active.closeNoSync(); err != nil {
 			return err
 		}
-		return persistMeta(filepath.Join(c.dir, metaFilename), c.metaSnapshot())
+		return c.writeMeta(nil)
 	}
 	if err := c.active.Close(); err != nil {
 		return err
@@ -1976,8 +1995,7 @@ func (c *Collection) Close() error {
 		_ = sidx.PersistWithCoverage(sidxFilePath(c.dir, field), snap.coverage)
 	}
 	c.sidxMu.RUnlock()
-	return persistMeta(filepath.Join(c.dir, metaFilename),
-		c.metaSnapshot())
+	return c.writeMeta(nil)
 }
 
 // ---- Secondary index helpers (called under c.mu write lock) ----------------

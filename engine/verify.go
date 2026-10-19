@@ -63,6 +63,7 @@ const (
 	CodeLockProbeFailed     FindingCode = "lock-probe-failed"
 	CodeMetaMissing         FindingCode = "meta-missing"
 	CodeMetaUnreadable      FindingCode = "meta-unreadable"
+	CodeEncryptionMetaLost  FindingCode = "encryption-meta-lost"
 	CodeIDCounterBehind     FindingCode = "idcounter-behind"
 	CodeRecordExpiredLive   FindingCode = "record-expired-live"
 	CodeDuplicateIdentical  FindingCode = "duplicate-record-identical"

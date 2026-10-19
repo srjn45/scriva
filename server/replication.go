@@ -316,6 +316,11 @@ func (f *Follower) Run(ctx context.Context) error {
 					"err", err, "applied_lsn", f.db.AppliedLSN())
 				return err
 			}
+			if errors.Is(err, engine.ErrReplicationNeedsBootstrap) {
+				f.logger.Error("replication needs re-bootstrap; stopping follower",
+					"err", err, "applied_lsn", f.db.AppliedLSN())
+				return err
+			}
 			if status.Code(err) == codes.FailedPrecondition {
 				f.logger.Error("replication needs re-bootstrap; stopping follower",
 					"err", err, "applied_lsn", f.db.AppliedLSN())

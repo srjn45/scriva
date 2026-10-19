@@ -171,10 +171,10 @@ func (c *Collection) writeSnapshot(tw *tar.Writer) error {
 
 // SnapshotFileAllowed reports whether base is a file kind a collection
 // directory may contribute to (or receive from) a snapshot archive:
-// segments, secondary-index files and meta.json.
+// segments, secondary-index files, meta.json and the encryption sentinel.
 func SnapshotFileAllowed(base string) bool {
 	switch {
-	case base == metaFilename:
+	case base == metaFilename, base == encryptionSentinelFile:
 		return true
 	case strings.HasPrefix(base, "seg_") && strings.HasSuffix(base, ".ndjson"):
 		return isDigits(base[len("seg_") : len(base)-len(".ndjson")])

@@ -17,7 +17,8 @@ data/
     ├── seg_000002.ndjson   # sealed
     ├── seg_000003.ndjson   # active (append target)
     ├── index.json          # persisted id → {segment, offset} map
-    ├── meta.json           # id counter, created_at
+    ├── meta.json           # id counter, created_at, encryption block
+    ├── encryption.sentinel # present once the collection held encrypted data (encrypted collections only)
     └── sidx_email.json     # secondary index for "email" field (if created)
 ```
 
@@ -320,6 +321,22 @@ policy, read mode, policy epoch, the passphrase KDF parameters + salt (non-secre
 a `key_check` (an AEAD-sealed known constant), and the current key id. On `Open`,
 the `key_check` is verified under the supplied key so a wrong key/passphrase fails
 fast. None of this block is secret — it reveals nothing without the key.
+
+**Fail-closed open.** `load()` classifies `meta.json` *before* it can regenerate it
+(`checkEncryptionMeta`, `engine/encryption_integrity.go`). Evidence of encryption —
+E1 a primary-index entry with `Epoch > 0`, E2 the `encryption.sentinel` file, E3 (only
+when meta is missing/unparseable) the on-disk envelope marker `\u0000scrivaenc:` in
+a segment — plus a missing/unparseable/block-less meta, or a meta epoch below the
+highest entry epoch, fails open with `ErrEncryptionMetaIntegrity`. Nothing is
+rewritten (an unparseable file is copied to `meta.json.corrupt-<unixnano>`); no
+integrity policy tolerates it. A plaintext collection with the same damage still
+regenerates. E1 is computed by one pass over the in-memory index at open. The
+sentinel is written durably (file + dir fsync) before encrypted writes take effect —
+by `initEncryption` after the block when enabling at open, and by
+`applyEncryptionChange` before the meta write — is self-healed by `initEncryption`
+when a valid block is found, and is in `SnapshotFileAllowed`, so snapshot, restore
+and follower bootstrap carry it. Compaction does not touch it; `Verify` raises
+`encryption-meta-lost`; `Repair` blocks rather than regenerate such a `meta.json`.
 
 ### Migration: epochs, functional vs security completion
 
@@ -1105,7 +1122,7 @@ When rotation fails after a write has committed:
 - **Bit-rot detection**: each segment entry carries a CRC32C checksum verified on read. A single flipped byte in a sealed segment that still parses as JSON is caught (`store.ErrCorruptEntry`) rather than silently returning wrong data. See *Per-entry checksums* above.
 - **Index recovery**: on startup, both the primary index and each secondary index checksum are verified. A mismatch triggers a full rebuild by replaying all segment entries.
 - **Atomic segment swap**: compaction uses `os.Rename` which is atomic on POSIX filesystems. The old segments are only deleted after the new ones are in place.
-- **Durable metadata writes**: `index.json`, `sidx_*.json`, and `meta.json` are written with a write-temp → `fsync` → atomic `rename` → directory `fsync` sequence, so a crash can never leave a half-written or invisible file. (Caveat, hardening H7: `meta.json` uses a fixed `meta.json.tmp` name, so *concurrent in-process* persists can interleave and corrupt it, and a stale snapshot can overwrite a newer encryption policy; both are confirmed and the ratified `metaMu` + unique-temp + fail-closed-open fix is in [hardening §3.4](design-database-integrity-hardening.md#34-metadata-serialization-and-encryption-fail-closed-behavior).) Directory `fsync` after creating or rotating a segment (under `--sync=interval`/`always`) ensures the new segment file's directory entry survives a crash too. (Directory `fsync` is a no-op on Windows, which does not support it; the atomic rename still holds.)
+- **Durable metadata writes**: `index.json`, `sidx_*.json`, and `meta.json` are written with a write-temp → `fsync` → atomic `rename` → directory `fsync` sequence, so a crash can never leave a half-written or invisible file. `meta.json` has a single in-process persist path, `Collection.writeMeta` ([hardening §3.4](design-database-integrity-hardening.md#34-metadata-serialization-and-encryption-fail-closed-behavior)): under the leaf mutex `metaMu` it takes the snapshot, applies the caller's mutation, and writes through a *uniquely named* temp file (`os.CreateTemp(dir, "meta.json.*")` → fsync → rename → dir fsync; the temp is removed on failure). The snapshot reads only atomics/immutables (`idSeq`, `explicitDefaultTTLSecs`, `encMeta`, `createdAt`), so a stale snapshot can never overwrite a newer one and no persist needs `c.mu`. In-memory state (`encMeta`, `explicitDefaultTTLSecs`) is installed only after the write succeeds, still under `metaMu`; a failed persist leaves memory unchanged and the error is returned. The offline `Repair` rebuild has no `Collection` and uses the same unique-temp helper. Lock order: `encAdminMu` → `c.mu` → `metaMu` (leaf — nothing is acquired while holding it); `compactMu` → `persistMu` → `c.mu` is unchanged. Persist-failure policy: rotation, `CommitTx` and the cross-collection commit's post-lock step return a `*PostCommitError` (`Stage: "meta"` / `"rotate"`; the write is durable and visible); `setDefaultTTL` and policy changes return the error; replication apply logs it and carries on, because the batch is already durable and the id counter is re-derived from the segment tail on reopen. Directory `fsync` after creating or rotating a segment (under `--sync=interval`/`always`) ensures the new segment file's directory entry survives a crash too. (Directory `fsync` is a no-op on Windows, which does not support it; the atomic rename still holds.)
 - **Id-counter recovery**: `meta.json` is persisted on segment rotation and on `Close`, not on every write. On startup the counter is reconciled against the highest id present in the active segment (which always holds the most recently assigned id), so a crash that lost an unsynced `meta.json` can never cause id reuse.
 
 Note that partial-line recovery protects against *torn* writes (an incomplete

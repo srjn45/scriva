@@ -566,7 +566,10 @@ func planCollection(ctx context.Context, w *repairWork, jc *journalCol, opts Rep
 	}
 
 	// meta.json: its non-derivable settings must survive.
-	if _, err := loadMeta(metaPath(w.dir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if m, err := loadMeta(metaPath(w.dir)); (err != nil || m.Encryption == nil) && sentinelExists(w.dir) {
+		block(w, "encryption.sentinel exists but meta.json is missing, unreadable or has no encryption block; restore meta.json from a backup (AllowMetaReset never applies to an encrypted collection)")
+		return nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if !opts.AllowMetaReset {
 			block(w, "meta.json is unreadable and holds settings (default TTL, encryption) that cannot be derived; restore it from a backup or set AllowMetaReset")
 			return nil
