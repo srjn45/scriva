@@ -177,7 +177,13 @@ Single-entry traffic keeps flowing to old followers until the first transaction.
 | `FAILED_PRECONDITION` "re-bootstrap" | fell out of the leader's ring, or the leader restarted/crashed (its ring is empty and a recovered transaction is never republished) | wipe the follower's data dir and restart with `--replicate-from`; it snapshot-bootstraps |
 | `ErrEnvelopeApplyFailed` wrapping `ErrReplicationDivergence` | the follower's history and the leader's disagree for an applied LSN/txid | re-bootstrap the follower; investigate how it diverged (e.g. it was promoted, or pointed at a different leader) |
 | `ErrEnvelopeDigest` / `ErrEnvelopeInvalid` / unknown record version | corrupted or newer-protocol record | nothing was applied; check versions and the network path, then restart |
+| `ErrReplicationNeedsBootstrap` ("replication needs re-bootstrap") | a streamed record carries encrypted data (epoch > 0 / envelope) but the follower's collection has no encryption block, e.g. the leader created or encrypted the collection while the follower was streaming. Nothing was written and the applied LSN did not advance (an XTx halts as a whole) | re-bootstrap from a snapshot (carries `meta.json` and `encryption.sentinel`), starting the follower with the encryption key |
 | `ErrReplicationPromoted` | the node was promoted and refuses replicated writes | expected after failover; stop the old apply loop |
+
+> **Upgrade note:** a follower that stream-created or stream-encrypted a
+> collection under an older version holds epoch > 0 entries without an
+> encryption block and now refuses to open (`ErrEncryptionMetaIntegrity`).
+> Re-bootstrap such followers from a snapshot before or at upgrade.
 
 ### Failover with transactions
 
