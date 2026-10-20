@@ -13,8 +13,10 @@ Start a hot standby that replicates from a leader:
 
 ```bash
 scriva serve --data ./follower-data \
-  --replicate-from leader-host:5433 \
-  --api-key dev-key
+  --replicate-from leader.example.com:5433 \
+  --replicate-ca ./leader-ca.pem \
+  --replicate-server-name leader.example.com \
+  --replicate-api-key "$REPLICATION_KEY"
 ```
 
 The follower:
@@ -26,7 +28,10 @@ The follower:
 3. **Resumes** after a disconnect from its persisted applied-LSN, with **no gaps
    or duplicates**.
 
-Replication is async, so the follower runs at a bounded lag behind the leader.
+Replication is async. Lag is not automatically bounded: monitor
+`ReplicationStatus` and choose an operational staleness or promotion limit.
+A follower that falls beyond the leader's retained replication buffer must
+re-bootstrap from a snapshot.
 
 ## Cross-collection transactions
 
@@ -77,10 +82,12 @@ Promotion:
 - Is **one-way**. There is no automatic election; re-point the old leader as a
   follower of the new one if you want it back.
 
-See the [operator runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md)
+See [Operations & security](/scriva/guides/operations-security/) for TLS/mTLS,
+downgrade protection, and the [operator runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md)
 for the full failover procedure.
 
 ## Next
 
 - [Configuration](/scriva/reference/configuration/)
 - [Architecture](/scriva/concepts/architecture/)
+- [Operations & security](/scriva/guides/operations-security/)

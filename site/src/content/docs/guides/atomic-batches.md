@@ -74,7 +74,7 @@ it with `XTxStatus` before taking another action. A post-decision rotation error
 means the batch committed, while the collection is fenced pending restart.
 
 If recovery cannot prove the coordinator evidence, open fails closed rather
-than serving a prefix. Run the [verify and repair guidance](/scriva/guides/durability-and-backup/#verify-and-repair), then use the [atomic-batch recovery
+than serving a prefix. Run the [verify and repair guidance](/scriva/guides/operations-security/#verify-repair-then-restart), then use the [atomic-batch recovery
 runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md#atomic-single-collection-batches-rollout-and-recovery).
 
 ## Choose the right boundary
@@ -82,5 +82,7 @@ runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md#atomic-si
 - Use an atomic batch for multiple writes to one collection.
 - Use a [cross-collection transaction](/scriva/guides/cross-collection-transactions/) for multiple collections, its point-read conflict checks, and idempotency keys.
 - Use ordinary single-record writes when no multi-record invariant is involved.
+
+Before converting or recovering a root, read [Operations & security](/scriva/guides/operations-security/): conversion is one-way and repair is not a rollback mechanism.
 
 For the wire API and generated client stubs, see [API & OpenAPI](/scriva/reference/api/). The existing hand-written SDKs cover single-collection transactions; see [Client SDKs](/scriva/guides/clients/) for their exact surface.
