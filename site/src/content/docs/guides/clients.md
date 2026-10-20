@@ -7,12 +7,42 @@ Idiomatic, **hand-written** client libraries are available for ten languages.
 Each wraps the same gRPC API, takes the same connection config (`host`, `port`,
 `api_key`, optional TLS CA cert), and wraps the core collection, record, index,
 single-collection transaction (`BeginTx`/`CommitTx`/`RollbackTx`), `Aggregate`,
-`Compact`, `Snapshot` and streaming `Find`/`Watch` calls. They do **not** wrap the
-cross-collection transaction RPCs (`BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`,
-`RollbackXTx`, `XTxStatus`) or `Replicate`, `ReplicationStatus` and `Promote`; for
+`Compact`, `Snapshot` and streaming `Find`/`Watch` calls, plus the cross-collection
+transaction methods (`BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`, `RollbackXTx`,
+`XTxStatus`). They do **not** wrap `Replicate`, `ReplicationStatus` and `Promote`; for
 those, use the generated gRPC stubs (bundled in each SDK, built from
 `proto/scriva.proto`) or REST where a route exists. `Snapshot` and `Replicate` are
 gRPC-only (no REST route).
+
+**Unknown commit outcomes.** If `CommitXTx` fails with `XTX_OUTCOME_UNKNOWN` (gRPC `UNKNOWN`)
+or `XTX_IN_PROGRESS` (`UNAVAILABLE`), never retry the commit blindly. Call `XTxStatus` with the
+error's `status_ref` (or the idempotency key you chose at begin): `COMMITTED` means success,
+`ABORTED`/`EXPIRED` permits a new transaction, and `PENDING` means poll with backoff. Choose and
+keep an explicit idempotency key if a commit must be recoverable across a server restart. Inspect
+the `scriva.xtx` `ErrorInfo` reason, never the message text. Contract:
+[SDK transaction contract](https://github.com/srjn45/scriva/blob/main/docs/sdk-cross-collection-transaction-contract.md).
+
+**Verification status.** The table below is what was actually run locally; "unverified" SDKs have the
+code and (where noted) tests but could not be executed by the release verifier, so treat their
+cross-collection transaction support as unverified until CI or a maintainer runs them.
+
+| SDK | XTx methods | Local verification (2026-10-20) |
+|---|---|---|
+| Python | yes | **Unverified** — `pytest`/`grpcio` not installed on the verifier; `tests/test_xtx.py` not run |
+| JavaScript / TypeScript | yes | Verified — `tests/xtx.test.ts` passes, `tsc --noEmit` clean |
+| PHP | yes | **Unverified** — no PHP runtime available; `tests/test_xtx.php` not run |
+| Ruby | yes | Verified — `test_xtx.rb` passes (3 runs, 16 assertions) |
+| Rust | yes | **Unverified** — build needs `protoc` (not installed); no XTx tests exist yet |
+| C# / .NET | yes | **Unverified** — no .NET SDK available; only `XTxErrorTests.cs` exists, not run |
+| Java | yes | Verified — `XTxClientTest` passes (`ExampleTest` needs a live server and was not run) |
+| Kotlin | yes | Verified — `./gradlew test` passes (8 tests) |
+| Scala | yes | Verified — `sbt test` passes (7 tests) |
+| Clojure | yes | Verified — `lein test` passes (7 tests, 30 assertions) |
+
+**Versions.** The SDKs are versioned independently of the server (currently `1.2.1`, unchanged by
+the XTx additions, which are additive: existing `BeginTx`/`CommitTx`/`RollbackTx` are unchanged). The
+next SDK release should be a minor bump (`1.3.0`) per SemVer once the unverified SDKs are run; the
+XTx methods need a server that supports `BeginXTx` (v1.6.0+).
 
 | Language | Install | Reference |
 |---|---|---|
@@ -25,7 +55,7 @@ gRPC-only (no REST route).
 | Clojure | `io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}` (deps.edn / Clojars) | [clients/clojure](https://github.com/srjn45/scriva/tree/main/clients/clojure) |
 | Ruby | `gem install scriva` | [clients/ruby](https://github.com/srjn45/scriva/tree/main/clients/ruby) |
 | Rust | `cargo add scriva` | [clients/rust](https://github.com/srjn45/scriva/tree/main/clients/rust) |
-| C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](https://github.com/srjn45/scriva/tree/main/clients/csharp) |
+| C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](https://github.com/srjn45/scriva/tree/main/clients/csharp/Scriva.Client) |
 
 > **PHP — not on Packagist.** The `srjn45/scriva` package has not been submitted to
 > Packagist. To install it, add a VCS repository entry to your `composer.json` and
