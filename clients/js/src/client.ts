@@ -38,6 +38,15 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 const protoDescriptor = grpc.loadPackageDefinition(packageDefinition) as any;
 const ScrivaDBStub = protoDescriptor.scriva.v1.Scriva as grpc.ServiceClientConstructor;
 
+/** A structured XTx RPC failure. Use metadata `status-ref`/ErrorInfo status_ref with xTxStatus, never a blind commit retry. */
+export class XTxError extends Error {
+  readonly detail: import('./types').XTxErrorDetail;
+  constructor(error: grpc.ServiceError) {
+    super(error.message); this.name = 'XTxError';
+    this.detail = { code: error.code, message: error.message, metadata: error.metadata?.getMap() ?? {} };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -58,6 +67,16 @@ function callUnary<Req, Res>(
       resolve(res as Res);
     });
   });
+}
+
+async function callXTxUnary<Req, Res>(
+  fn: (req: Req, metadata: grpc.Metadata, callback: (err: grpc.ServiceError | null, res: Res) => void) => void,
+  req: Req, metadata: grpc.Metadata,
+): Promise<Res> {
+  try { return await callUnary(fn, req, metadata); } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error) throw new XTxError(error as grpc.ServiceError);
+    throw error;
+  }
 }
 
 const OP_MAP: Record<string, string> = {
@@ -689,7 +708,7 @@ export class ScrivaDB {
 
   /** Start a cross-collection transaction. Preserve the idempotency key for status recovery. */
   async beginXTx(collections: string[], options: BeginXTxOptions = {}): Promise<BeginXTxResult> {
-    const r: any = await callUnary(this.stub.BeginXTx.bind(this.stub), {
+    const r: any = await callXTxUnary(this.stub.BeginXTx.bind(this.stub), {
       collections, idempotency_key: options.idempotencyKey ?? '', idle_timeout_ms: options.idleTimeoutMs ?? 0,
       max_lifetime_ms: options.maxLifetimeMs ?? 0,
     }, this.meta());
@@ -698,7 +717,7 @@ export class ScrivaDB {
 
   async stageXTx(xtxId: string, operation: XTxOperation): Promise<string> {
     const op = { insert: 'XTX_OP_INSERT', update: 'XTX_OP_UPDATE', delete: 'XTX_OP_DELETE' }[operation.op];
-    const r: any = await callUnary(this.stub.StageXTx.bind(this.stub), {
+    const r: any = await callXTxUnary(this.stub.StageXTx.bind(this.stub), {
       xtx_id: xtxId, collection: operation.collection, op, id: operation.id ?? '0',
       data: structToProto(operation.data ?? {}), expected_rev: operation.expectedRev ?? '0',
     }, this.meta());
@@ -706,23 +725,23 @@ export class ScrivaDB {
   }
 
   async getXTx(xtxId: string, collection: string, id: string): Promise<DBRecord> {
-    const r: any = await callUnary(this.stub.GetXTx.bind(this.stub), { xtx_id: xtxId, collection, id }, this.meta());
+    const r: any = await callXTxUnary(this.stub.GetXTx.bind(this.stub), { xtx_id: xtxId, collection, id }, this.meta());
     return toRecord(r.record);
   }
 
   /** Do not retry a rejected UNKNOWN/UNAVAILABLE commit; call xTxStatus instead. */
   async commitXTx(xtxId: string, options: { lockTimeoutMs?: number } = {}): Promise<CommitXTxResult> {
-    const r: any = await callUnary(this.stub.CommitXTx.bind(this.stub), { xtx_id: xtxId, lock_timeout_ms: options.lockTimeoutMs ?? 0 }, this.meta());
+    const r: any = await callXTxUnary(this.stub.CommitXTx.bind(this.stub), { xtx_id: xtxId, lock_timeout_ms: options.lockTimeoutMs ?? 0 }, this.meta());
     return { txId: r.tx_id, replayed: r.replayed, ops: (r.ops ?? []).map((x: any) => ({ collection: x.collection, id: String(x.id), rev: String(x.rev), op: x.op })) };
   }
 
   async rollbackXTx(xtxId: string): Promise<boolean> {
-    const r: any = await callUnary(this.stub.RollbackXTx.bind(this.stub), { xtx_id: xtxId }, this.meta());
+    const r: any = await callXTxUnary(this.stub.RollbackXTx.bind(this.stub), { xtx_id: xtxId }, this.meta());
     return r.ok;
   }
 
   async xTxStatus(ref: string): Promise<XTxStatusResult> {
-    const r: any = await callUnary(this.stub.XTxStatus.bind(this.stub), { ref }, this.meta());
+    const r: any = await callXTxUnary(this.stub.XTxStatus.bind(this.stub), { ref }, this.meta());
     return { status: r.status, txId: r.tx_id };
   }
 

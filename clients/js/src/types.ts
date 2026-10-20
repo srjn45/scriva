@@ -161,3 +161,5 @@ export interface XTxOperation { collection: string; op: 'insert' | 'update' | 'd
 export interface BeginXTxResult { xtxId: string; collections: string[]; idempotencyKey: string; }
 export interface CommitXTxResult { txId: string; replayed: boolean; ops: Array<{ collection: string; id: string; rev: string; op: string }>; }
 export interface XTxStatusResult { status: string; txId: string; }
+/** XTx failure details retained from gRPC trailers. `status-ref` identifies an ambiguous commit outcome. */
+export interface XTxErrorDetail { code: number; message: string; metadata: Record<string, string | Buffer>; }

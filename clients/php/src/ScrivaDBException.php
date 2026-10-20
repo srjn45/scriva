@@ -14,3 +14,12 @@ namespace ScrivaDB;
 class ScrivaDBException extends \RuntimeException
 {
 }
+
+/** XTx failure retaining gRPC status/trailers (including serialized ErrorInfo). */
+class XTxException extends ScrivaDBException
+{
+    public function __construct(public readonly object $status)
+    {
+        parent::__construct((string) ($status->details ?? 'XTx RPC failed'), (int) ($status->code ?? 0));
+    }
+}

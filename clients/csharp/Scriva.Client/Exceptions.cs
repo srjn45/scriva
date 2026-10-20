@@ -37,3 +37,17 @@ public sealed class AlreadyExistsException : ScrivaDBException
 {
     public AlreadyExistsException(string message, Exception inner) : base(message, inner) { }
 }
+
+/// <summary>Structured XTx failure retaining gRPC status and trailing ErrorInfo metadata.</summary>
+public sealed class XTxException : ScrivaDBException
+{
+    public StatusCode StatusCode { get; }
+    public Metadata Trailers { get; }
+    public XTxException(RpcException error) : base(error.Status.Detail, error)
+    {
+        StatusCode = error.StatusCode;
+        Trailers = error.Trailers;
+    }
+    /// <summary>Wrap an XTx RpcException so callers can inspect ErrorInfo trailers/status_ref.</summary>
+    public static XTxException From(RpcException error) => new(error);
+}
