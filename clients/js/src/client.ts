@@ -41,10 +41,46 @@ const ScrivaDBStub = protoDescriptor.scriva.v1.Scriva as grpc.ServiceClientConst
 /** A structured XTx RPC failure. Use metadata `status-ref`/ErrorInfo status_ref with xTxStatus, never a blind commit retry. */
 export class XTxError extends Error {
   readonly detail: import('./types').XTxErrorDetail;
+  readonly original: grpc.ServiceError;
+  readonly reason?: string;
+  readonly errorMetadata: Record<string, string>;
   constructor(error: grpc.ServiceError) {
     super(error.message); this.name = 'XTxError';
+    this.original = error;
     this.detail = { code: error.code, message: error.message, metadata: error.metadata?.getMap() ?? {} };
+    const raw = error.metadata?.get('grpc-status-details-bin')?.[0];
+    const info = raw ? decodeErrorInfo(raw as Buffer) : undefined;
+    this.reason = info?.reason;
+    this.errorMetadata = info?.metadata ?? {};
   }
+}
+
+// Minimal protobuf wire reader for google.rpc.Status -> Any -> ErrorInfo. This
+// avoids a runtime dependency while preserving the canonical ErrorInfo fields.
+function fields(bytes: Buffer): Array<[number, number, Buffer | number]> {
+  const out: Array<[number, number, Buffer | number]> = []; let i = 0;
+  const varint = (): number => { let n = 0, shift = 0; while (i < bytes.length) { const b = bytes[i++]; n += (b & 127) * 2 ** shift; if (!(b & 128)) return n; shift += 7; } throw new Error('truncated protobuf varint'); };
+  while (i < bytes.length) { const tag = varint(), no = tag >>> 3, wire = tag & 7;
+    if (wire === 0) out.push([no, wire, varint()]);
+    else if (wire === 2) { const len = varint(); out.push([no, wire, bytes.subarray(i, i + len)]); i += len; }
+    else if (wire === 1 || wire === 5) { const size = wire === 1 ? 8 : 4; i += size; }
+    else throw new Error('unsupported protobuf wire type');
+  } return out;
+}
+function decodeErrorInfo(statusBytes: Buffer): { reason?: string; metadata: Record<string, string> } | undefined {
+  try {
+    for (const [, , detail] of fields(statusBytes).filter(([n]) => n === 3)) {
+      const any = fields(detail as Buffer); const type = (any.find(([n]) => n === 1)?.[2] as Buffer | undefined)?.toString();
+      if (!type?.endsWith('google.rpc.ErrorInfo')) continue;
+      const value = any.find(([n]) => n === 2)?.[2] as Buffer | undefined; if (!value) continue;
+      const decoded = fields(value); const domain = (decoded.find(([n]) => n === 2)?.[2] as Buffer | undefined)?.toString();
+      if (domain !== 'scriva.xtx') continue;
+      const metadata: Record<string, string> = {};
+      for (const [, , entry] of decoded.filter(([n]) => n === 3)) { const pair = fields(entry as Buffer); metadata[(pair.find(([n]) => n === 1)?.[2] as Buffer | undefined)?.toString() ?? ''] = (pair.find(([n]) => n === 2)?.[2] as Buffer | undefined)?.toString() ?? ''; }
+      return { reason: (decoded.find(([n]) => n === 1)?.[2] as Buffer | undefined)?.toString(), metadata };
+    }
+  } catch { /* malformed details remain available verbatim in detail.metadata */ }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -717,10 +753,12 @@ export class ScrivaDB {
 
   async stageXTx(xtxId: string, operation: XTxOperation): Promise<string> {
     const op = { insert: 'XTX_OP_INSERT', update: 'XTX_OP_UPDATE', delete: 'XTX_OP_DELETE' }[operation.op];
-    const r: any = await callXTxUnary(this.stub.StageXTx.bind(this.stub), {
+    const request: any = {
       xtx_id: xtxId, collection: operation.collection, op, id: operation.id ?? '0',
-      data: structToProto(operation.data ?? {}), expected_rev: operation.expectedRev ?? '0',
-    }, this.meta());
+      expected_rev: operation.expectedRev ?? '0',
+    };
+    if (operation.op !== 'delete' && operation.data !== undefined) request.data = structToProto(operation.data);
+    const r: any = await callXTxUnary(this.stub.StageXTx.bind(this.stub), request, this.meta());
     return String(r.id);
   }
 

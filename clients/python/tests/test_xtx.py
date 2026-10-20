@@ -1,6 +1,9 @@
 import unittest
+import grpc
+from google.protobuf.any_pb2 import Any
+from google.rpc import error_details_pb2, status_pb2
 
-from scriva.client import ScrivaDB
+from scriva.client import ScrivaDB, XTxError
 
 
 class Stub:
@@ -16,7 +19,7 @@ class Stub:
     def GetXTx(self, request, metadata):
         self.get = request
         from scriva.proto import scriva_pb2 as pb
-        return pb.GetXTxResponse(record=pb.Record(id=7, rev=2))
+        return pb.GetXTxResponse(record=pb.Record(id=7, rev=0))
     def CommitXTx(self, request, metadata):
         self.commit = request
         from scriva.proto import scriva_pb2 as pb
@@ -45,10 +48,32 @@ class XTxWireTest(unittest.TestCase):
         db = ScrivaDB.__new__(ScrivaDB); db._stub, db._api_key = Stub(), ""
         self.assertEqual(db.stage_xtx("x", {"collection": "a", "op": "insert", "data": {"n": 1}}), "7")
         self.assertEqual(db._stub.stage.op, 1)
-        self.assertEqual(db.get_xtx("x", "a", 7)["rev"], 2)
+        self.assertEqual(db.get_xtx("x", "a", 7)["rev"], "0")
         self.assertEqual(db.commit_xtx("x", lock_timeout_ms=9)["tx_id"], "durable")
         self.assertEqual(db._stub.commit.lock_timeout_ms, 9)
         self.assertTrue(db.rollback_xtx("x"))
         self.assertEqual(db.xtx_status("key")["tx_id"], "durable")
         self.assertEqual(db._stub.status.ref, "key")
+
+    def test_unknown_commit_decodes_errorinfo_then_uses_status_ref_once(self):
+        info = error_details_pb2.ErrorInfo(reason="XTX_OUTCOME_UNKNOWN", domain="scriva.xtx",
+            metadata={"status_ref": "idem-9", "retry_safe": "false"})
+        detail = Any(); detail.Pack(info)
+        wire = status_pb2.Status(code=2, message="unknown", details=[detail]).SerializeToString()
+        class Unknown(grpc.RpcError):
+            def code(self): return grpc.StatusCode.UNKNOWN
+            def details(self): return "unknown"
+            def trailing_metadata(self): return (("grpc-status-details-bin", wire),)
+        class UnknownStub(Stub):
+            commits = 0
+            def CommitXTx(self, request, metadata):
+                self.commits += 1
+                raise Unknown()
+        db = ScrivaDB.__new__(ScrivaDB); db._stub, db._api_key = UnknownStub(), ""
+        with self.assertRaises(XTxError) as caught: db.commit_xtx("x")
+        self.assertEqual(caught.exception.reason, "XTX_OUTCOME_UNKNOWN")
+        ref = caught.exception.error_metadata["status_ref"]
+        self.assertEqual(ref, "idem-9")
+        self.assertEqual(db.xtx_status(ref)["tx_id"], "durable")
+        self.assertEqual(db._stub.commits, 1)
 

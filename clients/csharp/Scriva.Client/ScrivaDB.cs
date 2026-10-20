@@ -615,7 +615,7 @@ public sealed class ScrivaDB : IAsyncDisposable, IDisposable
     public async Task<BeginXTxResult> BeginXTxAsync(IEnumerable<string> collections, BeginXTxOptions? options = null, CancellationToken ct = default)
     {
         options ??= new();
-        var resp = await _stub.BeginXTxAsync(new BeginXTxRequest { Collections = { collections }, IdempotencyKey = options.IdempotencyKey, IdleTimeoutMs = options.IdleTimeoutMs, MaxLifetimeMs = options.MaxLifetimeMs }, _headers, cancellationToken: ct);
+        var resp = await XTxCall(() => _stub.BeginXTxAsync(new BeginXTxRequest { Collections = { collections }, IdempotencyKey = options.IdempotencyKey, IdleTimeoutMs = options.IdleTimeoutMs, MaxLifetimeMs = options.MaxLifetimeMs }, _headers, cancellationToken: ct));
         return new(resp.XtxId, resp.Collections, resp.IdempotencyKey);
     }
 
@@ -623,29 +623,35 @@ public sealed class ScrivaDB : IAsyncDisposable, IDisposable
     {
         var req = new StageXTxRequest { XtxId = xtxId, Collection = operation.Collection, Op = operation.Op, Id = operation.Id, ExpectedRev = operation.ExpectedRev };
         if (operation.Data is not null) req.Data = DictToStruct(operation.Data);
-        return (await _stub.StageXTxAsync(req, _headers, cancellationToken: ct)).Id;
+        return (await XTxCall(() => _stub.StageXTxAsync(req, _headers, cancellationToken: ct))).Id;
     }
 
     public async Task<Record> GetXTxAsync(string xtxId, string collection, ulong id, CancellationToken ct = default)
     {
-        var r = await _stub.GetXTxAsync(new GetXTxRequest { XtxId = xtxId, Collection = collection, Id = id }, _headers, cancellationToken: ct);
+        var r = await XTxCall(() => _stub.GetXTxAsync(new GetXTxRequest { XtxId = xtxId, Collection = collection, Id = id }, _headers, cancellationToken: ct));
         return RecordFromProto(r.Record);
     }
 
     /// <summary>Commit once; resolve UNKNOWN/UNAVAILABLE with XTxStatusAsync instead of retrying.</summary>
     public async Task<CommitXTxResult> CommitXTxAsync(string xtxId, long lockTimeoutMs = 0, CancellationToken ct = default)
     {
-        var r = await _stub.CommitXTxAsync(new CommitXTxRequest { XtxId = xtxId, LockTimeoutMs = lockTimeoutMs }, _headers, cancellationToken: ct);
+        var r = await XTxCall(() => _stub.CommitXTxAsync(new CommitXTxRequest { XtxId = xtxId, LockTimeoutMs = lockTimeoutMs }, _headers, cancellationToken: ct));
         return new(r.TxId, r.Ops.Select(x => new XTxOpResult(x.Collection, x.Id, x.Rev, x.Op)).ToArray(), r.Replayed);
     }
 
     public async Task<bool> RollbackXTxAsync(string xtxId, CancellationToken ct = default) =>
-        (await _stub.RollbackXTxAsync(new RollbackXTxRequest { XtxId = xtxId }, _headers, cancellationToken: ct)).Ok;
+        (await XTxCall(() => _stub.RollbackXTxAsync(new RollbackXTxRequest { XtxId = xtxId }, _headers, cancellationToken: ct))).Ok;
 
     public async Task<XTxStatusResult> XTxStatusAsync(string reference, CancellationToken ct = default)
     {
-        var r = await _stub.XTxStatusAsync(new XTxStatusRequest { Ref = reference }, _headers, cancellationToken: ct);
+        var r = await XTxCall(() => _stub.XTxStatusAsync(new XTxStatusRequest { Ref = reference }, _headers, cancellationToken: ct));
         return new(r.Status, r.TxId);
+    }
+
+    private static async Task<T> XTxCall<T>(Func<AsyncUnaryCall<T>> call)
+    {
+        try { return await call().ResponseAsync; }
+        catch (RpcException ex) { throw XTxException.From(ex); }
     }
 
     // -----------------------------------------------------------------------

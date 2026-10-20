@@ -1,4 +1,5 @@
 use futures::{Stream, StreamExt};
+use prost::Message;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Certificate};
 use tonic::Request;
@@ -43,6 +44,47 @@ impl ScrivaDbError {
             | ScrivaDbError::AlreadyExists(s)
             | ScrivaDbError::Rpc(s) => s,
         }
+    }
+
+    /// Decode the `scriva.xtx` ErrorInfo trailer when present, including
+    /// `status_ref` used to resolve an ambiguous commit. Call this after an
+    /// UNKNOWN commit and query status; never repeat the commit blindly.
+    pub fn xtx_error_info(&self) -> Option<XTxErrorInfo> { decode_xtx_error_info(self.status().details()) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XTxErrorInfo { pub reason: String, pub metadata: std::collections::HashMap<String, String> }
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcStatusDetails { #[prost(int32, tag="1")] code: i32, #[prost(string, tag="2")] message: String, #[prost(message, repeated, tag="3")] details: Vec<RpcAny> }
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcAny { #[prost(string, tag="1")] type_url: String, #[prost(bytes="vec", tag="2")] value: Vec<u8> }
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcErrorInfo { #[prost(string, tag="1")] reason: String, #[prost(string, tag="2")] domain: String, #[prost(map="string, string", tag="3")] metadata: std::collections::HashMap<String, String> }
+fn decode_xtx_error_info(bytes: &[u8]) -> Option<XTxErrorInfo> {
+    let status = RpcStatusDetails::decode(bytes).ok()?;
+    for any in status.details {
+        if any.type_url.ends_with("google.rpc.ErrorInfo") {
+            let info = RpcErrorInfo::decode(any.value.as_slice()).ok()?;
+            if info.domain == "scriva.xtx" { return Some(XTxErrorInfo { reason: info.reason, metadata: info.metadata }); }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod xtx_error_tests {
+    use super::*;
+    #[test]
+    fn decodes_error_info_status_reference_from_unknown_commit_status() {
+        let info = RpcErrorInfo { reason: "XTX_OUTCOME_UNKNOWN".into(), domain: "scriva.xtx".into(), metadata: [("status_ref".into(), "idem-9".into()), ("retry_safe".into(), "false".into())].into() };
+        let any = RpcAny { type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(), value: info.encode_to_vec() };
+        let wire = RpcStatusDetails { code: 2, message: "unknown".into(), details: vec![any] }.encode_to_vec();
+        let error = ScrivaDbError::Rpc(tonic::Status::with_details(tonic::Code::Unknown, "unknown", wire.into()));
+        let parsed = error.xtx_error_info().unwrap();
+        assert_eq!(parsed.reason, "XTX_OUTCOME_UNKNOWN");
+        assert_eq!(parsed.metadata["status_ref"], "idem-9");
+        assert_eq!(parsed.metadata["retry_safe"], "false");
     }
 }
 
@@ -1105,7 +1147,8 @@ impl ScrivaDB {
     }
 
     pub async fn stage_xtx(&mut self, xtx_id: &str, operation: XTxOperation) -> Result<u64, ScrivaDbError> {
-        let r = self.client.stage_x_tx(self.req(pb::StageXTxRequest { xtx_id: xtx_id.into(), collection: operation.collection, op: operation.op as i32, id: operation.id, data: Some(json_to_struct(operation.data)), expected_rev: operation.expected_rev })).await?.into_inner();
+        let data = if operation.op == pb::XTxOpKind::XtxOpDelete { None } else { Some(json_to_struct(operation.data)) };
+        let r = self.client.stage_x_tx(self.req(pb::StageXTxRequest { xtx_id: xtx_id.into(), collection: operation.collection, op: operation.op as i32, id: operation.id, data, expected_rev: operation.expected_rev })).await?.into_inner();
         Ok(r.id)
     }
 

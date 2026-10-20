@@ -731,18 +731,21 @@ class ScrivaDB:
     def stage_xtx(self, xtx_id: str, operation: Mapping[str, Any]) -> str:
         """Stage insert/update/delete; ``expected_rev`` is sent exactly when supplied."""
         names = {"insert": pb.XTX_OP_INSERT, "update": pb.XTX_OP_UPDATE, "delete": pb.XTX_OP_DELETE}
+        request = pb.StageXTxRequest(xtx_id=xtx_id, collection=str(operation["collection"]),
+            op=names[str(operation["op"])], id=int(operation.get("id", 0)),
+            expected_rev=int(operation.get("expected_rev", 0)))
+        if operation["op"] != "delete" and "data" in operation:
+            request.data.CopyFrom(_dict_to_struct(operation["data"]))
         with _translate_xtx_errors():
-            r = self._stub.StageXTx(pb.StageXTxRequest(xtx_id=xtx_id,
-                collection=str(operation["collection"]), op=names[str(operation["op"])],
-                id=int(operation.get("id", 0)),
-                data=_dict_to_struct(operation.get("data", {})),
-                expected_rev=int(operation.get("expected_rev", 0))), metadata=self._metadata())
+            r = self._stub.StageXTx(request, metadata=self._metadata())
         return str(r.id)
 
     def get_xtx(self, xtx_id: str, collection: str, record_id: Union[int, str]) -> Dict[str, Any]:
         with _translate_xtx_errors():
             r = self._stub.GetXTx(pb.GetXTxRequest(xtx_id=xtx_id, collection=collection, id=int(record_id)), metadata=self._metadata())
-        return _record_to_dict(r.record)
+        out = _record_to_dict(r.record)
+        out["rev"] = str(r.record.rev)  # include zero for a transaction-view staged insert
+        return out
 
     def commit_xtx(self, xtx_id: str, *, lock_timeout_ms: int = 0) -> Dict[str, Any]:
         """Commit once. On UNKNOWN/UNAVAILABLE resolve with :meth:`xtx_status`, never retry blindly."""
