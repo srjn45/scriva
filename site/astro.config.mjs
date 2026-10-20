@@ -52,6 +52,7 @@ export default defineConfig({
           { label: 'Durability & backup', slug: 'guides/durability-and-backup' },
           { label: 'Encryption at rest', slug: 'guides/encryption' },
           { label: 'Replication & failover', slug: 'guides/replication' },
+          { label: 'Cross-collection transactions', slug: 'guides/cross-collection-transactions' },
           { label: 'Embedding (Go library)', slug: 'guides/embedding' },
           { label: 'Client SDKs', slug: 'guides/clients' },
         ]},
