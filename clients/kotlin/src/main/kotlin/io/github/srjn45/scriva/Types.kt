@@ -6,6 +6,8 @@ import com.google.protobuf.Struct
 import com.google.protobuf.Value
 import java.time.Instant
 import scriva.v1.ScrivaOuterClass
+import com.google.rpc.ErrorInfo
+import io.grpc.protobuf.StatusProto
 
 // ---------------------------------------------------------------------------
 // Value types
@@ -53,6 +55,24 @@ data class UpdateResult(val id: Long, val key: String, val rev: Long, val dateMo
  * populated only when [swapped] is `true`.
  */
 data class CasResult(val swapped: Boolean, val record: Record?)
+
+/** Cross-collection transaction request/result types. Commit is deliberately never retried by the client. */
+data class XTxBeginOptions(val idempotencyKey: String = "", val idleTimeoutMs: Long = 0, val maxLifetimeMs: Long = 0)
+data class XTxBeginResult(val xtxId: String, val collections: List<String>, val idempotencyKey: String)
+enum class XTxOp { INSERT, UPDATE, DELETE }
+data class XTxOperation(val collection: String, val op: XTxOp, val id: Long = 0, val data: Map<String, Any?>? = null, val expectedRev: Long = 0)
+data class XTxCommitOptions(val lockTimeoutMs: Long = 0)
+data class XTxOpResult(val collection: String, val id: Long, val rev: Long, val op: XTxOp)
+data class XTxCommitResult(val txId: String, val ops: List<XTxOpResult>, val replayed: Boolean)
+data class XTxStatusResult(val status: String, val txId: String)
+data class XTxErrorDetail(val code: io.grpc.Status.Code, val reason: String, val metadata: Map<String, String>)
+
+/** Decodes ErrorInfo without relying on message text; use status_ref to resolve an unknown commit with xTxStatus. */
+fun xTxErrorDetail(error: Throwable): XTxErrorDetail? {
+    val status = StatusProto.fromThrowable(error) ?: return null
+    val info = status.detailsList.firstOrNull { it.`is`(ErrorInfo::class.java) }?.unpack(ErrorInfo::class.java) ?: return null
+    return if (info.domain == "scriva.xtx") XTxErrorDetail(io.grpc.Status.fromCodeValue(status.code).code, info.reason, info.metadataMap) else null
+}
 
 /**
  * One group's aggregation result (N4). [group] is the group-by value (`null`

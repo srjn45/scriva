@@ -201,6 +201,28 @@ class ScrivaClient private (channel: ManagedChannel, apiKey: String) extends Aut
 
   // -- Transactions --------------------------------------------------------
 
+  def beginXTx(collections: Seq[String], options: XTxBeginOptions = XTxBeginOptions()): Future[XTxBeginResult] =
+    call(stub.beginXTx(pb.BeginXTxRequest(collections = collections, idempotencyKey = options.idempotencyKey,
+      idleTimeoutMs = options.idleTimeoutMs, maxLifetimeMs = options.maxLifetimeMs))).map(r => XTxBeginResult(r.xtxId, r.collections, r.idempotencyKey))
+
+  def stageXTx(xtxId: String, operation: XTxOperation): Future[Long] = {
+    val kind = operation.op match { case XTxOp.Insert => pb.XTxOpKind.XTX_OP_INSERT; case XTxOp.Update => pb.XTxOpKind.XTX_OP_UPDATE; case XTxOp.Delete => pb.XTxOpKind.XTX_OP_DELETE }
+    call(stub.stageXTx(pb.StageXTxRequest(xtxId = xtxId, collection = operation.collection, op = kind, id = operation.id,
+      data = operation.data.map(mapToStruct), expectedRev = operation.expectedRev))).map(_.id)
+  }
+
+  def getXTx(xtxId: String, collection: String, id: Long): Future[Record] =
+    call(stub.getXTx(pb.GetXTxRequest(xtxId = xtxId, collection = collection, id = id))).map(r => recordFromProto(r.getRecord))
+
+  /** Commits once. Resolve XTX_OUTCOME_UNKNOWN/XTX_IN_PROGRESS with xTxStatus rather than retrying. */
+  def commitXTx(xtxId: String, options: XTxCommitOptions = XTxCommitOptions()): Future[XTxCommitResult] =
+    call(stub.commitXTx(pb.CommitXTxRequest(xtxId = xtxId, lockTimeoutMs = options.lockTimeoutMs))).map { r =>
+      val ops = r.ops.map(o => XTxOpResult(o.collection, o.id, o.rev, o.op match { case pb.XTxOpKind.XTX_OP_INSERT => XTxOp.Insert; case pb.XTxOpKind.XTX_OP_UPDATE => XTxOp.Update; case _ => XTxOp.Delete }))
+      XTxCommitResult(r.txId, ops, r.replayed)
+    }
+  def rollbackXTx(xtxId: String): Future[Boolean] = call(stub.rollbackXTx(pb.RollbackXTxRequest(xtxId = xtxId))).map(_.ok)
+  def xTxStatus(ref: String): Future[XTxStatusResult] = call(stub.xTxStatus(pb.XTxStatusRequest(ref = ref))).map(r => XTxStatusResult(r.status.name, r.txId))
+
   def beginTx(collection: String): Future[String] =
     call(stub.beginTx(pb.BeginTxRequest(collection = collection))).map(_.txId)
 

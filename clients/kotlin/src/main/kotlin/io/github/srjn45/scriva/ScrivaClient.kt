@@ -300,6 +300,26 @@ class ScrivaClient internal constructor(
 
     // -- Transactions ------------------------------------------------------
 
+    suspend fun beginXTx(collections: List<String>, options: XTxBeginOptions = XTxBeginOptions()): XTxBeginResult = translating {
+        val r = stub.beginXTx(BeginXTxRequest.newBuilder().addAllCollections(collections).setIdempotencyKey(options.idempotencyKey).setIdleTimeoutMs(options.idleTimeoutMs).setMaxLifetimeMs(options.maxLifetimeMs).build())
+        XTxBeginResult(r.xtxId, r.collectionsList, r.idempotencyKey)
+    }
+    suspend fun stageXTx(xtxId: String, operation: XTxOperation): Long = translating {
+        val op = when (operation.op) { XTxOp.INSERT -> XTxOpKind.XTX_OP_INSERT; XTxOp.UPDATE -> XTxOpKind.XTX_OP_UPDATE; XTxOp.DELETE -> XTxOpKind.XTX_OP_DELETE }
+        val b = StageXTxRequest.newBuilder().setXtxId(xtxId).setCollection(operation.collection).setOp(op).setId(operation.id).setExpectedRev(operation.expectedRev)
+        operation.data?.let { b.setData(mapToStruct(it)) }; stub.stageXTx(b.build()).id
+    }
+    suspend fun getXTx(xtxId: String, collection: String, id: Long): Record = translating {
+        recordFromProto(stub.getXTx(GetXTxRequest.newBuilder().setXtxId(xtxId).setCollection(collection).setId(id).build()).record)
+    }
+    /** Commits exactly once. Resolve UNKNOWN/UNAVAILABLE outcomes with [xTxStatus], never a blind retry. */
+    suspend fun commitXTx(xtxId: String, options: XTxCommitOptions = XTxCommitOptions()): XTxCommitResult = translating {
+        val r=stub.commitXTx(CommitXTxRequest.newBuilder().setXtxId(xtxId).setLockTimeoutMs(options.lockTimeoutMs).build())
+        XTxCommitResult(r.txId, r.opsList.map { XTxOpResult(it.collection,it.id,it.rev, XTxOp.valueOf(it.op.name.removePrefix("XTX_OP_"))) }, r.replayed)
+    }
+    suspend fun rollbackXTx(xtxId: String): Boolean = translating { stub.rollbackXTx(RollbackXTxRequest.newBuilder().setXtxId(xtxId).build()).ok }
+    suspend fun xTxStatus(ref: String): XTxStatusResult = translating { stub.xTxStatus(XTxStatusRequest.newBuilder().setRef(ref).build()).let { XTxStatusResult(it.status.name, it.txId) } }
+
     suspend fun beginTx(collection: String): String = translating {
         stub.beginTx(BeginTxRequest.newBuilder().setCollection(collection).build()).txId
     }

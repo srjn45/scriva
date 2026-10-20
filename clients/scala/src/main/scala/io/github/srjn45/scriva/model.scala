@@ -34,6 +34,27 @@ final case class UpdateResult(id: Long, key: String, rev: Long, dateModified: St
 /** Outcome of an `updateIfRev` compare-and-swap; `record` is set only when swapped. */
 final case class CasResult(swapped: Boolean, record: Option[Record])
 
+/** Cross-collection transaction values. The client never retries commit; use XTxStatus after an ambiguous outcome. */
+final case class XTxBeginOptions(idempotencyKey: String = "", idleTimeoutMs: Long = 0, maxLifetimeMs: Long = 0)
+final case class XTxBeginResult(xtxId: String, collections: Seq[String], idempotencyKey: String)
+sealed trait XTxOp
+object XTxOp { case object Insert extends XTxOp; case object Update extends XTxOp; case object Delete extends XTxOp }
+final case class XTxOperation(collection: String, op: XTxOp, id: Long = 0, data: Option[Map[String, Any]] = None, expectedRev: Long = 0)
+final case class XTxCommitOptions(lockTimeoutMs: Long = 0)
+final case class XTxOpResult(collection: String, id: Long, rev: Long, op: XTxOp)
+final case class XTxCommitResult(txId: String, ops: Seq[XTxOpResult], replayed: Boolean)
+final case class XTxStatusResult(status: String, txId: String)
+final case class XTxErrorDetail(code: io.grpc.Status.Code, reason: String, metadata: Map[String, String])
+object XTxErrorDetail {
+  /** Decode machine-readable ErrorInfo; callers must use status_ref for unknown commit outcomes. */
+  def from(error: Throwable): Option[XTxErrorDetail] = Option(io.grpc.protobuf.StatusProto.fromThrowable(error)).flatMap { status =>
+    import scala.jdk.CollectionConverters._
+    status.getDetailsList.asScala.collectFirst {
+      case detail if detail.is(classOf[com.google.rpc.ErrorInfo]) => detail.unpack(classOf[com.google.rpc.ErrorInfo])
+    }.filter(_.getDomain == "scriva.xtx").map(info => XTxErrorDetail(io.grpc.Status.fromCodeValue(status.getCode).getCode, info.getReason, info.getMetadataMap.asScala.toMap))
+  }
+}
+
 /** One group's aggregation result (N4). Numeric aggregates are meaningful only when `numeric`. */
 final case class AggResult(
     group: Option[Any],

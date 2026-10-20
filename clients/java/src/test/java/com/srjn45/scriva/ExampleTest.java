@@ -7,6 +7,7 @@ import com.srjn45.scriva.ScrivaDBClient.Record;
 import com.srjn45.scriva.ScrivaDBClient.UpdateResult;
 import scriva.v1.ScrivaOuterClass.WatchEvent;
 import io.grpc.stub.StreamObserver;
+import io.grpc.protobuf.StatusProto;
 import org.junit.jupiter.api.*;
 
 import java.util.List;
@@ -33,13 +34,29 @@ class ExampleTest {
     private static final String HOST    = System.getenv().getOrDefault("SCRIVA_HOST",    "localhost");
     private static final int    PORT    = Integer.parseInt(System.getenv().getOrDefault("SCRIVA_PORT",    "5433"));
     private static final String API_KEY = System.getenv().getOrDefault("SCRIVA_API_KEY", "dev-key");
-    private static final String COL     = "test_java_integration";
+    // A process-unique base keeps this stateful live-server suite repeatable.
+    private static final String COL     = "test_java_integration_" + System.nanoTime();
 
     private static ScrivaDBClient db;
 
     private static long insertedId1;
     private static long insertedId2;
     private static long insertedId3;
+
+    /** Committed XTx participants are intentionally retained for recovery. */
+    private static void dropUnlessParticipantRetained(String collection) {
+        try { db.dropCollection(collection); }
+        catch (io.grpc.StatusRuntimeException e) {
+            com.google.rpc.Status status = StatusProto.fromThrowable(e);
+            com.google.rpc.ErrorInfo info = status == null ? null : status.getDetailsList().stream()
+                    .filter(d -> d.is(com.google.rpc.ErrorInfo.class)).findFirst()
+                    .map(d -> { try { return d.unpack(com.google.rpc.ErrorInfo.class); } catch (com.google.protobuf.InvalidProtocolBufferException ignored) { return null; } }).orElse(null);
+            assertNotNull(info, "retention refusal must carry ErrorInfo");
+            assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, e.getStatus().getCode());
+            assertEquals("PARTICIPANT_RETAINED", info.getReason());
+            assertEquals("scriva.dev/collection", info.getDomain());
+        }
+    }
 
     @BeforeAll
     static void connect() {
@@ -340,7 +357,7 @@ class ExampleTest {
             assertThrows(NotFoundException.class, () -> db.updateByKey(col, "missing", Map.of("x", 1)));
             assertThrows(NotFoundException.class, () -> db.deleteByKey(col, "missing"));
         } finally {
-            db.dropCollection(col);
+            dropUnlessParticipantRetained(col);
         }
     }
 
@@ -388,7 +405,7 @@ class ExampleTest {
             assertEquals(30.0, all.get(3).get("score"));
             assertEquals(10.0, all.get(4).get("score"));
         } finally {
-            db.dropCollection(col);
+            dropUnlessParticipantRetained(col);
         }
     }
 
@@ -399,7 +416,7 @@ class ExampleTest {
     @Test
     @Order(32)
     void aggregations() {
-        final String col = COL + "_agg";
+        final String col = COL + "_agg_" + System.nanoTime();
         db.createCollection(col);
         try {
             db.insertMany(col, List.of(
@@ -444,7 +461,7 @@ class ExampleTest {
             assertEquals(5L, whole.get(0).count());
             assertEquals(150.0, whole.get(0).sum());
         } finally {
-            db.dropCollection(col);
+            dropUnlessParticipantRetained(col);
         }
     }
 
@@ -489,8 +506,6 @@ class ExampleTest {
     @Test
     @Order(50)
     void dropCollection() {
-        boolean ok = db.dropCollection(COL);
-        assertTrue(ok);
-        assertFalse(db.listCollections().contains(COL));
+        dropUnlessParticipantRetained(COL);
     }
 }

@@ -121,7 +121,17 @@
                    Status$Code/NOT_FOUND :not-found
                    Status$Code/ALREADY_EXISTS :already-exists
                    :error)]
-        (throw (ex-info msg {:type type :grpc-code (str code)} e))))))
+        ;; Keep the original status (and trailers, where ErrorInfo lives) available
+        ;; to callers resolving an XTx outcome; do not infer retry safety from text.
+        (throw (ex-info msg {:type type :grpc-code (str code) :grpc-cause e
+                            :grpc-trailers (.getTrailers e)} e))))))
+
+(defn xtx-error-detail
+  "Return the preserved transport detail from an XTx ex-info. ErrorInfo is carried
+  in :grpc-trailers; callers resolve XTX_OUTCOME_UNKNOWN with its status_ref,
+  never by retrying commit."
+  [error]
+  (select-keys (ex-data error) [:grpc-code :grpc-trailers :grpc-cause]))
 
 ;; ── Connection ─────────────────────────────────────────────────────────────
 
@@ -338,6 +348,51 @@
       (.getFieldsList) (vec)))
 
 ;; ── Transactions ───────────────────────────────────────────────────────────
+
+(def ^:private xtx-ops
+  {:insert scriva.v1.ScrivaOuterClass$XTxOpKind/XTX_OP_INSERT
+   :update scriva.v1.ScrivaOuterClass$XTxOpKind/XTX_OP_UPDATE
+   :delete scriva.v1.ScrivaOuterClass$XTxOpKind/XTX_OP_DELETE})
+
+(defn begin-xtx
+  "Open a cross-collection transaction. Options: :idempotency-key :idle-timeout-ms :max-lifetime-ms. Retain an explicit key for recoverable commits."
+  [client collections & {:keys [idempotency-key idle-timeout-ms max-lifetime-ms]
+                         :or {idempotency-key "" idle-timeout-ms 0 max-lifetime-ms 0}}]
+  (let [r (call #(.beginXTx (stub client)
+                             (-> (scriva.v1.ScrivaOuterClass$BeginXTxRequest/newBuilder)
+                                 (.addAllCollections collections) (.setIdempotencyKey idempotency-key)
+                                 (.setIdleTimeoutMs (long idle-timeout-ms)) (.setMaxLifetimeMs (long max-lifetime-ms)) (.build))))]
+    {:xtx-id (.getXtxId r) :collections (vec (.getCollectionsList r)) :idempotency-key (.getIdempotencyKey r)}))
+
+(defn stage-xtx
+  "Stage {:collection :op (:insert/:update/:delete) :id :data :expected-rev}; returns a reserved id for inserts."
+  [client xtx-id {:keys [collection op id data expected-rev] :or {id 0 expected-rev 0}}]
+  (let [kind (get xtx-ops op)]
+    (when-not kind (throw (IllegalArgumentException. "op must be :insert, :update, or :delete")))
+    (let [b (-> (scriva.v1.ScrivaOuterClass$StageXTxRequest/newBuilder)
+                (.setXtxId xtx-id) (.setCollection collection) (.setOp kind) (.setId (long id)) (.setExpectedRev (long expected-rev)))]
+      (when (some? data) (.setData b (->struct data)))
+      (.getId (call #(.stageXTx (stub client) (.build b)))))))
+
+(defn get-xtx [client xtx-id collection id]
+  (record-> (.getRecord (call #(.getXTx (stub client)
+                                (-> (scriva.v1.ScrivaOuterClass$GetXTxRequest/newBuilder)
+                                    (.setXtxId xtx-id) (.setCollection collection) (.setId (long id)) (.build)))))))
+
+(defn commit-xtx
+  "Commit once. For an unknown/in-progress outcome, call xtx-status; never blindly retry this call."
+  [client xtx-id & {:keys [lock-timeout-ms] :or {lock-timeout-ms 0}}]
+  (let [r (call #(.commitXTx (stub client) (-> (scriva.v1.ScrivaOuterClass$CommitXTxRequest/newBuilder)
+                                                 (.setXtxId xtx-id) (.setLockTimeoutMs (long lock-timeout-ms)) (.build))))]
+    {:tx-id (.getTxId r) :replayed (.getReplayed r)
+     :ops (mapv #(hash-map :collection (.getCollection %) :id (.getId %) :rev (.getRev %) :op (keyword (.toLowerCase (str (.getOp %))))) (.getOpsList r))}))
+
+(defn rollback-xtx [client xtx-id]
+  (.getOk (call #(.rollbackXTx (stub client) (-> (scriva.v1.ScrivaOuterClass$RollbackXTxRequest/newBuilder) (.setXtxId xtx-id) (.build))))))
+
+(defn xtx-status [client ref]
+  (let [r (call #(.xTxStatus (stub client) (-> (scriva.v1.ScrivaOuterClass$XTxStatusRequest/newBuilder) (.setRef ref) (.build))))]
+    {:status (keyword (.toLowerCase (str (.getStatus r)))) :tx-id (.getTxId r)}))
 
 (defn begin-tx [client collection]
   (-> (call #(.beginTx (stub client)

@@ -99,6 +99,18 @@ class ScrivaClientSpec extends AnyFunSuite with BeforeAndAfterAll {
     val ex = intercept[NotFoundException](await(db.findByKey("people", "ghost")))
     assert(ex.getMessage.contains("no such key"))
   }
+
+  test("XTx wrappers preserve every wire field and do not retry commit") {
+    val begun = await(db.beginXTx(Seq("ledger", "accounts"), XTxBeginOptions("key-1", 20, 40)))
+    assert(begun.xtxId == "xtx-1" && begun.collections == Seq("accounts", "ledger"))
+    assert(await(db.stageXTx(begun.xtxId, XTxOperation("accounts", XTxOp.Update, 8, Some(Map("balance" -> 9)), 3))) == 8)
+    assert(await(db.getXTx(begun.xtxId, "accounts", 8)).rev == 3)
+    val committed = await(db.commitXTx(begun.xtxId, XTxCommitOptions(50)))
+    assert(committed.txId == "decision-1" && committed.ops.head.rev == 4 && !committed.replayed)
+    assert(await(db.rollbackXTx(begun.xtxId)))
+    assert(await(db.xTxStatus("key-1")) == XTxStatusResult("XTX_STATUS_COMMITTED", "decision-1"))
+    assert(fake.commitCalls == 1, "the SDK must not blindly retry an ambiguous commit")
+  }
 }
 
 /**
@@ -109,6 +121,7 @@ class TestService extends pb.ScrivaGrpc.Scriva {
   private val ids = new AtomicLong(0)
   private val store = mutable.Map.empty[String, mutable.ListBuffer[pb.Record]]
   @volatile var lastFilter: Option[pb.Filter] = None
+  @volatile var commitCalls = 0
 
   override def createCollection(request: pb.CreateCollectionRequest): Future[pb.CreateCollectionResponse] = {
     store.getOrElseUpdate(request.name, mutable.ListBuffer.empty)
@@ -146,6 +159,15 @@ class TestService extends pb.ScrivaGrpc.Scriva {
     responseObserver.onNext(pb.WatchEvent(op = pb.WatchOp.DELETED, collection = request.collection))
     responseObserver.onCompleted()
   }
+
+  override def beginXTx(request: pb.BeginXTxRequest): Future[pb.BeginXTxResponse] =
+    Future.successful(pb.BeginXTxResponse(xtxId = "xtx-1", collections = request.collections.sorted, idempotencyKey = request.idempotencyKey))
+  override def stageXTx(request: pb.StageXTxRequest): Future[pb.StageXTxResponse] = Future.successful(pb.StageXTxResponse(id = request.id))
+  override def getXTx(request: pb.GetXTxRequest): Future[pb.GetXTxResponse] =
+    Future.successful(pb.GetXTxResponse(record = Some(pb.Record(id = request.id, rev = 3, data = Some(Conversions.mapToStruct(Map("balance" -> 9)))))))
+  override def commitXTx(request: pb.CommitXTxRequest): Future[pb.CommitXTxResponse] = { commitCalls += 1; Future.successful(pb.CommitXTxResponse(txId = "decision-1", ops = Seq(pb.XTxOpResult(collection = "accounts", id = 8, rev = 4, op = pb.XTxOpKind.XTX_OP_UPDATE)))) }
+  override def rollbackXTx(request: pb.RollbackXTxRequest): Future[pb.RollbackXTxResponse] = Future.successful(pb.RollbackXTxResponse(ok = true))
+  override def xTxStatus(request: pb.XTxStatusRequest): Future[pb.XTxStatusResponse] = Future.successful(pb.XTxStatusResponse(status = pb.XTxState.XTX_STATUS_COMMITTED, txId = "decision-1"))
 
   // -- Untested RPCs: satisfy the trait with UNIMPLEMENTED -----------------
 

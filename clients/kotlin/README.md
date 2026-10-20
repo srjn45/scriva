@@ -199,6 +199,15 @@ val bytes = db.snapshotToFile("backup.tar.gz")
 
 ## Filters
 
+## Cross-collection transactions
+
+```kotlin
+val tx = db.beginXTx(listOf("accounts", "ledger"), XTxBeginOptions(idempotencyKey = "transfer-42"))
+db.stageXTx(tx.xtxId, XTxOperation("accounts", XTxOp.UPDATE, 7, mapOf("balance" to 90), expectedRev = 3))
+db.stageXTx(tx.xtxId, XTxOperation("ledger", XTxOp.INSERT, data = mapOf("amount" to -10)))
+val result = db.commitXTx(tx.xtxId) // For an ambiguous outcome: db.xTxStatus("transfer-42"), not another commit.
+```
+
 Filters are an idiomatic sealed hierarchy. Build them with `field`, `and`, `or`:
 
 ```kotlin

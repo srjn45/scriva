@@ -10,6 +10,8 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
 
 import com.google.protobuf.ByteString;
+import com.google.rpc.ErrorInfo;
+import io.grpc.protobuf.StatusProto;
 
 import javax.net.ssl.SSLException;
 import java.io.BufferedOutputStream;
@@ -58,7 +60,8 @@ public class ScrivaDBClient implements AutoCloseable {
         this(buildTlsChannel(host, port, tlsCaCert), apiKey);
     }
 
-    private ScrivaDBClient(ManagedChannel channel, String apiKey) {
+    // Package-visible for hermetic in-process gRPC tests; public constructors remain unchanged.
+    ScrivaDBClient(ManagedChannel channel, String apiKey) {
         this.channel = channel;
         ClientInterceptor authInterceptor = buildAuthInterceptor(apiKey);
         Channel intercepted = ClientInterceptors.intercept(channel, authInterceptor);
@@ -127,6 +130,20 @@ public class ScrivaDBClient implements AutoCloseable {
             case ALREADY_EXISTS: return new AlreadyExistsException(msg, e);
             default:             return e;
         }
+    }
+
+    /** Structured XTx detail decoded from a gRPC status; returns null for non-XTx errors. */
+    public static final class XTxErrorDetail {
+        public final Status.Code code; public final String reason; public final Map<String, String> metadata;
+        XTxErrorDetail(Status.Code code, String reason, Map<String, String> metadata) { this.code=code; this.reason=reason; this.metadata=Collections.unmodifiableMap(new HashMap<>(metadata)); }
+    }
+    public static XTxErrorDetail xTxErrorDetail(Throwable error) {
+        com.google.rpc.Status status = StatusProto.fromThrowable(error);
+        if (status == null) return null;
+        for (com.google.protobuf.Any detail : status.getDetailsList()) try {
+            if (detail.is(ErrorInfo.class)) { ErrorInfo info=detail.unpack(ErrorInfo.class); if ("scriva.xtx".equals(info.getDomain())) return new XTxErrorDetail(Status.fromCodeValue(status.getCode()).getCode(), info.getReason(), info.getMetadataMap()); }
+        } catch (com.google.protobuf.InvalidProtocolBufferException ignored) { }
+        return null;
     }
 
     // -----------------------------------------------------------------------
@@ -535,6 +552,63 @@ public class ScrivaDBClient implements AutoCloseable {
     // -----------------------------------------------------------------------
     // Transactions
     // -----------------------------------------------------------------------
+
+    /** Options supplied when opening a cross-collection transaction. */
+    public static final class XTxBeginOptions {
+        public final String idempotencyKey; public final long idleTimeoutMs; public final long maxLifetimeMs;
+        public XTxBeginOptions(String idempotencyKey, long idleTimeoutMs, long maxLifetimeMs) {
+            this.idempotencyKey = idempotencyKey == null ? "" : idempotencyKey;
+            this.idleTimeoutMs = idleTimeoutMs; this.maxLifetimeMs = maxLifetimeMs;
+        }
+    }
+    /** A cross-collection transaction handle and its canonical participant order. */
+    public static final class XTxBeginResult {
+        public final String xtxId; public final List<String> collections; public final String idempotencyKey;
+        XTxBeginResult(String id, List<String> collections, String key) { this.xtxId=id; this.collections=Collections.unmodifiableList(new ArrayList<>(collections)); this.idempotencyKey=key; }
+    }
+    /** One staged XTx operation. Delete operations must pass null data. */
+    public static final class XTxOperation {
+        public final String collection, op; public final long id, expectedRev; public final Map<String,Object> data;
+        public XTxOperation(String collection, String op, long id, Map<String,Object> data, long expectedRev) { this.collection=collection; this.op=op; this.id=id; this.data=data; this.expectedRev=expectedRev; }
+    }
+    public static final class XTxCommitOptions { public final long lockTimeoutMs; public XTxCommitOptions(long v) { lockTimeoutMs=v; } }
+    public static final class XTxOpResult {
+        public final String collection, op; public final long id, rev;
+        XTxOpResult(String c, long i, long r, String o) { collection=c; id=i; rev=r; op=o; }
+    }
+    public static final class XTxCommitResult {
+        public final String txId; public final List<XTxOpResult> ops; public final boolean replayed;
+        XTxCommitResult(String id, List<XTxOpResult> ops, boolean replayed) { txId=id; this.ops=Collections.unmodifiableList(ops); this.replayed=replayed; }
+    }
+    public static final class XTxStatusResult { public final String status, txId; XTxStatusResult(String s, String id) { status=s; txId=id; } }
+
+    /** Opens an XTx. Retain an explicit idempotency key if a commit must be recoverable after restart. */
+    public XTxBeginResult beginXTx(List<String> collections) { return beginXTx(collections, new XTxBeginOptions("", 0, 0)); }
+    public XTxBeginResult beginXTx(List<String> collections, XTxBeginOptions options) {
+        BeginXTxResponse r = blockingStub.beginXTx(BeginXTxRequest.newBuilder().addAllCollections(collections)
+                .setIdempotencyKey(options.idempotencyKey).setIdleTimeoutMs(options.idleTimeoutMs).setMaxLifetimeMs(options.maxLifetimeMs).build());
+        return new XTxBeginResult(r.getXtxId(), r.getCollectionsList(), r.getIdempotencyKey());
+    }
+    /** Stages one operation and returns its (reserved for inserts) id. */
+    public long stageXTx(String xtxId, XTxOperation operation) {
+        XTxOpKind kind;
+        switch (operation.op.toLowerCase(Locale.ROOT)) { case "insert": kind=XTxOpKind.XTX_OP_INSERT; break; case "update": kind=XTxOpKind.XTX_OP_UPDATE; break; case "delete": kind=XTxOpKind.XTX_OP_DELETE; break; default: throw new IllegalArgumentException("op must be insert, update, or delete"); }
+        StageXTxRequest.Builder b=StageXTxRequest.newBuilder().setXtxId(xtxId).setCollection(operation.collection).setOp(kind).setId(operation.id).setExpectedRev(operation.expectedRev);
+        if (operation.data != null) b.setData(mapToStruct(operation.data));
+        return blockingStub.stageXTx(b.build()).getId();
+    }
+    /** Reads through an XTx (and therefore participates in commit validation). */
+    public Record getXTx(String xtxId, String collection, long id) { return recordFromProto(blockingStub.getXTx(GetXTxRequest.newBuilder().setXtxId(xtxId).setCollection(collection).setId(id).build()).getRecord()); }
+    /** Commits once. On an unknown/in-progress outcome call {@link #xTxStatus(String)}; never blindly retry. */
+    public XTxCommitResult commitXTx(String xtxId) { return commitXTx(xtxId, new XTxCommitOptions(0)); }
+    public XTxCommitResult commitXTx(String xtxId, XTxCommitOptions options) {
+        CommitXTxResponse r=blockingStub.commitXTx(CommitXTxRequest.newBuilder().setXtxId(xtxId).setLockTimeoutMs(options.lockTimeoutMs).build());
+        List<XTxOpResult> ops=new ArrayList<>(); for (scriva.v1.ScrivaOuterClass.XTxOpResult o : r.getOpsList()) ops.add(new XTxOpResult(o.getCollection(),o.getId(),o.getRev(),o.getOp().name()));
+        return new XTxCommitResult(r.getTxId(),ops,r.getReplayed());
+    }
+    public boolean rollbackXTx(String xtxId) { return blockingStub.rollbackXTx(RollbackXTxRequest.newBuilder().setXtxId(xtxId).build()).getOk(); }
+    /** Resolves a handle, coordinator id, or retained idempotency key. */
+    public XTxStatusResult xTxStatus(String ref) { XTxStatusResponse r=blockingStub.xTxStatus(XTxStatusRequest.newBuilder().setRef(ref).build()); return new XTxStatusResult(r.getStatus().name(),r.getTxId()); }
 
     public String beginTx(String collection) {
         BeginTxResponse resp = blockingStub.beginTx(BeginTxRequest.newBuilder()
