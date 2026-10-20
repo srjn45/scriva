@@ -27,6 +27,10 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import grpc
 from google.protobuf import struct_pb2
 from google.protobuf.json_format import MessageToDict, ParseDict
+try:  # supplied by googleapis-common-protos; keep the base client importable without it
+    from google.rpc import error_details_pb2, status_pb2
+except ImportError:  # pragma: no cover - optional at runtime, exercised when installed
+    error_details_pb2 = status_pb2 = None  # type: ignore[assignment]
 
 from .proto import scriva_pb2 as pb
 from .proto import scriva_pb2_grpc as pb_grpc
@@ -102,6 +106,20 @@ class XTxError(ScrivaDBError):
         self.error = error
         self.code = error.code() if callable(getattr(error, "code", None)) else None
         self.metadata = tuple(error.trailing_metadata() or ()) if callable(getattr(error, "trailing_metadata", None)) else ()
+        self.reason: Optional[str] = None
+        self.error_metadata: Dict[str, str] = {}
+        if status_pb2 is not None:
+            for key, value in self.metadata:
+                if key != "grpc-status-details-bin":
+                    continue
+                status = status_pb2.Status()
+                status.ParseFromString(value)
+                for detail in status.details:
+                    info = error_details_pb2.ErrorInfo()
+                    if detail.Is(info.DESCRIPTOR):
+                        detail.Unpack(info)
+                        if info.domain == "scriva.xtx":
+                            self.reason, self.error_metadata = info.reason, dict(info.metadata)
 
 
 @contextlib.contextmanager
