@@ -17,14 +17,17 @@ brew install --cask srjn45/scriva/scriva
 # Go
 go install github.com/srjn45/scriva/cmd/scriva@latest
 
-# Docker (the image binds 0.0.0.0, so an API key or TLS is required)
+# Docker (published GHCR image; explicitly expose its loopback listeners)
 docker run -p 5433:5433 -p 8080:8080 -e SCRIVA_API_KEY=dev-key ghcr.io/srjn45/scriva \
   --grpc-addr 0.0.0.0:5433 --rest-addr 0.0.0.0:8080
 ```
 
-The published image's entrypoint is `scriva serve --data /data`, so the listen
-addresses must be passed as above for published ports to be reachable. See
-[Getting Started](docs/getting-started.md#install) for release archives, `.deb`/`.rpm`
+The published GHCR image uses `scriva serve --data /data`, whose listeners default
+to loopback. Pass the address flags above when publishing Docker ports; binding
+`0.0.0.0` makes the server require an API key or TLS, and the example supplies an
+API key. The local image built by the root `Dockerfile` for Compose already bakes
+in the address flags and likewise requires an API key or TLS. See [Getting
+Started](docs/getting-started.md#install) for release archives, `.deb`/`.rpm`
 packages, Scoop and AUR.
 
 ---
