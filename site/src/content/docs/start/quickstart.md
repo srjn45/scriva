@@ -12,8 +12,10 @@ you're ready to go.
 scriva serve --data ./data --api-key dev-key
 ```
 
-This opens gRPC on `:5433`, the REST gateway on `:8080`, and a Unix socket at
-`/tmp/scriva.sock` (which the CLI prefers when it's local).
+This opens gRPC on `127.0.0.1:5433`, the REST gateway on `127.0.0.1:8080`, and a
+Unix socket at `/tmp/scriva.sock` (which the CLI prefers when it's local). Listeners
+bind loopback by default; see [Configuration](/scriva/reference/configuration/)
+to expose them.
 
 ## 2. Insert a record
 
@@ -35,7 +37,7 @@ scriva-cli find users '{"field":"age","op":"gt","value":18}'       --api-key dev
 
 ## 4. Use the REST gateway
 
-Anything the CLI can do is also available over HTTP on `:8080`:
+Anything the CLI can do is also available over HTTP on `127.0.0.1:8080`:
 
 ```bash
 curl -H "x-api-key: dev-key" \
