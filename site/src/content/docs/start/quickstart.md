@@ -67,4 +67,5 @@ Your data now lives in `./data/users/` as append-only NDJSON — go ahead and
 
 - Understand [keys, revisions, and CAS](/scriva/guides/data-model/).
 - Learn [queries, indexes, and aggregations](/scriva/guides/queries/).
+- Make multi-collection changes with [cross-collection transactions](/scriva/guides/cross-collection-transactions/).
 - Tune [durability and set up backups](/scriva/guides/durability-and-backup/).
