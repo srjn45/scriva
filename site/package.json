@@ -5,11 +5,16 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "check:links": "node scripts/check-links.mjs dist",
+    "verify": "npm run build && npm run check:links"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.34.0",
     "astro": "^5.4.0",
     "starlight-blog": "^0.25.3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

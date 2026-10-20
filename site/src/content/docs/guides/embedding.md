@@ -56,7 +56,7 @@ Embedding is a distinct channel from the server:
 | Channel | How you get it | For |
 |---|---|---|
 | **Embedded** | `go get` the module | In-process use inside a Go program. |
-| **Server** | Homebrew / apt / GHCR / release binaries | A standalone database over gRPC + REST. |
+| **Server** | GHCR / release binaries (+ `.deb`/`.rpm`) / Homebrew tap | A standalone database over gRPC + REST. |
 
 Both build from the same repo. See the full API reference, durability modes, the
 Watch overflow contract, and the versioning/stability policy in

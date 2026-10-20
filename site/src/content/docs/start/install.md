@@ -12,10 +12,17 @@ Prebuilt archives are attached to every [GitHub Release](https://github.com/srjn
 for linux, darwin, and windows on amd64/arm64.
 
 ```bash
-# Linux amd64
-curl -L https://github.com/srjn45/scriva/releases/latest/download/scriva_linux_amd64.tar.gz | tar xz
+# Linux amd64 — asset names include the version: scriva_<version>_<os>_<arch>.tar.gz
+VERSION=1.2.1   # replace with the release you want
+curl -L "https://github.com/srjn45/scriva/releases/download/v${VERSION}/scriva_${VERSION}_linux_amd64.tar.gz" | tar xz
 sudo mv scriva scriva-cli /usr/local/bin/
 ```
+
+Releases also attach `.deb` and `.rpm` packages and `checksums.txt`. There is no
+apt/yum repository — download the package and install it with `dpkg -i` / `rpm -i`.
+A Homebrew cask (`brew install --cask srjn45/scriva/scriva`), a Scoop manifest and
+the AUR package `scriva-bin` are published by the release job only when its
+publishing secrets are configured, so they may lag behind or be absent for a version.
 
 ## Option 2 — Docker
 
@@ -24,8 +31,16 @@ docker run -d \
   -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
   -e SCRIVA_API_KEY=my-secret-key \
-  ghcr.io/srjn45/scriva:latest serve --data /data
+  ghcr.io/srjn45/scriva:latest \
+  --grpc-addr 0.0.0.0:5433 --rest-addr 0.0.0.0:8080
 ```
+
+The published image's entrypoint is `scriva serve --data /data`; extra arguments
+are appended (do not repeat `serve`). The listeners default to `127.0.0.1` inside
+the container, so pass the two address flags as above for the published ports to be
+reachable. Binding all interfaces makes the server refuse to start unless an API key
+or TLS is configured. The image built from the repo `Dockerfile` (used by Compose)
+already bakes those flags into its entrypoint.
 
 Or with Compose:
 

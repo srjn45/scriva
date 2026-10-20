@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths: ['site/**', '.github/workflows/site.yml']
+  pull_request:
+    paths: ['site/**', '.github/workflows/site.yml']
   workflow_dispatch:
 
 permissions:
@@ -27,12 +29,13 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
-      - run: npm run build
+      - run: npm run verify # astro build + internal link/anchor check
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:

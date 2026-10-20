@@ -83,3 +83,15 @@ Before opening a PR, make sure:
       real in-process gRPC server — never mock the engine.
 
 Keep PRs focused and small where possible. Thanks for contributing!
+
+## Documentation site
+
+The site in `site/` is Astro + Starlight. The canonical, CI-equivalent verification (Node 20+; CI uses 22):
+
+```bash
+cd site
+npm ci            # clean, lockfile-exact install
+npm run verify    # astro build, then scripts/check-links.mjs on dist/
+```
+
+`npm run check:links` alone re-checks an existing `dist/` for broken internal links and missing `#anchors` (external URLs are not fetched, so it is deterministic and offline). `.github/workflows/site.yml` runs the same `npm ci && npm run verify` on every PR touching `site/`; deploy happens only on `main`.
