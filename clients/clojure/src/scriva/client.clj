@@ -14,6 +14,7 @@
   (:import [com.google.protobuf Struct Value ListValue NullValue Timestamp]
            [io.grpc ManagedChannel ManagedChannelBuilder Metadata Metadata$Key
             ClientInterceptor ClientInterceptors Status Status$Code StatusRuntimeException]
+           [com.google.rpc ErrorInfo]
            [io.grpc.stub MetadataUtils]
            [io.grpc.netty.shaded.io.grpc.netty NettyChannelBuilder GrpcSslContexts]
            [java.io File FileOutputStream BufferedOutputStream]
@@ -127,11 +128,20 @@
                             :grpc-trailers (.getTrailers e)} e))))))
 
 (defn xtx-error-detail
-  "Return the preserved transport detail from an XTx ex-info. ErrorInfo is carried
-  in :grpc-trailers; callers resolve XTX_OUTCOME_UNKNOWN with its status_ref,
-  never by retrying commit."
+  "Decode scriva.xtx ErrorInfo from a translated gRPC exception. Callers resolve
+  XTX_OUTCOME_UNKNOWN with :status_ref; this helper never retries commit."
   [error]
-  (select-keys (ex-data error) [:grpc-code :grpc-trailers :grpc-cause]))
+  (let [{:keys [grpc-cause grpc-code grpc-trailers]} (ex-data error)
+        status (when grpc-cause (io.grpc.protobuf.StatusProto/fromThrowable grpc-cause))
+        info (some (fn [detail]
+                     (try
+                       (when (.is detail ErrorInfo)
+                         (let [unpacked (.unpack detail ErrorInfo)]
+                           (when (= "scriva.xtx" (.getDomain unpacked)) unpacked)))
+                       (catch com.google.protobuf.InvalidProtocolBufferException _ nil)))
+                   (when status (.getDetailsList status)))]
+    (cond-> {:grpc-code grpc-code :grpc-cause grpc-cause :grpc-trailers grpc-trailers}
+      info (assoc :reason (.getReason info) :metadata (into {} (.getMetadataMap info))))))
 
 ;; ── Connection ─────────────────────────────────────────────────────────────
 
@@ -371,7 +381,7 @@
     (when-not kind (throw (IllegalArgumentException. "op must be :insert, :update, or :delete")))
     (let [b (-> (scriva.v1.ScrivaOuterClass$StageXTxRequest/newBuilder)
                 (.setXtxId xtx-id) (.setCollection collection) (.setOp kind) (.setId (long id)) (.setExpectedRev (long expected-rev)))]
-      (when (some? data) (.setData b (->struct data)))
+      (when (and (not= op :delete) (some? data)) (.setData b (->struct data)))
       (.getId (call #(.stageXTx (stub client) (.build b)))))))
 
 (defn get-xtx [client xtx-id collection id]

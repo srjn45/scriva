@@ -208,7 +208,7 @@ class ScrivaClient private (channel: ManagedChannel, apiKey: String) extends Aut
   def stageXTx(xtxId: String, operation: XTxOperation): Future[Long] = {
     val kind = operation.op match { case XTxOp.Insert => pb.XTxOpKind.XTX_OP_INSERT; case XTxOp.Update => pb.XTxOpKind.XTX_OP_UPDATE; case XTxOp.Delete => pb.XTxOpKind.XTX_OP_DELETE }
     call(stub.stageXTx(pb.StageXTxRequest(xtxId = xtxId, collection = operation.collection, op = kind, id = operation.id,
-      data = operation.data.map(mapToStruct), expectedRev = operation.expectedRev))).map(_.id)
+      data = if (operation.op == XTxOp.Delete) None else operation.data.map(mapToStruct), expectedRev = operation.expectedRev))).map(_.id)
   }
 
   def getXTx(xtxId: String, collection: String, id: Long): Future[Record] =

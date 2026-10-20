@@ -307,7 +307,7 @@ class ScrivaClient internal constructor(
     suspend fun stageXTx(xtxId: String, operation: XTxOperation): Long = translating {
         val op = when (operation.op) { XTxOp.INSERT -> XTxOpKind.XTX_OP_INSERT; XTxOp.UPDATE -> XTxOpKind.XTX_OP_UPDATE; XTxOp.DELETE -> XTxOpKind.XTX_OP_DELETE }
         val b = StageXTxRequest.newBuilder().setXtxId(xtxId).setCollection(operation.collection).setOp(op).setId(operation.id).setExpectedRev(operation.expectedRev)
-        operation.data?.let { b.setData(mapToStruct(it)) }; stub.stageXTx(b.build()).id
+        if (operation.op != XTxOp.DELETE) operation.data?.let { b.setData(mapToStruct(it)) }; stub.stageXTx(b.build()).id
     }
     suspend fun getXTx(xtxId: String, collection: String, id: Long): Record = translating {
         recordFromProto(stub.getXTx(GetXTxRequest.newBuilder().setXtxId(xtxId).setCollection(collection).setId(id).build()).record)

@@ -499,6 +499,74 @@ class ExampleTest {
         assertEquals(2, events.size());
     }
 
+    @Test
+    @Order(45)
+    void crossCollectionTransactionLifecycle() throws InterruptedException {
+        String left = COL + "_xtx_left";
+        String right = COL + "_xtx_right";
+        db.createCollection(left);
+        db.createCollection(right);
+        try {
+            long leftId = db.insert(left, Map.of("value", 1));
+            long deletedId = db.insert(right, Map.of("value", "remove"));
+            var tx = db.beginXTx(List.of(right, left), new ScrivaDBClient.XTxBeginOptions("java-xtx-" + COL, 0, 0));
+            long insertedId = db.stageXTx(tx.xtxId, new ScrivaDBClient.XTxOperation(right, "insert", 0, Map.of("value", "new"), 0));
+            db.stageXTx(tx.xtxId, new ScrivaDBClient.XTxOperation(left, "update", leftId, Map.of("value", 2), 1));
+            db.stageXTx(tx.xtxId, new ScrivaDBClient.XTxOperation(right, "delete", deletedId, null, 1));
+
+            // Staged operations are private, while transaction reads observe them.
+            assertEquals(1.0, db.findById(left, leftId).get("value"));
+            assertEquals(2.0, db.getXTx(tx.xtxId, left, leftId).get("value"));
+            assertEquals(0L, db.getXTx(tx.xtxId, right, insertedId).rev());
+            assertEquals("new", db.getXTx(tx.xtxId, right, insertedId).get("value"));
+
+            var result = db.commitXTx(tx.xtxId);
+            assertFalse(result.replayed);
+            assertEquals(3, result.ops.size());
+            assertTrue(result.ops.stream().allMatch(op -> op.rev > 0));
+            assertEquals(2.0, db.findById(left, leftId).get("value"));
+            assertEquals("new", db.findById(right, insertedId).get("value"));
+            assertEquals("XTX_STATUS_COMMITTED", db.xTxStatus(tx.xtxId).status);
+            assertEquals("XTX_STATUS_COMMITTED", db.xTxStatus(tx.idempotencyKey).status);
+            assertEquals("XTX_STATUS_COMMITTED", db.xTxStatus(result.txId).status);
+
+            // Simulate a lost response: repeat the logical work under the same key.
+            var replay = db.beginXTx(List.of(left, right), new ScrivaDBClient.XTxBeginOptions(tx.idempotencyKey, 0, 0));
+            long replayInsert = db.stageXTx(replay.xtxId, new ScrivaDBClient.XTxOperation(right, "insert", 0, Map.of("value", "new"), 0));
+            db.stageXTx(replay.xtxId, new ScrivaDBClient.XTxOperation(left, "update", leftId, Map.of("value", 3), 0));
+            var replayResult = db.commitXTx(replay.xtxId);
+            assertTrue(replayResult.replayed);
+            assertEquals(result.txId, replayResult.txId);
+            assertEquals(2.0, db.findById(left, leftId).get("value"));
+            assertThrows(NotFoundException.class, () -> db.findById(right, replayInsert));
+
+            var conflict = db.beginXTx(List.of(left), new ScrivaDBClient.XTxBeginOptions("", 0, 0));
+            var error = assertThrows(io.grpc.StatusRuntimeException.class,
+                    () -> db.stageXTx(conflict.xtxId, new ScrivaDBClient.XTxOperation(left, "update", leftId, Map.of("value", 3), 1)));
+            var detail = ScrivaDBClient.xTxErrorDetail(error);
+            assertNotNull(detail);
+            assertEquals("XTX_CONFLICT", detail.reason);
+            assertEquals("true", detail.metadata.get("retry_safe"));
+            assertEquals(left, detail.metadata.get("conflict_collection"));
+            assertEquals(Long.toString(leftId), detail.metadata.get("conflict_id"));
+            assertEquals(2.0, db.findById(left, leftId).get("value"));
+            assertTrue(db.rollbackXTx(conflict.xtxId));
+
+            var rolledBack = db.beginXTx(List.of(left, right), new ScrivaDBClient.XTxBeginOptions("", 0, 0));
+            db.stageXTx(rolledBack.xtxId, new ScrivaDBClient.XTxOperation(left, "update", leftId, Map.of("value", 99), 0));
+            assertTrue(db.rollbackXTx(rolledBack.xtxId));
+            assertTrue(db.rollbackXTx(rolledBack.xtxId));
+            assertEquals(2.0, db.findById(left, leftId).get("value"));
+
+            var expiring = db.beginXTx(List.of(left), new ScrivaDBClient.XTxBeginOptions("", 20, 0));
+            Thread.sleep(100);
+            assertEquals("XTX_STATUS_EXPIRED", db.xTxStatus(expiring.xtxId).status);
+        } finally {
+            dropUnlessParticipantRetained(left);
+            dropUnlessParticipantRetained(right);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Drop collection
     // -----------------------------------------------------------------------

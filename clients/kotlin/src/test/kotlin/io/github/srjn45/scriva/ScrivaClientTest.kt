@@ -140,12 +140,31 @@ class ScrivaClientTest {
         assertEquals("false", detail.metadata["retry_safe"])
     }
 
+    @Test
+    fun unknownCommitIsResolvedByStatusBeforeRetry() = runTest {
+        val tx = db.beginXTx(listOf("a", "b"), XTxBeginOptions("idem-unknown"))
+        fake.failNextCommit = true
+        val error = try { db.commitXTx(tx.xtxId); error("expected unknown outcome") }
+        catch (e: io.grpc.StatusException) { e }
+        val detail = xTxErrorDetail(error)!!
+        assertEquals("XTX_OUTCOME_UNKNOWN", detail.reason)
+        assertEquals("idem-unknown", detail.metadata["status_ref"])
+        assertEquals("false", detail.metadata["retry_safe"])
+        assertEquals("XTX_STATUS_COMMITTED", db.xTxStatus(detail.metadata.getValue("status_ref")).status)
+        assertEquals(1, fake.commitCalls)
+        assertEquals(1, fake.statusCalls)
+        assertEquals("idem-unknown", fake.lastStatusRef)
+    }
+
     /** Minimal in-memory implementation of just the RPCs the tests touch. */
     private class FakeScriva : ScrivaGrpcKt.ScrivaCoroutineImplBase() {
         private val ids = AtomicLong(0)
         private val store = HashMap<String, MutableList<ScrivaOuterClass.Record>>()
         var lastFilter: ScrivaOuterClass.Filter? = null
         var commitCalls = 0
+        var statusCalls = 0
+        var failNextCommit = false
+        var lastStatusRef = ""
 
         override suspend fun createCollection(
             request: ScrivaOuterClass.CreateCollectionRequest,
@@ -210,10 +229,16 @@ class ScrivaClientTest {
             ScrivaOuterClass.GetXTxResponse.newBuilder().setRecord(ScrivaOuterClass.Record.newBuilder().setId(request.id).setRev(3)).build()
         override suspend fun commitXTx(request: ScrivaOuterClass.CommitXTxRequest): ScrivaOuterClass.CommitXTxResponse {
             commitCalls++
+            if (failNextCommit) {
+                failNextCommit = false
+                val info = com.google.rpc.ErrorInfo.newBuilder().setDomain("scriva.xtx").setReason("XTX_OUTCOME_UNKNOWN")
+                    .putMetadata("status_ref", "idem-unknown").putMetadata("retry_safe", "false").build()
+                throw StatusProto.toStatusException(com.google.rpc.Status.newBuilder().setCode(io.grpc.Status.Code.UNKNOWN.value()).addDetails(com.google.protobuf.Any.pack(info)).build())
+            }
             return ScrivaOuterClass.CommitXTxResponse.newBuilder().setTxId("decision-1")
                 .addOps(ScrivaOuterClass.XTxOpResult.newBuilder().setCollection("accounts").setId(8).setRev(4).setOp(ScrivaOuterClass.XTxOpKind.XTX_OP_UPDATE)).build()
         }
         override suspend fun rollbackXTx(request: ScrivaOuterClass.RollbackXTxRequest) = ScrivaOuterClass.RollbackXTxResponse.newBuilder().setOk(true).build()
-        override suspend fun xTxStatus(request: ScrivaOuterClass.XTxStatusRequest) = ScrivaOuterClass.XTxStatusResponse.newBuilder().setStatus(ScrivaOuterClass.XTxState.XTX_STATUS_COMMITTED).setTxId("decision-1").build()
+        override suspend fun xTxStatus(request: ScrivaOuterClass.XTxStatusRequest): ScrivaOuterClass.XTxStatusResponse { statusCalls++; lastStatusRef=request.ref; return ScrivaOuterClass.XTxStatusResponse.newBuilder().setStatus(ScrivaOuterClass.XTxState.XTX_STATUS_COMMITTED).setTxId("decision-1").build() }
     }
 }

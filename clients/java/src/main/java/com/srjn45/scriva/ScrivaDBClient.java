@@ -594,7 +594,7 @@ public class ScrivaDBClient implements AutoCloseable {
         XTxOpKind kind;
         switch (operation.op.toLowerCase(Locale.ROOT)) { case "insert": kind=XTxOpKind.XTX_OP_INSERT; break; case "update": kind=XTxOpKind.XTX_OP_UPDATE; break; case "delete": kind=XTxOpKind.XTX_OP_DELETE; break; default: throw new IllegalArgumentException("op must be insert, update, or delete"); }
         StageXTxRequest.Builder b=StageXTxRequest.newBuilder().setXtxId(xtxId).setCollection(operation.collection).setOp(kind).setId(operation.id).setExpectedRev(operation.expectedRev);
-        if (operation.data != null) b.setData(mapToStruct(operation.data));
+        if (kind != XTxOpKind.XTX_OP_DELETE && operation.data != null) b.setData(mapToStruct(operation.data));
         return blockingStub.stageXTx(b.build()).getId();
     }
     /** Reads through an XTx (and therefore participates in commit validation). */

@@ -111,6 +111,20 @@ class ScrivaClientSpec extends AnyFunSuite with BeforeAndAfterAll {
     assert(await(db.xTxStatus("key-1")) == XTxStatusResult("XTX_STATUS_COMMITTED", "decision-1"))
     assert(fake.commitCalls == 1, "the SDK must not blindly retry an ambiguous commit")
   }
+
+  test("unknown commit outcome is resolved through status_ref before retry") {
+    val beforeCommits = fake.commitCalls
+    val beforeStatuses = fake.statusCalls
+    val tx = await(db.beginXTx(Seq("a", "b"), XTxBeginOptions("idem-unknown")))
+    fake.failNextCommit = true
+    val error = intercept[io.grpc.StatusRuntimeException](await(db.commitXTx(tx.xtxId)))
+    val detail = XTxErrorDetail.from(error).get
+    assert(detail.reason == "XTX_OUTCOME_UNKNOWN")
+    assert(detail.metadata("status_ref") == "idem-unknown")
+    assert(detail.metadata("retry_safe") == "false")
+    assert(await(db.xTxStatus(detail.metadata("status_ref")).map(_.status)) == "XTX_STATUS_COMMITTED")
+    assert(fake.commitCalls == beforeCommits + 1 && fake.statusCalls == beforeStatuses + 1 && fake.lastStatusRef == "idem-unknown")
+  }
 }
 
 /**
@@ -122,6 +136,9 @@ class TestService extends pb.ScrivaGrpc.Scriva {
   private val store = mutable.Map.empty[String, mutable.ListBuffer[pb.Record]]
   @volatile var lastFilter: Option[pb.Filter] = None
   @volatile var commitCalls = 0
+  @volatile var statusCalls = 0
+  @volatile var failNextCommit = false
+  @volatile var lastStatusRef = ""
 
   override def createCollection(request: pb.CreateCollectionRequest): Future[pb.CreateCollectionResponse] = {
     store.getOrElseUpdate(request.name, mutable.ListBuffer.empty)
@@ -165,9 +182,18 @@ class TestService extends pb.ScrivaGrpc.Scriva {
   override def stageXTx(request: pb.StageXTxRequest): Future[pb.StageXTxResponse] = Future.successful(pb.StageXTxResponse(id = request.id))
   override def getXTx(request: pb.GetXTxRequest): Future[pb.GetXTxResponse] =
     Future.successful(pb.GetXTxResponse(record = Some(pb.Record(id = request.id, rev = 3, data = Some(Conversions.mapToStruct(Map("balance" -> 9)))))))
-  override def commitXTx(request: pb.CommitXTxRequest): Future[pb.CommitXTxResponse] = { commitCalls += 1; Future.successful(pb.CommitXTxResponse(txId = "decision-1", ops = Seq(pb.XTxOpResult(collection = "accounts", id = 8, rev = 4, op = pb.XTxOpKind.XTX_OP_UPDATE)))) }
+  override def commitXTx(request: pb.CommitXTxRequest): Future[pb.CommitXTxResponse] = {
+    commitCalls += 1
+    if (failNextCommit) {
+      failNextCommit = false
+      val info = com.google.rpc.ErrorInfo.newBuilder().setDomain("scriva.xtx").setReason("XTX_OUTCOME_UNKNOWN")
+        .putMetadata("status_ref", "idem-unknown").putMetadata("retry_safe", "false").build()
+      Future.failed(io.grpc.protobuf.StatusProto.toStatusRuntimeException(com.google.rpc.Status.newBuilder()
+        .setCode(Status.Code.UNKNOWN.value()).addDetails(com.google.protobuf.Any.pack(info)).build()))
+    } else Future.successful(pb.CommitXTxResponse(txId = "decision-1", ops = Seq(pb.XTxOpResult(collection = "accounts", id = 8, rev = 4, op = pb.XTxOpKind.XTX_OP_UPDATE))))
+  }
   override def rollbackXTx(request: pb.RollbackXTxRequest): Future[pb.RollbackXTxResponse] = Future.successful(pb.RollbackXTxResponse(ok = true))
-  override def xTxStatus(request: pb.XTxStatusRequest): Future[pb.XTxStatusResponse] = Future.successful(pb.XTxStatusResponse(status = pb.XTxState.XTX_STATUS_COMMITTED, txId = "decision-1"))
+  override def xTxStatus(request: pb.XTxStatusRequest): Future[pb.XTxStatusResponse] = { statusCalls += 1; lastStatusRef=request.ref; Future.successful(pb.XTxStatusResponse(status = pb.XTxState.XTX_STATUS_COMMITTED, txId = "decision-1")) }
 
   // -- Untested RPCs: satisfy the trait with UNIMPLEMENTED -----------------
 
