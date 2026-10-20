@@ -5,7 +5,7 @@ import warnings
 
 from . import scriva_pb2 as scriva__pb2
 
-GRPC_GENERATED_VERSION = '1.82.1'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -138,6 +138,36 @@ class ScrivaStub:
                 '/scriva.v1.Scriva/RollbackTx',
                 request_serializer=scriva__pb2.RollbackTxRequest.SerializeToString,
                 response_deserializer=scriva__pb2.RollbackTxResponse.FromString,
+                _registered_method=True)
+        self.BeginXTx = channel.unary_unary(
+                '/scriva.v1.Scriva/BeginXTx',
+                request_serializer=scriva__pb2.BeginXTxRequest.SerializeToString,
+                response_deserializer=scriva__pb2.BeginXTxResponse.FromString,
+                _registered_method=True)
+        self.StageXTx = channel.unary_unary(
+                '/scriva.v1.Scriva/StageXTx',
+                request_serializer=scriva__pb2.StageXTxRequest.SerializeToString,
+                response_deserializer=scriva__pb2.StageXTxResponse.FromString,
+                _registered_method=True)
+        self.GetXTx = channel.unary_unary(
+                '/scriva.v1.Scriva/GetXTx',
+                request_serializer=scriva__pb2.GetXTxRequest.SerializeToString,
+                response_deserializer=scriva__pb2.GetXTxResponse.FromString,
+                _registered_method=True)
+        self.CommitXTx = channel.unary_unary(
+                '/scriva.v1.Scriva/CommitXTx',
+                request_serializer=scriva__pb2.CommitXTxRequest.SerializeToString,
+                response_deserializer=scriva__pb2.CommitXTxResponse.FromString,
+                _registered_method=True)
+        self.RollbackXTx = channel.unary_unary(
+                '/scriva.v1.Scriva/RollbackXTx',
+                request_serializer=scriva__pb2.RollbackXTxRequest.SerializeToString,
+                response_deserializer=scriva__pb2.RollbackXTxResponse.FromString,
+                _registered_method=True)
+        self.XTxStatus = channel.unary_unary(
+                '/scriva.v1.Scriva/XTxStatus',
+                request_serializer=scriva__pb2.XTxStatusRequest.SerializeToString,
+                response_deserializer=scriva__pb2.XTxStatusResponse.FromString,
                 _registered_method=True)
         self.Watch = channel.unary_stream(
                 '/scriva.v1.Scriva/Watch',
@@ -335,6 +365,84 @@ class ScrivaServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def BeginXTx(self, request, context):
+        """--- Cross-collection transactions (XTx) ---
+
+        A cross-collection transaction stages inserts, updates and deletes on
+        several collections of one database and applies them atomically at commit.
+
+        Isolation is optimistic validation of point reads and writes: every GetXTx
+        and every staged update/delete records the revision (or absence) of the
+        document it touched, and CommitXTx re-checks those observations under the
+        participant locks. A changed observation aborts the commit with ABORTED
+        (reason XTX_CONFLICT) and nothing is applied. There are no predicate reads
+        and therefore no phantom protection: scans, range filters, aggregations and
+        index lookups are not available inside a transaction and are rejected.
+
+        Every failure carries a google.rpc.ErrorInfo detail (domain "scriva.xtx")
+        whose reason is machine-readable and whose metadata["retry_safe"] says
+        whether re-running the transaction can never double-apply. The one
+        ambiguous result is reason XTX_OUTCOME_UNKNOWN (code UNKNOWN): the commit
+        may or may not have been applied, so the client must call XTxStatus with
+        metadata["status_ref"] instead of retrying.
+
+        BeginXTx opens a transaction over an explicit list of participant
+        collections, which must already exist. Nothing is locked or written. The
+        returned xtx_id is a process-local, unguessable handle id that addresses
+        every later call; it does not survive a server restart.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StageXTx(self, request, context):
+        """StageXTx buffers one insert, update or delete on a participant collection.
+        Nothing is written and no other reader can see it before CommitXTx.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetXTx(self, request, context):
+        """GetXTx is a point read through the transaction. It returns the
+        transaction's own staged write when there is one (read-your-writes),
+        otherwise the committed document, which is added to the read set that
+        CommitXTx validates. Because it changes the transaction's state it is
+        classified as a write RPC: it needs a read-write key and is refused on a
+        read-only follower.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CommitXTx(self, request, context):
+        """CommitXTx validates the transaction and applies it atomically. It is
+        idempotent: repeating it on a committed transaction returns the original
+        result, and a transaction whose idempotency key already committed returns
+        that outcome with replayed=true and applies nothing.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RollbackXTx(self, request, context):
+        """RollbackXTx discards everything the transaction staged. It is idempotent.
+        It cannot undo a decision: a committed transaction yields
+        FAILED_PRECONDITION (XTX_FINISHED).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XTxStatus(self, request, context):
+        """XTxStatus reports the outcome of a transaction by coordinator tx_id,
+        idempotency key or xtx_id. It is the only safe way to resolve an
+        XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Watch(self, request, context):
         """--- Watch (server-streaming change feed) ---
 
@@ -526,6 +634,36 @@ def add_ScrivaServicer_to_server(servicer, server):
                     servicer.RollbackTx,
                     request_deserializer=scriva__pb2.RollbackTxRequest.FromString,
                     response_serializer=scriva__pb2.RollbackTxResponse.SerializeToString,
+            ),
+            'BeginXTx': grpc.unary_unary_rpc_method_handler(
+                    servicer.BeginXTx,
+                    request_deserializer=scriva__pb2.BeginXTxRequest.FromString,
+                    response_serializer=scriva__pb2.BeginXTxResponse.SerializeToString,
+            ),
+            'StageXTx': grpc.unary_unary_rpc_method_handler(
+                    servicer.StageXTx,
+                    request_deserializer=scriva__pb2.StageXTxRequest.FromString,
+                    response_serializer=scriva__pb2.StageXTxResponse.SerializeToString,
+            ),
+            'GetXTx': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetXTx,
+                    request_deserializer=scriva__pb2.GetXTxRequest.FromString,
+                    response_serializer=scriva__pb2.GetXTxResponse.SerializeToString,
+            ),
+            'CommitXTx': grpc.unary_unary_rpc_method_handler(
+                    servicer.CommitXTx,
+                    request_deserializer=scriva__pb2.CommitXTxRequest.FromString,
+                    response_serializer=scriva__pb2.CommitXTxResponse.SerializeToString,
+            ),
+            'RollbackXTx': grpc.unary_unary_rpc_method_handler(
+                    servicer.RollbackXTx,
+                    request_deserializer=scriva__pb2.RollbackXTxRequest.FromString,
+                    response_serializer=scriva__pb2.RollbackXTxResponse.SerializeToString,
+            ),
+            'XTxStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XTxStatus,
+                    request_deserializer=scriva__pb2.XTxStatusRequest.FromString,
+                    response_serializer=scriva__pb2.XTxStatusResponse.SerializeToString,
             ),
             'Watch': grpc.unary_stream_rpc_method_handler(
                     servicer.Watch,
@@ -1113,6 +1251,168 @@ class Scriva:
             '/scriva.v1.Scriva/RollbackTx',
             scriva__pb2.RollbackTxRequest.SerializeToString,
             scriva__pb2.RollbackTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BeginXTx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/BeginXTx',
+            scriva__pb2.BeginXTxRequest.SerializeToString,
+            scriva__pb2.BeginXTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StageXTx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/StageXTx',
+            scriva__pb2.StageXTxRequest.SerializeToString,
+            scriva__pb2.StageXTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetXTx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/GetXTx',
+            scriva__pb2.GetXTxRequest.SerializeToString,
+            scriva__pb2.GetXTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CommitXTx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/CommitXTx',
+            scriva__pb2.CommitXTxRequest.SerializeToString,
+            scriva__pb2.CommitXTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RollbackXTx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/RollbackXTx',
+            scriva__pb2.RollbackXTxRequest.SerializeToString,
+            scriva__pb2.RollbackXTxResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XTxStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/scriva.v1.Scriva/XTxStatus',
+            scriva__pb2.XTxStatusRequest.SerializeToString,
+            scriva__pb2.XTxStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

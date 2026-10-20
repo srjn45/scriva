@@ -155,3 +155,9 @@ export interface StatsResult {
   dirty_entries: string;
   size_bytes: string;
 }
+
+export interface BeginXTxOptions { idempotencyKey?: string; idleTimeoutMs?: number; maxLifetimeMs?: number; }
+export interface XTxOperation { collection: string; op: 'insert' | 'update' | 'delete'; id?: string; data?: Record<string, unknown>; expectedRev?: string; }
+export interface BeginXTxResult { xtxId: string; collections: string[]; idempotencyKey: string; }
+export interface CommitXTxResult { txId: string; replayed: boolean; ops: Array<{ collection: string; id: string; rev: string; op: string }>; }
+export interface XTxStatusResult { status: string; txId: string; }

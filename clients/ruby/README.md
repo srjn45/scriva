@@ -2,6 +2,11 @@
 
 Idiomatic Ruby gRPC client for [ScrivaDB](https://github.com/srjn45/scriva).
 
+```ruby
+x = db.begin_xtx(%w[orders inventory], idempotency_key: "order-42")
+db.commit_xtx(x[:xtx_id]) # resolve a lost response via db.xtx_status
+```
+
 **Ruby 3.1+ · gem `scriva`**
 
 ---

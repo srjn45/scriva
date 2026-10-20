@@ -677,6 +677,48 @@ class ScrivaDB:
         )
         return resp.ok
 
+    # -- cross-collection transactions --------------------------------------
+
+    def begin_xtx(self, collections: Sequence[str], *, idempotency_key: str = "",
+                  idle_timeout_ms: int = 0, max_lifetime_ms: int = 0) -> Dict[str, Any]:
+        """Open an XTx.  Keep ``idempotency_key`` to resolve a lost commit response."""
+        with _translate_errors():
+            r = self._stub.BeginXTx(pb.BeginXTxRequest(collections=collections,
+                idempotency_key=idempotency_key, idle_timeout_ms=idle_timeout_ms,
+                max_lifetime_ms=max_lifetime_ms), metadata=self._metadata())
+        return {"xtx_id": r.xtx_id, "collections": list(r.collections), "idempotency_key": r.idempotency_key}
+
+    def stage_xtx(self, xtx_id: str, operation: Mapping[str, Any]) -> str:
+        """Stage insert/update/delete; ``expected_rev`` is sent exactly when supplied."""
+        names = {"insert": pb.XTX_OP_INSERT, "update": pb.XTX_OP_UPDATE, "delete": pb.XTX_OP_DELETE}
+        with _translate_errors():
+            r = self._stub.StageXTx(pb.StageXTxRequest(xtx_id=xtx_id,
+                collection=str(operation["collection"]), op=names[str(operation["op"])],
+                id=int(operation.get("id", 0)),
+                data=_dict_to_struct(operation.get("data", {})),
+                expected_rev=int(operation.get("expected_rev", 0))), metadata=self._metadata())
+        return str(r.id)
+
+    def get_xtx(self, xtx_id: str, collection: str, record_id: Union[int, str]) -> Dict[str, Any]:
+        with _translate_errors():
+            r = self._stub.GetXTx(pb.GetXTxRequest(xtx_id=xtx_id, collection=collection, id=int(record_id)), metadata=self._metadata())
+        return _record_to_dict(r.record)
+
+    def commit_xtx(self, xtx_id: str, *, lock_timeout_ms: int = 0) -> Dict[str, Any]:
+        """Commit once. On UNKNOWN/UNAVAILABLE resolve with :meth:`xtx_status`, never retry blindly."""
+        with _translate_errors():
+            r = self._stub.CommitXTx(pb.CommitXTxRequest(xtx_id=xtx_id, lock_timeout_ms=lock_timeout_ms), metadata=self._metadata())
+        return {"tx_id": r.tx_id, "replayed": r.replayed, "ops": [{"collection": x.collection, "id": str(x.id), "rev": str(x.rev), "op": pb.XTxOpKind.Name(x.op)} for x in r.ops]}
+
+    def rollback_xtx(self, xtx_id: str) -> bool:
+        with _translate_errors():
+            return self._stub.RollbackXTx(pb.RollbackXTxRequest(xtx_id=xtx_id), metadata=self._metadata()).ok
+
+    def xtx_status(self, ref: str) -> Dict[str, str]:
+        with _translate_errors():
+            r = self._stub.XTxStatus(pb.XTxStatusRequest(ref=ref), metadata=self._metadata())
+        return {"status": pb.XTxState.Name(r.status), "tx_id": r.tx_id}
+
     # -- watch ---------------------------------------------------------------
 
     def watch(

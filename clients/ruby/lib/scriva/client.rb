@@ -362,6 +362,41 @@ module Scriva
       resp.ok
     end
 
+    # Cross-collection transactions. Keep the idempotency key so a lost commit
+    # response can be resolved with +xtx_status+, never by blindly retrying.
+    def begin_xtx(collections, idempotency_key: '', idle_timeout_ms: 0, max_lifetime_ms: 0)
+      req = Scriva::V1::BeginXTxRequest.new(collections: collections, idempotency_key: idempotency_key,
+                                             idle_timeout_ms: idle_timeout_ms, max_lifetime_ms: max_lifetime_ms)
+      r = @stub.begin_x_tx(req, metadata: metadata)
+      { xtx_id: r.xtx_id, collections: r.collections.to_a, idempotency_key: r.idempotency_key }
+    end
+
+    def stage_xtx(xtx_id, operation)
+      ops = { insert: :XTX_OP_INSERT, update: :XTX_OP_UPDATE, delete: :XTX_OP_DELETE }
+      req = Scriva::V1::StageXTxRequest.new(xtx_id: xtx_id, collection: operation.fetch(:collection),
+        op: ops.fetch(operation.fetch(:op).to_sym), id: operation.fetch(:id, 0),
+        data: hash_to_struct(operation.fetch(:data, {})), expected_rev: operation.fetch(:expected_rev, 0))
+      @stub.stage_x_tx(req, metadata: metadata).id
+    end
+
+    def get_xtx(xtx_id, collection, id)
+      record_to_hash(@stub.get_x_tx(Scriva::V1::GetXTxRequest.new(xtx_id: xtx_id, collection: collection, id: id), metadata: metadata).record)
+    end
+
+    def commit_xtx(xtx_id, lock_timeout_ms: 0)
+      r = @stub.commit_x_tx(Scriva::V1::CommitXTxRequest.new(xtx_id: xtx_id, lock_timeout_ms: lock_timeout_ms), metadata: metadata)
+      { tx_id: r.tx_id, replayed: r.replayed, ops: r.ops.map { |x| { collection: x.collection, id: x.id, rev: x.rev, op: x.op } } }
+    end
+
+    def rollback_xtx(xtx_id)
+      @stub.rollback_x_tx(Scriva::V1::RollbackXTxRequest.new(xtx_id: xtx_id), metadata: metadata).ok
+    end
+
+    def xtx_status(ref)
+      r = @stub.x_tx_status(Scriva::V1::XTxStatusRequest.new(ref: ref), metadata: metadata)
+      { status: r.status, tx_id: r.tx_id }
+    end
+
     # -- watch ---------------------------------------------------------------
 
     # Subscribe to change events on a collection.

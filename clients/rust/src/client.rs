@@ -90,6 +90,20 @@ pub struct Record {
     pub date_modified: Option<String>,
 }
 
+/// Options supplied when opening a cross-collection transaction.
+#[derive(Debug, Clone, Default)]
+pub struct BeginXTxOptions { pub idempotency_key: String, pub idle_timeout_ms: i64, pub max_lifetime_ms: i64 }
+#[derive(Debug, Clone)]
+pub struct BeginXTxResult { pub xtx_id: String, pub collections: Vec<String>, pub idempotency_key: String }
+#[derive(Debug, Clone)]
+pub struct XTxOperation { pub collection: String, pub op: pb::XTxOpKind, pub id: u64, pub data: serde_json::Value, pub expected_rev: u64 }
+#[derive(Debug, Clone)]
+pub struct XTxOpResult { pub collection: String, pub id: u64, pub rev: u64, pub op: pb::XTxOpKind }
+#[derive(Debug, Clone)]
+pub struct CommitXTxResult { pub tx_id: String, pub ops: Vec<XTxOpResult>, pub replayed: bool }
+#[derive(Debug, Clone)]
+pub struct XTxStatusResult { pub status: pb::XTxState, pub tx_id: String }
+
 /// One sort key and its direction, for the multi-field ordering of a `find`.
 ///
 /// Several may be supplied via [`FindOptions::order_by_fields`]; they are applied
@@ -1082,6 +1096,37 @@ impl ScrivaDB {
             .await?
             .into_inner();
         Ok(resp.ok)
+    }
+
+    /// Begin an atomic transaction across the explicit participant collections.
+    pub async fn begin_xtx(&mut self, collections: Vec<String>, options: BeginXTxOptions) -> Result<BeginXTxResult, ScrivaDbError> {
+        let r = self.client.begin_x_tx(self.req(pb::BeginXTxRequest { collections, idempotency_key: options.idempotency_key, idle_timeout_ms: options.idle_timeout_ms, max_lifetime_ms: options.max_lifetime_ms })).await?.into_inner();
+        Ok(BeginXTxResult { xtx_id: r.xtx_id, collections: r.collections, idempotency_key: r.idempotency_key })
+    }
+
+    pub async fn stage_xtx(&mut self, xtx_id: &str, operation: XTxOperation) -> Result<u64, ScrivaDbError> {
+        let r = self.client.stage_x_tx(self.req(pb::StageXTxRequest { xtx_id: xtx_id.into(), collection: operation.collection, op: operation.op as i32, id: operation.id, data: Some(json_to_struct(operation.data)), expected_rev: operation.expected_rev })).await?.into_inner();
+        Ok(r.id)
+    }
+
+    pub async fn get_xtx(&mut self, xtx_id: &str, collection: &str, id: u64) -> Result<Record, ScrivaDbError> {
+        let r = self.client.get_x_tx(self.req(pb::GetXTxRequest { xtx_id: xtx_id.into(), collection: collection.into(), id })).await?.into_inner();
+        Ok(proto_record_to_record(r.record.expect("GetXTx returned no record")))
+    }
+
+    /// Commit once. For UNKNOWN/UNAVAILABLE, use `xtx_status`; never blind-retry commit.
+    pub async fn commit_xtx(&mut self, xtx_id: &str, lock_timeout_ms: i64) -> Result<CommitXTxResult, ScrivaDbError> {
+        let r = self.client.commit_x_tx(self.req(pb::CommitXTxRequest { xtx_id: xtx_id.into(), lock_timeout_ms })).await?.into_inner();
+        Ok(CommitXTxResult { tx_id: r.tx_id, replayed: r.replayed, ops: r.ops.into_iter().map(|x| XTxOpResult { collection: x.collection, id: x.id, rev: x.rev, op: pb::XTxOpKind::try_from(x.op).unwrap_or(pb::XTxOpKind::XtxOpUnspecified) }).collect() })
+    }
+
+    pub async fn rollback_xtx(&mut self, xtx_id: &str) -> Result<bool, ScrivaDbError> {
+        Ok(self.client.rollback_x_tx(self.req(pb::RollbackXTxRequest { xtx_id: xtx_id.into() })).await?.into_inner().ok)
+    }
+
+    pub async fn xtx_status(&mut self, reference: &str) -> Result<XTxStatusResult, ScrivaDbError> {
+        let r = self.client.x_tx_status(self.req(pb::XTxStatusRequest { r#ref: reference.into() })).await?.into_inner();
+        Ok(XTxStatusResult { status: pb::XTxState::try_from(r.status).unwrap_or(pb::XTxState::XtxStatusUnspecified), tx_id: r.tx_id })
     }
 
     // -------------------------------------------------------------------------

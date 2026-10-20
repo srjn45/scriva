@@ -2,6 +2,11 @@
 
 .NET 8 gRPC client for [ScrivaDB](../../README.md).
 
+```csharp
+var x = await db.BeginXTxAsync(["orders", "inventory"], new("order-42"));
+var result = await db.CommitXTxAsync(x.XTxId); // unknown outcome: await db.XTxStatusAsync(x.IdempotencyKey)
+```
+
 **NuGet package:** `Scriva.Client` (version `0.1.0`)
 
 ---
