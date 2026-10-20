@@ -89,7 +89,9 @@ truncated archive fails instead of installing a partial snapshot.
 
 Those are bootstrap protections, not a reason to accept snapshots from an
 untrusted source. Keep backup access and encryption keys separate; encrypted
-segments make the archive ciphertext, but a lost key makes recovery impossible.
+collection segments remain ciphertext, while archive metadata and other
+collections may remain readable. A lost key makes an encrypted collection
+unrecoverable.
 
 ## Verify, repair, then restart
 
