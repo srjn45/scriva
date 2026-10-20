@@ -597,7 +597,7 @@ class ScrivaDB
         $req->setIdempotencyKey($options['idempotencyKey'] ?? '');
         $req->setIdleTimeoutMs($options['idleTimeoutMs'] ?? 0);
         $req->setMaxLifetimeMs($options['maxLifetimeMs'] ?? 0);
-        [$resp, $status] = $this->stub->BeginXTx($req, $this->metadata)->wait(); $this->checkStatus($status);
+        [$resp, $status] = $this->stub->BeginXTx($req, $this->metadata)->wait(); $this->checkXTxStatus($status);
         return ['xtxId' => $resp->getXtxId(), 'collections' => iterator_to_array($resp->getCollections()), 'idempotencyKey' => $resp->getIdempotencyKey()];
     }
 
@@ -607,21 +607,21 @@ class ScrivaDB
         $req = new StageXTxRequest(); $req->setXtxId($xtxId); $req->setCollection($operation['collection']); $req->setOp($ops[$operation['op']]);
         $req->setId($operation['id'] ?? 0); $req->setExpectedRev($operation['expectedRev'] ?? 0);
         if (isset($operation['data'])) $req->setData($this->arrayToStruct($operation['data']));
-        [$resp, $status] = $this->stub->StageXTx($req, $this->metadata)->wait(); $this->checkStatus($status); return (string)$resp->getId();
+        [$resp, $status] = $this->stub->StageXTx($req, $this->metadata)->wait(); $this->checkXTxStatus($status); return (string)$resp->getId();
     }
 
     public function getXTx(string $xtxId, string $collection, int $id): array
-    { $req = new GetXTxRequest(); $req->setXtxId($xtxId); $req->setCollection($collection); $req->setId($id); [$r,$s]=$this->stub->GetXTx($req,$this->metadata)->wait(); $this->checkStatus($s); return $this->recordToArray($r->getRecord()); }
+    { $req = new GetXTxRequest(); $req->setXtxId($xtxId); $req->setCollection($collection); $req->setId($id); [$r,$s]=$this->stub->GetXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return $this->recordToArray($r->getRecord()); }
 
     /** Commit once. For unknown outcomes, call xTxStatus rather than retrying. */
     public function commitXTx(string $xtxId, array $options = []): array
-    { $req=new CommitXTxRequest(); $req->setXtxId($xtxId); $req->setLockTimeoutMs($options['lockTimeoutMs'] ?? 0); [$r,$s]=$this->stub->CommitXTx($req,$this->metadata)->wait(); $this->checkStatus($s); $ops=[]; foreach($r->getOps() as $x) $ops[]=['collection'=>$x->getCollection(),'id'=>(string)$x->getId(),'rev'=>(string)$x->getRev(),'op'=>$x->getOp()]; return ['txId'=>$r->getTxId(),'ops'=>$ops,'replayed'=>$r->getReplayed()]; }
+    { $req=new CommitXTxRequest(); $req->setXtxId($xtxId); $req->setLockTimeoutMs($options['lockTimeoutMs'] ?? 0); [$r,$s]=$this->stub->CommitXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); $ops=[]; foreach($r->getOps() as $x) $ops[]=['collection'=>$x->getCollection(),'id'=>(string)$x->getId(),'rev'=>(string)$x->getRev(),'op'=>$x->getOp()]; return ['txId'=>$r->getTxId(),'ops'=>$ops,'replayed'=>$r->getReplayed()]; }
 
     public function rollbackXTx(string $xtxId): bool
-    { $req=new RollbackXTxRequest(); $req->setXtxId($xtxId); [$r,$s]=$this->stub->RollbackXTx($req,$this->metadata)->wait(); $this->checkStatus($s); return $r->getOk(); }
+    { $req=new RollbackXTxRequest(); $req->setXtxId($xtxId); [$r,$s]=$this->stub->RollbackXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return $r->getOk(); }
 
     public function xTxStatus(string $ref): array
-    { $req=new XTxStatusRequest(); $req->setRef($ref); [$r,$s]=$this->stub->XTxStatus($req,$this->metadata)->wait(); $this->checkStatus($s); return ['status'=>$r->getStatus(),'txId'=>$r->getTxId()]; }
+    { $req=new XTxStatusRequest(); $req->setRef($ref); [$r,$s]=$this->stub->XTxStatus($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return ['status'=>$r->getStatus(),'txId'=>$r->getTxId()]; }
 
     // -------------------------------------------------------------------------
     // Watch (server-streaming change feed)
@@ -1054,5 +1054,10 @@ class ScrivaDB
             default:
                 throw new ScrivaDBException($message, $status->code);
         }
+    }
+
+    private function checkXTxStatus(\stdClass $status): void
+    {
+        if ($status->code !== \Grpc\STATUS_OK) throw new XTxException($status);
     }
 }

@@ -27,6 +27,10 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import grpc
 from google.protobuf import struct_pb2
 from google.protobuf.json_format import MessageToDict, ParseDict
+try:  # supplied by googleapis-common-protos; keep the base client importable without it
+    from google.rpc import error_details_pb2, status_pb2
+except ImportError:  # pragma: no cover - optional at runtime, exercised when installed
+    error_details_pb2 = status_pb2 = None  # type: ignore[assignment]
 
 from .proto import scriva_pb2 as pb
 from .proto import scriva_pb2_grpc as pb_grpc
@@ -88,6 +92,42 @@ class NotFoundError(ScrivaDBError):
 
 class AlreadyExistsError(ScrivaDBError):
     """A keyed insert used a key already held by a live record."""
+
+
+class XTxError(ScrivaDBError):
+    """An XTx RPC failure retaining the original gRPC error and its trailing metadata.
+
+    In particular callers should inspect ``metadata`` for ``status_ref`` on an
+    unknown commit outcome, then call :meth:`ScrivaDB.xtx_status` rather than
+    issuing another commit.
+    """
+    def __init__(self, error: grpc.RpcError):
+        super().__init__(error.details() if callable(getattr(error, "details", None)) else str(error))
+        self.error = error
+        self.code = error.code() if callable(getattr(error, "code", None)) else None
+        self.metadata = tuple(error.trailing_metadata() or ()) if callable(getattr(error, "trailing_metadata", None)) else ()
+        self.reason: Optional[str] = None
+        self.error_metadata: Dict[str, str] = {}
+        if status_pb2 is not None:
+            for key, value in self.metadata:
+                if key != "grpc-status-details-bin":
+                    continue
+                status = status_pb2.Status()
+                status.ParseFromString(value)
+                for detail in status.details:
+                    info = error_details_pb2.ErrorInfo()
+                    if detail.Is(info.DESCRIPTOR):
+                        detail.Unpack(info)
+                        if info.domain == "scriva.xtx":
+                            self.reason, self.error_metadata = info.reason, dict(info.metadata)
+
+
+@contextlib.contextmanager
+def _translate_xtx_errors() -> Iterator[None]:
+    try:
+        yield
+    except grpc.RpcError as exc:
+        raise XTxError(exc) from exc
 
 
 @contextlib.contextmanager
@@ -682,7 +722,7 @@ class ScrivaDB:
     def begin_xtx(self, collections: Sequence[str], *, idempotency_key: str = "",
                   idle_timeout_ms: int = 0, max_lifetime_ms: int = 0) -> Dict[str, Any]:
         """Open an XTx.  Keep ``idempotency_key`` to resolve a lost commit response."""
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.BeginXTx(pb.BeginXTxRequest(collections=collections,
                 idempotency_key=idempotency_key, idle_timeout_ms=idle_timeout_ms,
                 max_lifetime_ms=max_lifetime_ms), metadata=self._metadata())
@@ -691,31 +731,34 @@ class ScrivaDB:
     def stage_xtx(self, xtx_id: str, operation: Mapping[str, Any]) -> str:
         """Stage insert/update/delete; ``expected_rev`` is sent exactly when supplied."""
         names = {"insert": pb.XTX_OP_INSERT, "update": pb.XTX_OP_UPDATE, "delete": pb.XTX_OP_DELETE}
-        with _translate_errors():
-            r = self._stub.StageXTx(pb.StageXTxRequest(xtx_id=xtx_id,
-                collection=str(operation["collection"]), op=names[str(operation["op"])],
-                id=int(operation.get("id", 0)),
-                data=_dict_to_struct(operation.get("data", {})),
-                expected_rev=int(operation.get("expected_rev", 0))), metadata=self._metadata())
+        request = pb.StageXTxRequest(xtx_id=xtx_id, collection=str(operation["collection"]),
+            op=names[str(operation["op"])], id=int(operation.get("id", 0)),
+            expected_rev=int(operation.get("expected_rev", 0)))
+        if operation["op"] != "delete" and "data" in operation:
+            request.data.CopyFrom(_dict_to_struct(operation["data"]))
+        with _translate_xtx_errors():
+            r = self._stub.StageXTx(request, metadata=self._metadata())
         return str(r.id)
 
     def get_xtx(self, xtx_id: str, collection: str, record_id: Union[int, str]) -> Dict[str, Any]:
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.GetXTx(pb.GetXTxRequest(xtx_id=xtx_id, collection=collection, id=int(record_id)), metadata=self._metadata())
-        return _record_to_dict(r.record)
+        out = _record_to_dict(r.record)
+        out["rev"] = str(r.record.rev)  # include zero for a transaction-view staged insert
+        return out
 
     def commit_xtx(self, xtx_id: str, *, lock_timeout_ms: int = 0) -> Dict[str, Any]:
         """Commit once. On UNKNOWN/UNAVAILABLE resolve with :meth:`xtx_status`, never retry blindly."""
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.CommitXTx(pb.CommitXTxRequest(xtx_id=xtx_id, lock_timeout_ms=lock_timeout_ms), metadata=self._metadata())
         return {"tx_id": r.tx_id, "replayed": r.replayed, "ops": [{"collection": x.collection, "id": str(x.id), "rev": str(x.rev), "op": pb.XTxOpKind.Name(x.op)} for x in r.ops]}
 
     def rollback_xtx(self, xtx_id: str) -> bool:
-        with _translate_errors():
+        with _translate_xtx_errors():
             return self._stub.RollbackXTx(pb.RollbackXTxRequest(xtx_id=xtx_id), metadata=self._metadata()).ok
 
     def xtx_status(self, ref: str) -> Dict[str, str]:
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.XTxStatus(pb.XTxStatusRequest(ref=ref), metadata=self._metadata())
         return {"status": pb.XTxState.Name(r.status), "tx_id": r.tx_id}
 

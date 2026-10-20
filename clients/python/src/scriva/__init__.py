@@ -7,7 +7,7 @@ The public surface is the :class:`ScrivaDB` client class::
     db = ScrivaDB("localhost", 5433, "dev-key")
 """
 
-from .client import AlreadyExistsError, ScrivaDB, ScrivaDBError, NotFoundError
+from .client import AlreadyExistsError, ScrivaDB, ScrivaDBError, NotFoundError, XTxError
 
-__all__ = ["ScrivaDB", "ScrivaDBError", "NotFoundError", "AlreadyExistsError"]
+__all__ = ["ScrivaDB", "ScrivaDBError", "NotFoundError", "AlreadyExistsError", "XTxError"]
 __version__ = "1.2.1"
