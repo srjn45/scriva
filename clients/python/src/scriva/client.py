@@ -90,6 +90,28 @@ class AlreadyExistsError(ScrivaDBError):
     """A keyed insert used a key already held by a live record."""
 
 
+class XTxError(ScrivaDBError):
+    """An XTx RPC failure retaining the original gRPC error and its trailing metadata.
+
+    In particular callers should inspect ``metadata`` for ``status_ref`` on an
+    unknown commit outcome, then call :meth:`ScrivaDB.xtx_status` rather than
+    issuing another commit.
+    """
+    def __init__(self, error: grpc.RpcError):
+        super().__init__(error.details() if callable(getattr(error, "details", None)) else str(error))
+        self.error = error
+        self.code = error.code() if callable(getattr(error, "code", None)) else None
+        self.metadata = tuple(error.trailing_metadata() or ()) if callable(getattr(error, "trailing_metadata", None)) else ()
+
+
+@contextlib.contextmanager
+def _translate_xtx_errors() -> Iterator[None]:
+    try:
+        yield
+    except grpc.RpcError as exc:
+        raise XTxError(exc) from exc
+
+
 @contextlib.contextmanager
 def _translate_errors() -> Iterator[None]:
     """Map gRPC ``NOT_FOUND`` / ``ALREADY_EXISTS`` onto typed exceptions.
@@ -341,7 +363,7 @@ class ScrivaDB:
         already held by a live record raises :class:`AlreadyExistsError`. A keyed
         insert does not participate in transactions or per-record TTL.
         """
-        with _translate_errors():
+        with _translate_xtx_errors():
             resp = self._stub.Insert(
                 pb.InsertRequest(
                     collection=collection,
@@ -554,7 +576,7 @@ class ScrivaDB:
         ``fields`` projects ``data`` to those top-level fields (``id``/``key``/
         ``rev`` always returned).
         """
-        with _translate_errors():
+        with _translate_xtx_errors():
             resp = self._stub.FindByKey(
                 pb.FindByKeyRequest(
                     collection=collection,
@@ -574,7 +596,7 @@ class ScrivaDB:
         a dict with ``id``, ``key``, ``rev`` (after the write) and
         ``date_modified``.
         """
-        with _translate_errors():
+        with _translate_xtx_errors():
             resp = self._stub.UpdateByKey(
                 pb.UpdateByKeyRequest(
                     collection=collection, key=key, data=_dict_to_struct(data)
@@ -595,7 +617,7 @@ class ScrivaDB:
 
         Raises :class:`NotFoundError` if no live record carries ``key``.
         """
-        with _translate_errors():
+        with _translate_xtx_errors():
             resp = self._stub.DeleteByKey(
                 pb.DeleteByKeyRequest(collection=collection, key=key),
                 metadata=self._metadata(),
@@ -682,7 +704,7 @@ class ScrivaDB:
     def begin_xtx(self, collections: Sequence[str], *, idempotency_key: str = "",
                   idle_timeout_ms: int = 0, max_lifetime_ms: int = 0) -> Dict[str, Any]:
         """Open an XTx.  Keep ``idempotency_key`` to resolve a lost commit response."""
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.BeginXTx(pb.BeginXTxRequest(collections=collections,
                 idempotency_key=idempotency_key, idle_timeout_ms=idle_timeout_ms,
                 max_lifetime_ms=max_lifetime_ms), metadata=self._metadata())
@@ -691,7 +713,7 @@ class ScrivaDB:
     def stage_xtx(self, xtx_id: str, operation: Mapping[str, Any]) -> str:
         """Stage insert/update/delete; ``expected_rev`` is sent exactly when supplied."""
         names = {"insert": pb.XTX_OP_INSERT, "update": pb.XTX_OP_UPDATE, "delete": pb.XTX_OP_DELETE}
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.StageXTx(pb.StageXTxRequest(xtx_id=xtx_id,
                 collection=str(operation["collection"]), op=names[str(operation["op"])],
                 id=int(operation.get("id", 0)),
