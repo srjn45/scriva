@@ -11,17 +11,21 @@ A lightweight, append-only, file-based document database — single binary, zero
 ## Install
 
 ```bash
-# Homebrew (via the tap)
+# Homebrew (via the tap; published when a release has the tap token)
 brew install --cask srjn45/scriva/scriva
 
 # Go
 go install github.com/srjn45/scriva/cmd/scriva@latest
 
 # Docker (the image binds 0.0.0.0, so an API key or TLS is required)
-docker run -p 5433:5433 -p 8080:8080 -e SCRIVA_API_KEY=dev-key ghcr.io/srjn45/scriva
+docker run -p 5433:5433 -p 8080:8080 -e SCRIVA_API_KEY=dev-key ghcr.io/srjn45/scriva \
+  --grpc-addr 0.0.0.0:5433 --rest-addr 0.0.0.0:8080
 ```
 
-See [Getting Started](docs/getting-started.md) for Scoop, apt/rpm, and AUR channels.
+The published image's entrypoint is `scriva serve --data /data`, so the listen
+addresses must be passed as above for published ports to be reachable. See
+[Getting Started](docs/getting-started.md#install) for release archives, `.deb`/`.rpm`
+packages, Scoop and AUR.
 
 ---
 
@@ -172,7 +176,7 @@ gRPC/protobuf/Prometheus/cobra/OpenTelemetry dependencies — a CI gate enforces
 that.
 
 This is a distinct distribution channel: **`go get` for embedding**, while the
-standalone server ships via Homebrew/apt/GHCR and tagged binary releases. Both
+standalone server ships via GHCR, tagged binary releases (with `.deb`/`.rpm` packages), and the Homebrew tap. Both
 build from the same repo. See **[docs/embedding.md](docs/embedding.md)** for the
 full API reference, durability modes, the Watch overflow contract, the
 versioning/stability policy, and a migration guide.
@@ -183,8 +187,12 @@ versioning/stability policy, and a migration guide.
 
 Idiomatic, hand-written client libraries are available for ten languages. Each
 wraps the same gRPC API, takes the same connection config (`host`, `port`,
-`api_key`, optional TLS CA cert), and exposes every RPC including the streaming
-`Find` and `Watch` calls.
+`api_key`, optional TLS CA cert), and wraps the core collection, record, index,
+single-collection transaction, `Aggregate`, `Compact` and `Snapshot` calls, including
+the streaming `Find` and `Watch` calls. The cross-collection transaction RPCs
+(`BeginXTx`…`XTxStatus`) and the replication/admin RPCs (`Replicate`,
+`ReplicationStatus`, `Promote`) have no hand-written SDK methods; call them through
+the generated gRPC stubs (each SDK bundles them) or, where a REST route exists, over REST.
 
 | Language | Install | Reference |
 |---|---|---|
@@ -200,7 +208,9 @@ wraps the same gRPC API, takes the same connection config (`host`, `port`,
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](clients/csharp/README.md) |
 
 Prefer to generate your own? The checked-in [OpenAPI spec](docs/openapi/scriva.swagger.json)
-covers every RPC — see [Getting Started](docs/getting-started.md#client-sdks).
+describes the 29 REST-annotated operations of the gateway. The five gRPC-only RPCs
+(`BeginTx`, `CommitTx`, `RollbackTx`, `Snapshot`, `Replicate`) are not in it; generate
+from `proto/scriva.proto` for those — see [Getting Started](docs/getting-started.md#openapi-spec-use-from-any-language).
 
 ---
 

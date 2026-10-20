@@ -5,10 +5,20 @@
 ### Option 1: Download binary
 
 ```bash
-# Linux amd64
-curl -L https://github.com/srjn45/scriva/releases/latest/download/scriva_linux_amd64.tar.gz | tar xz
+# Linux amd64 — archive names include the version: scriva_<version>_<os>_<arch>.tar.gz
+# (.zip on Windows). Pick the asset from https://github.com/srjn45/scriva/releases
+VERSION=1.2.1   # replace with the release you want
+curl -L "https://github.com/srjn45/scriva/releases/download/v${VERSION}/scriva_${VERSION}_linux_amd64.tar.gz" | tar xz
 sudo mv scriva scriva-cli /usr/local/bin/
 ```
+
+Each release also attaches `.deb` and `.rpm` packages (amd64/arm64) and
+`checksums.txt`. There is **no apt/yum repository**: download the package from the
+release page and install it with `sudo dpkg -i` / `sudo rpm -i`. The release job
+additionally publishes a Homebrew cask (`brew install --cask srjn45/scriva/scriva`),
+a Scoop manifest (`srjn45/scoop-scriva` bucket) and the AUR package `scriva-bin`;
+those three are pushed only when the corresponding publishing secrets are configured
+for the release, so they can lag behind or be missing for a given version.
 
 ### Option 2: Docker
 
@@ -17,8 +27,16 @@ docker run -d \
   -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
   -e SCRIVA_API_KEY=my-secret-key \
-  ghcr.io/srjn45/scriva:latest
+  ghcr.io/srjn45/scriva:latest \
+  --grpc-addr 0.0.0.0:5433 --rest-addr 0.0.0.0:8080
 ```
+
+The published (GoReleaser) image's entrypoint is `scriva serve --data /data`, so
+the listeners default to `127.0.0.1` inside the container; pass the two address
+flags (appended to the entrypoint — don't repeat `serve`) so the published ports
+are reachable. The image built from the repo `Dockerfile` (and `docker compose`)
+already bakes those flags into its entrypoint. Binding `0.0.0.0` requires an API key
+or TLS, otherwise the server refuses to start.
 
 ### Option 3: Build from source
 
@@ -915,8 +933,13 @@ Regenerate it after changing `proto/scriva.proto`:
 make openapi   # requires the buf CLI
 ```
 
-Because every operation is in the spec, you can generate a typed client for almost
-any language without hand-writing one — e.g. with
+The spec covers the 29 RPCs that carry a REST annotation. Five RPCs are **gRPC-only**
+and have no REST route, so they are absent from the spec: `BeginTx`, `CommitTx`,
+`RollbackTx` (single-collection transactions), `Snapshot` and `Replicate`
+(streaming backup/replication). Cross-collection transactions (`*XTx`),
+`ReplicationStatus` and `Promote` are in the spec. To reach the gRPC-only RPCs,
+generate gRPC stubs from `proto/scriva.proto` instead. Otherwise you can generate a
+typed client for almost any language without hand-writing one — e.g. with
 [openapi-generator](https://openapi-generator.tech/):
 
 ```bash
@@ -1889,9 +1912,14 @@ Serve `dist/` with any static file server; point it at a running ScrivaDB REST g
 
 ScrivaDB ships hand-written, idiomatic client libraries for ten languages. Every
 SDK wraps the same gRPC API (`proto/scriva.proto`), takes the same connection
-config (`host`, `port`, `api_key`, optional TLS CA cert), and exposes every RPC —
-including the streaming `Find` and `Watch` calls in each language's native
-iterator/stream style.
+config (`host`, `port`, `api_key`, optional TLS CA cert), and wraps the core
+collection, record, index, single-collection transaction (`BeginTx`/`CommitTx`/
+`RollbackTx`), `Aggregate`, `Compact` and `Snapshot` calls — including the streaming
+`Find` and `Watch` calls in each language's native iterator/stream style. They do
+**not** wrap the cross-collection transaction RPCs (`BeginXTx`, `StageXTx`, `GetXTx`,
+`CommitXTx`, `RollbackXTx`, `XTxStatus`) or `Replicate`, `ReplicationStatus` and
+`Promote`; for those use the generated gRPC stubs (bundled in each SDK, built from
+`proto/scriva.proto`) or the REST gateway where a route exists.
 
 | Language | Install | Reference |
 |---|---|---|

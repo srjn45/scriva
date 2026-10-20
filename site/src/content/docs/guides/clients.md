@@ -6,11 +6,13 @@ description: Idiomatic, hand-written client libraries for ten languages — plus
 Idiomatic, **hand-written** client libraries are available for ten languages.
 Each wraps the same gRPC API, takes the same connection config (`host`, `port`,
 `api_key`, optional TLS CA cert), and wraps the core collection, record, index,
-single-collection transaction and streaming `Find`/`Watch` calls. The
+single-collection transaction (`BeginTx`/`CommitTx`/`RollbackTx`), `Aggregate`,
+`Compact`, `Snapshot` and streaming `Find`/`Watch` calls. They do **not** wrap the
 cross-collection transaction RPCs (`BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`,
-`RollbackXTx`, `XTxStatus`) have no hand-written SDK methods; use the generated
-gRPC stubs directly. `Snapshot` and `Replicate` are gRPC-only (no REST route) and
-not every SDK wraps them.
+`RollbackXTx`, `XTxStatus`) or `Replicate`, `ReplicationStatus` and `Promote`; for
+those, use the generated gRPC stubs (bundled in each SDK, built from
+`proto/scriva.proto`) or REST where a route exists. `Snapshot` and `Replicate` are
+gRPC-only (no REST route).
 
 | Language | Install | Reference |
 |---|---|---|
@@ -239,7 +241,9 @@ foreach ($adults as $r) {
 
 Prefer to generate a client, or working in a language without a hand-written
 SDK? The checked-in **OpenAPI spec** (`docs/openapi/scriva.swagger.json`) is
-generated from the proto and covers every RPC. Feed it to
+generated from the proto and describes the 29 REST-annotated operations. The five
+gRPC-only RPCs (`BeginTx`, `CommitTx`, `RollbackTx`, `Snapshot`, `Replicate`) are not
+in it; generate gRPC stubs from `proto/scriva.proto` to reach them. Feed the spec to
 [openapi-generator](https://openapi-generator.tech/) for any language.
 
 See the [API reference](/scriva/reference/api/) for details on the gRPC and

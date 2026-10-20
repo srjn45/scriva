@@ -22,7 +22,7 @@ The gRPC stubs, the REST gateway, and the OpenAPI spec are all generated from it
 | Keyed | `FindByKey`, `UpdateByKey`, `DeleteByKey`, `Upsert`, `UpdateIfRev` (a caller key is set on `Insert`; there is no `InsertWithKey` RPC) |
 | Query | `Find` (streaming), `Aggregate` (streaming), `Watch` (streaming) |
 | Indexes | `EnsureIndex`, `DropIndex`, `ListIndexes` |
-| Transactions | `BeginTx`, `CommitTx`, `RollbackTx` (gRPC only) |
+| Transactions | `BeginTx`, `CommitTx`, `RollbackTx` (**gRPC only**, no REST route) |
 | Cross-collection transactions | `BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`, `RollbackXTx`, `XTxStatus` |
 | Admin | `Compact`, `ReplicationStatus`, `Promote` |
 | Backup / replication | `Snapshot` (streaming), `Replicate` (streaming) — **gRPC only**, no REST route |
@@ -45,16 +45,18 @@ curl -H "x-api-key: dev-key" \
 # find
 curl -H "x-api-key: dev-key" \
   -d '{"filter":{"field":"age","op":"gt","value":18}}' \
-  http://localhost:8080/v1/users/records:find
+  http://localhost:8080/v1/users/records/find
 ```
 
 ## OpenAPI
 
 A generated OpenAPI/Swagger spec lives at
 [`docs/openapi/scriva.swagger.json`](https://github.com/srjn45/scriva/blob/main/docs/openapi/scriva.swagger.json)
-and covers every RPC. Generate a client for any language with
+and covers the 29 REST-annotated operations. The five gRPC-only RPCs —
+`BeginTx`, `CommitTx`, `RollbackTx`, `Snapshot` and `Replicate` — have no REST
+route and are not in the spec; use the generated gRPC stubs for them. Generate a client for any language with
 [openapi-generator](https://openapi-generator.tech/), or use one of the
-[hand-written SDKs](/scriva/guides/clients/).
+[hand-written SDKs](/scriva/guides/clients/) (which wrap most, but not all, RPCs — see that page for the exceptions).
 
 ## Health endpoints
 

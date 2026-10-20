@@ -26,8 +26,8 @@ and backwards compatibility is maintained from here.
   providers, wrong-key detection, key rotation, and lazy or bulk migration.
 - **APIs** — dual gRPC + REST from one binary, generated OpenAPI, and ten
   hand-written client SDKs.
-- **Distribution** — standalone server (Homebrew / apt / GHCR / release
-  binaries) **and** an embeddable Go engine with zero heavy dependencies.
+- **Distribution** — standalone server (GHCR / release binaries with
+  `.deb`/`.rpm` / Homebrew tap) **and** an embeddable Go engine with zero heavy dependencies.
 - **Replication** — leader→follower with read replicas and manual `Promote`
   failover.
 - **Operations** — Prometheus metrics, structured logging, slow-query log, audit
