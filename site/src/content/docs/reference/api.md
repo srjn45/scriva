@@ -34,6 +34,9 @@ Errors use standard gRPC status codes — e.g. a duplicate key is `AlreadyExists
 a missing record is `NotFound`, a write to a read replica is
 `FAILED_PRECONDITION`, and shed load is `RESOURCE_EXHAUSTED`.
 
+For the XTx lifecycle, isolation limits, retry rules, and authorization model,
+see [Cross-collection transactions](/scriva/guides/cross-collection-transactions/).
+
 ## REST examples
 
 ```bash

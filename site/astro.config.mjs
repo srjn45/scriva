@@ -49,6 +49,9 @@ export default defineConfig({
         { label: 'Guides', items: [
           { label: 'Data model', slug: 'guides/data-model' },
           { label: 'Queries & indexes', slug: 'guides/queries' },
+          { label: 'Cross-collection transactions', slug: 'guides/cross-collection-transactions' },
+          { label: 'Atomic batches & upgrading roots', slug: 'guides/atomic-batches' },
+          { label: 'Operations & security', slug: 'guides/operations-security' },
           { label: 'Durability & backup', slug: 'guides/durability-and-backup' },
           { label: 'Encryption at rest', slug: 'guides/encryption' },
           { label: 'Replication & failover', slug: 'guides/replication' },

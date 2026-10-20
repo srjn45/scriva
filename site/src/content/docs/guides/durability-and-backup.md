@@ -37,8 +37,10 @@ middle ground for in-process use.
   from starting (`--integrity-policy fail`, the default) instead of serving
   wrong answers. Only one process may own a data directory (an exclusive `LOCK`
   file; use a local filesystem).
-- `kill -9` loses nothing that was acknowledged; **power loss** can lose writes
-  not yet flushed, bounded by your sync mode above.
+- Crash recovery replays the append-only log, but an acknowledged write is only
+  durable across power loss to the degree selected by `--sync`: `none` can lose
+  OS-buffered writes, `interval` can lose the unflushed interval, and `always`
+  pays an fsync per write.
 
 ## Verify and repair
 
@@ -57,6 +59,9 @@ resolves conflicting history on its own. See the
 [index recovery runbook](https://github.com/srjn45/scriva/blob/main/docs/runbook-index-recovery.md)
 for the full decision tree.
 
+The [Operations & security](/scriva/guides/operations-security/) guide covers
+the stop, backup, repair, and reverify sequence, including salvage quarantine.
+
 ## Online backup
 
 `scriva-cli backup` streams a **consistent gzip snapshot** of the live database
@@ -68,18 +73,25 @@ scriva-cli backup --out scriva-$(date +%F).tar.gz --api-key dev-key
 
 ### Restore
 
-Restore is deliberately boring — it's just a tarball:
+The archive format is a gzip tarball, but `tar` is **not** an archive validator.
+Only extract a backup you trust into a new, empty directory; do not unpack an
+untrusted archive over a live data directory. Verify the result before serving:
 
 ```bash
+mkdir ./restored-data
 tar xzf scriva-2026-07-10.tar.gz -C ./restored-data
+scriva verify --data ./restored-data
 scriva serve --data ./restored-data --api-key dev-key
 ```
 
+Follower bootstrap has stricter built-in extraction checks; see [Operations &
+security](/scriva/guides/operations-security/#back-up-and-bootstrap-safely).
+
 :::tip[Encrypted backups for free]
 If a collection uses [encryption at rest](/scriva/guides/encryption/), its
-segment files are already ciphertext — so the backup tarball is encrypted with
-no extra step, and a leaked archive is useless without the key. Just remember to
-back up the **key separately**: a backup without it is unrecoverable.
+segment contents are ciphertext in the archive. That does not make every archive
+field secret metadata, and it does not replace access controls for the backup.
+Back up the **key separately**: a backup without it is unrecoverable.
 :::
 
 ## Compaction
@@ -95,6 +107,10 @@ scriva-cli compact users --api-key dev-key
 
 ## Next
 
+- [Atomic batches & upgrading roots](/scriva/guides/atomic-batches/) — make
+  multi-record writes crash-atomic and safely convert legacy data.
 - [Replication & failover](/scriva/guides/replication/) — scale reads and
   survive a leader loss.
 - [Configuration](/scriva/reference/configuration/) — every server flag.
+- [Operations & security](/scriva/guides/operations-security/) — listener and
+  recovery hardening.

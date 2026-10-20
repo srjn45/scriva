@@ -63,6 +63,9 @@ configured, or `--insecure-allow-remote` is set explicitly.
 scope. A read-only key is refused on writes, and keys **hot-reload on `SIGHUP`**
 for rotation without a restart.
 
+For secure listener rollout, explicit CORS/body-limit behavior, replication
+TLS/mTLS, and downgrade protection, see [Operations & security](/scriva/guides/operations-security/).
+
 ## Observability & limits
 
 | Flag | Description |
@@ -85,4 +88,5 @@ for rotation without a restart.
 ## Next
 
 - [Durability & backup](/scriva/guides/durability-and-backup/)
+- [Operations & security](/scriva/guides/operations-security/)
 - [API & OpenAPI](/scriva/reference/api/)
