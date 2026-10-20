@@ -2,6 +2,11 @@
 
 PHP 8.1+ gRPC client for [ScrivaDB](../../README.md).
 
+```php
+$x = $db->beginXTx(['orders', 'inventory'], ['idempotencyKey' => 'order-42']);
+$result = $db->commitXTx($x['xtxId']); // ambiguity: call xTxStatus(), not another commit
+```
+
 **Packagist package:** `srjn45/scriva`
 
 ---

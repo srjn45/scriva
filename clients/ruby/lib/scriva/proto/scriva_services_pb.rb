@@ -65,6 +65,54 @@ module Scriva
         rpc :BeginTx, ::Scriva::V1::BeginTxRequest, ::Scriva::V1::BeginTxResponse
         rpc :CommitTx, ::Scriva::V1::CommitTxRequest, ::Scriva::V1::CommitTxResponse
         rpc :RollbackTx, ::Scriva::V1::RollbackTxRequest, ::Scriva::V1::RollbackTxResponse
+        # --- Cross-collection transactions (XTx) ---
+        #
+        # A cross-collection transaction stages inserts, updates and deletes on
+        # several collections of one database and applies them atomically at commit.
+        #
+        # Isolation is optimistic validation of point reads and writes: every GetXTx
+        # and every staged update/delete records the revision (or absence) of the
+        # document it touched, and CommitXTx re-checks those observations under the
+        # participant locks. A changed observation aborts the commit with ABORTED
+        # (reason XTX_CONFLICT) and nothing is applied. There are no predicate reads
+        # and therefore no phantom protection: scans, range filters, aggregations and
+        # index lookups are not available inside a transaction and are rejected.
+        #
+        # Every failure carries a google.rpc.ErrorInfo detail (domain "scriva.xtx")
+        # whose reason is machine-readable and whose metadata["retry_safe"] says
+        # whether re-running the transaction can never double-apply. The one
+        # ambiguous result is reason XTX_OUTCOME_UNKNOWN (code UNKNOWN): the commit
+        # may or may not have been applied, so the client must call XTxStatus with
+        # metadata["status_ref"] instead of retrying.
+        #
+        # BeginXTx opens a transaction over an explicit list of participant
+        # collections, which must already exist. Nothing is locked or written. The
+        # returned xtx_id is a process-local, unguessable handle id that addresses
+        # every later call; it does not survive a server restart.
+        rpc :BeginXTx, ::Scriva::V1::BeginXTxRequest, ::Scriva::V1::BeginXTxResponse
+        # StageXTx buffers one insert, update or delete on a participant collection.
+        # Nothing is written and no other reader can see it before CommitXTx.
+        rpc :StageXTx, ::Scriva::V1::StageXTxRequest, ::Scriva::V1::StageXTxResponse
+        # GetXTx is a point read through the transaction. It returns the
+        # transaction's own staged write when there is one (read-your-writes),
+        # otherwise the committed document, which is added to the read set that
+        # CommitXTx validates. Because it changes the transaction's state it is
+        # classified as a write RPC: it needs a read-write key and is refused on a
+        # read-only follower.
+        rpc :GetXTx, ::Scriva::V1::GetXTxRequest, ::Scriva::V1::GetXTxResponse
+        # CommitXTx validates the transaction and applies it atomically. It is
+        # idempotent: repeating it on a committed transaction returns the original
+        # result, and a transaction whose idempotency key already committed returns
+        # that outcome with replayed=true and applies nothing.
+        rpc :CommitXTx, ::Scriva::V1::CommitXTxRequest, ::Scriva::V1::CommitXTxResponse
+        # RollbackXTx discards everything the transaction staged. It is idempotent.
+        # It cannot undo a decision: a committed transaction yields
+        # FAILED_PRECONDITION (XTX_FINISHED).
+        rpc :RollbackXTx, ::Scriva::V1::RollbackXTxRequest, ::Scriva::V1::RollbackXTxResponse
+        # XTxStatus reports the outcome of a transaction by coordinator tx_id,
+        # idempotency key or xtx_id. It is the only safe way to resolve an
+        # XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+        rpc :XTxStatus, ::Scriva::V1::XTxStatusRequest, ::Scriva::V1::XTxStatusResponse
         # --- Watch (server-streaming change feed) ---
         #
         rpc :Watch, ::Scriva::V1::WatchRequest, stream(::Scriva::V1::WatchEvent)

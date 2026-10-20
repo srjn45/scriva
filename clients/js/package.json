@@ -26,6 +26,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "ts-node tests/xtx.test.ts",
     "generate": "bash generate.sh",
     "clean": "rm -rf dist/",
     "prepublishOnly": "npm run build"

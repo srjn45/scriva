@@ -29,6 +29,18 @@ class ReplicateRequest extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>string follower_id = 2 [json_name = "followerId"];</code>
      */
     protected $follower_id = '';
+    /**
+     * Replication protocol versions this follower can decode. v1 is the legacy
+     * one-record-per-entry feed; v2 adds the cross-collection transaction
+     * envelope (ReplicationRecord.tx). Empty means a pre-v2 follower, i.e. {1}.
+     * A leader that must ship a transaction envelope to a follower that did not
+     * advertise 2 fails the stream with FAILED_PRECONDITION and an ErrorInfo of
+     * reason REPLICATION_PROTOCOL_UNSUPPORTED — it never downgrades a transaction
+     * into independent per-entry records.
+     *
+     * Generated from protobuf field <code>repeated uint32 protocol_versions = 3 [json_name = "protocolVersions"];</code>
+     */
+    private $protocol_versions;
 
     /**
      * Constructor.
@@ -44,6 +56,14 @@ class ReplicateRequest extends \Google\Protobuf\Internal\Message
      *     @type string $follower_id
      *           Opaque follower identity, surfaced in ReplicationStatus so an operator can
      *           tell followers apart. Not required for correctness.
+     *     @type array<int>|\Google\Protobuf\Internal\RepeatedField $protocol_versions
+     *           Replication protocol versions this follower can decode. v1 is the legacy
+     *           one-record-per-entry feed; v2 adds the cross-collection transaction
+     *           envelope (ReplicationRecord.tx). Empty means a pre-v2 follower, i.e. {1}.
+     *           A leader that must ship a transaction envelope to a follower that did not
+     *           advertise 2 fails the stream with FAILED_PRECONDITION and an ErrorInfo of
+     *           reason REPLICATION_PROTOCOL_UNSUPPORTED — it never downgrades a transaction
+     *           into independent per-entry records.
      * }
      */
     public function __construct($data = NULL) {
@@ -107,6 +127,44 @@ class ReplicateRequest extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkString($var, True);
         $this->follower_id = $var;
+
+        return $this;
+    }
+
+    /**
+     * Replication protocol versions this follower can decode. v1 is the legacy
+     * one-record-per-entry feed; v2 adds the cross-collection transaction
+     * envelope (ReplicationRecord.tx). Empty means a pre-v2 follower, i.e. {1}.
+     * A leader that must ship a transaction envelope to a follower that did not
+     * advertise 2 fails the stream with FAILED_PRECONDITION and an ErrorInfo of
+     * reason REPLICATION_PROTOCOL_UNSUPPORTED — it never downgrades a transaction
+     * into independent per-entry records.
+     *
+     * Generated from protobuf field <code>repeated uint32 protocol_versions = 3 [json_name = "protocolVersions"];</code>
+     * @return \Google\Protobuf\Internal\RepeatedField
+     */
+    public function getProtocolVersions()
+    {
+        return $this->protocol_versions;
+    }
+
+    /**
+     * Replication protocol versions this follower can decode. v1 is the legacy
+     * one-record-per-entry feed; v2 adds the cross-collection transaction
+     * envelope (ReplicationRecord.tx). Empty means a pre-v2 follower, i.e. {1}.
+     * A leader that must ship a transaction envelope to a follower that did not
+     * advertise 2 fails the stream with FAILED_PRECONDITION and an ErrorInfo of
+     * reason REPLICATION_PROTOCOL_UNSUPPORTED — it never downgrades a transaction
+     * into independent per-entry records.
+     *
+     * Generated from protobuf field <code>repeated uint32 protocol_versions = 3 [json_name = "protocolVersions"];</code>
+     * @param array<int>|\Google\Protobuf\Internal\RepeatedField $var
+     * @return $this
+     */
+    public function setProtocolVersions($var)
+    {
+        $arr = GPBUtil::checkRepeatedField($var, \Google\Protobuf\Internal\GPBType::UINT32);
+        $this->protocol_versions = $arr;
 
         return $this;
     }

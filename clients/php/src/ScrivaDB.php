@@ -8,6 +8,13 @@ use Scriva\V1\AggregateOp;
 use Scriva\V1\AggregateRequest;
 use Scriva\V1\AndFilter;
 use Scriva\V1\BeginTxRequest;
+use Scriva\V1\BeginXTxRequest;
+use Scriva\V1\CommitXTxRequest;
+use Scriva\V1\GetXTxRequest;
+use Scriva\V1\RollbackXTxRequest;
+use Scriva\V1\StageXTxRequest;
+use Scriva\V1\XTxOpKind;
+use Scriva\V1\XTxStatusRequest;
 use Scriva\V1\CollectionStatsRequest;
 use Scriva\V1\CommitTxRequest;
 use Scriva\V1\CompactRequest;
@@ -582,6 +589,40 @@ class ScrivaDB
         return $resp->getOk();
     }
 
+    /** Start an atomic transaction across all supplied collections. */
+    public function beginXTx(array $collections, array $options = []): array
+    {
+        $req = new BeginXTxRequest();
+        $req->setCollections($collections);
+        $req->setIdempotencyKey($options['idempotencyKey'] ?? '');
+        $req->setIdleTimeoutMs($options['idleTimeoutMs'] ?? 0);
+        $req->setMaxLifetimeMs($options['maxLifetimeMs'] ?? 0);
+        [$resp, $status] = $this->stub->BeginXTx($req, $this->metadata)->wait(); $this->checkXTxStatus($status);
+        return ['xtxId' => $resp->getXtxId(), 'collections' => iterator_to_array($resp->getCollections()), 'idempotencyKey' => $resp->getIdempotencyKey()];
+    }
+
+    public function stageXTx(string $xtxId, array $operation): string
+    {
+        $ops = ['insert' => XTxOpKind::XTX_OP_INSERT, 'update' => XTxOpKind::XTX_OP_UPDATE, 'delete' => XTxOpKind::XTX_OP_DELETE];
+        $req = new StageXTxRequest(); $req->setXtxId($xtxId); $req->setCollection($operation['collection']); $req->setOp($ops[$operation['op']]);
+        $req->setId($operation['id'] ?? 0); $req->setExpectedRev($operation['expectedRev'] ?? 0);
+        if (isset($operation['data'])) $req->setData($this->arrayToStruct($operation['data']));
+        [$resp, $status] = $this->stub->StageXTx($req, $this->metadata)->wait(); $this->checkXTxStatus($status); return (string)$resp->getId();
+    }
+
+    public function getXTx(string $xtxId, string $collection, int $id): array
+    { $req = new GetXTxRequest(); $req->setXtxId($xtxId); $req->setCollection($collection); $req->setId($id); [$r,$s]=$this->stub->GetXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return $this->recordToArray($r->getRecord()); }
+
+    /** Commit once. For unknown outcomes, call xTxStatus rather than retrying. */
+    public function commitXTx(string $xtxId, array $options = []): array
+    { $req=new CommitXTxRequest(); $req->setXtxId($xtxId); $req->setLockTimeoutMs($options['lockTimeoutMs'] ?? 0); [$r,$s]=$this->stub->CommitXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); $ops=[]; foreach($r->getOps() as $x) $ops[]=['collection'=>$x->getCollection(),'id'=>(string)$x->getId(),'rev'=>(string)$x->getRev(),'op'=>$x->getOp()]; return ['txId'=>$r->getTxId(),'ops'=>$ops,'replayed'=>$r->getReplayed()]; }
+
+    public function rollbackXTx(string $xtxId): bool
+    { $req=new RollbackXTxRequest(); $req->setXtxId($xtxId); [$r,$s]=$this->stub->RollbackXTx($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return $r->getOk(); }
+
+    public function xTxStatus(string $ref): array
+    { $req=new XTxStatusRequest(); $req->setRef($ref); [$r,$s]=$this->stub->XTxStatus($req,$this->metadata)->wait(); $this->checkXTxStatus($s); return ['status'=>$r->getStatus(),'txId'=>$r->getTxId()]; }
+
     // -------------------------------------------------------------------------
     // Watch (server-streaming change feed)
     // -------------------------------------------------------------------------
@@ -1013,5 +1054,10 @@ class ScrivaDB
             default:
                 throw new ScrivaDBException($message, $status->code);
         }
+    }
+
+    private function checkXTxStatus(\stdClass $status): void
+    {
+        if ($status->code !== \Grpc\STATUS_OK) throw new XTxException($status);
     }
 }

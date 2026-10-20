@@ -2,6 +2,11 @@
 
 Node.js 18+ gRPC client for [ScrivaDB](../../README.md).
 
+```ts
+const x = await db.beginXTx(['orders', 'inventory'], { idempotencyKey: 'order-42' });
+await db.commitXTx(x.xtxId); // a lost response is resolved with xTxStatus(x.idempotencyKey)
+```
+
 **npm package:** `scriva`
 
 ---

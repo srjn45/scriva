@@ -184,6 +184,15 @@ in the ex-data (plus the original `:grpc-code`).
 
 ## Filters
 
+## Cross-collection transactions
+
+```clojure
+(let [tx (scriva/begin-xtx db ["accounts" "ledger"] :idempotency-key "transfer-42")]
+  (scriva/stage-xtx db (:xtx-id tx) {:collection "accounts" :op :update :id 7 :data {"balance" 90} :expected-rev 3})
+  (scriva/stage-xtx db (:xtx-id tx) {:collection "ledger" :op :insert :data {"amount" -10}})
+  (scriva/commit-xtx db (:xtx-id tx))) ; ambiguous outcome? use (scriva/xtx-status db "transfer-42"), never retry blindly
+```
+
 Filters are plain Clojure data, mirroring the other SDKs:
 
 ```clojure

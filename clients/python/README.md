@@ -2,6 +2,12 @@
 
 Synchronous Python gRPC client for [ScrivaDB](../../README.md).
 
+```python
+x = db.begin_xtx(["orders", "inventory"], idempotency_key="order-42")
+db.stage_xtx(x["xtx_id"], {"collection": "orders", "op": "insert", "data": {"sku": "A"}})
+db.commit_xtx(x["xtx_id"])  # ambiguity: use db.xtx_status(x["idempotency_key"]), never retry
+```
+
 **PyPI package:** `scriva`
 
 ---

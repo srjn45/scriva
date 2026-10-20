@@ -1,4 +1,4 @@
-export { ScrivaDB } from './client';
+export { ScrivaDB, XTxError } from './client';
 export type {
   DBRecord,
   WatchEvent,
@@ -16,4 +16,10 @@ export type {
   AggregateOptions,
   AggregateResult,
   StatsResult,
+  BeginXTxOptions,
+  BeginXTxResult,
+  XTxOperation,
+  CommitXTxResult,
+  XTxStatusResult,
+  XTxErrorDetail,
 } from './types';

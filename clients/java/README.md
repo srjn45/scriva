@@ -437,6 +437,15 @@ Map.of("or", List.of(
 
 ## TLS
 
+## Cross-collection transactions
+
+```java
+var tx = db.beginXTx(List.of("accounts", "ledger"), new ScrivaDBClient.XTxBeginOptions("transfer-42", 0, 0));
+db.stageXTx(tx.xtxId, new ScrivaDBClient.XTxOperation("accounts", "update", 7, Map.of("balance", 90), 3));
+db.stageXTx(tx.xtxId, new ScrivaDBClient.XTxOperation("ledger", "insert", 0, Map.of("amount", -10), 0));
+var committed = db.commitXTx(tx.xtxId); // On an ambiguous RPC error, use db.xTxStatus("transfer-42"); never retry blindly.
+```
+
 ```java
 File caCert = new File("/path/to/ca.crt");
 ScrivaDBClient db = new ScrivaDBClient("myserver.example.com", 5433, "my-api-key", caCert);

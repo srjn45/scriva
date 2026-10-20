@@ -327,6 +327,132 @@ class ScrivaClient extends \Grpc\BaseStub {
     }
 
     /**
+     * --- Cross-collection transactions (XTx) ---
+     *
+     * A cross-collection transaction stages inserts, updates and deletes on
+     * several collections of one database and applies them atomically at commit.
+     *
+     * Isolation is optimistic validation of point reads and writes: every GetXTx
+     * and every staged update/delete records the revision (or absence) of the
+     * document it touched, and CommitXTx re-checks those observations under the
+     * participant locks. A changed observation aborts the commit with ABORTED
+     * (reason XTX_CONFLICT) and nothing is applied. There are no predicate reads
+     * and therefore no phantom protection: scans, range filters, aggregations and
+     * index lookups are not available inside a transaction and are rejected.
+     *
+     * Every failure carries a google.rpc.ErrorInfo detail (domain "scriva.xtx")
+     * whose reason is machine-readable and whose metadata["retry_safe"] says
+     * whether re-running the transaction can never double-apply. The one
+     * ambiguous result is reason XTX_OUTCOME_UNKNOWN (code UNKNOWN): the commit
+     * may or may not have been applied, so the client must call XTxStatus with
+     * metadata["status_ref"] instead of retrying.
+     *
+     * BeginXTx opens a transaction over an explicit list of participant
+     * collections, which must already exist. Nothing is locked or written. The
+     * returned xtx_id is a process-local, unguessable handle id that addresses
+     * every later call; it does not survive a server restart.
+     * @param \Scriva\V1\BeginXTxRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function BeginXTx(\Scriva\V1\BeginXTxRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/BeginXTx',
+        $argument,
+        ['\Scriva\V1\BeginXTxResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * StageXTx buffers one insert, update or delete on a participant collection.
+     * Nothing is written and no other reader can see it before CommitXTx.
+     * @param \Scriva\V1\StageXTxRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function StageXTx(\Scriva\V1\StageXTxRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/StageXTx',
+        $argument,
+        ['\Scriva\V1\StageXTxResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * GetXTx is a point read through the transaction. It returns the
+     * transaction's own staged write when there is one (read-your-writes),
+     * otherwise the committed document, which is added to the read set that
+     * CommitXTx validates. Because it changes the transaction's state it is
+     * classified as a write RPC: it needs a read-write key and is refused on a
+     * read-only follower.
+     * @param \Scriva\V1\GetXTxRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function GetXTx(\Scriva\V1\GetXTxRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/GetXTx',
+        $argument,
+        ['\Scriva\V1\GetXTxResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * CommitXTx validates the transaction and applies it atomically. It is
+     * idempotent: repeating it on a committed transaction returns the original
+     * result, and a transaction whose idempotency key already committed returns
+     * that outcome with replayed=true and applies nothing.
+     * @param \Scriva\V1\CommitXTxRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function CommitXTx(\Scriva\V1\CommitXTxRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/CommitXTx',
+        $argument,
+        ['\Scriva\V1\CommitXTxResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * RollbackXTx discards everything the transaction staged. It is idempotent.
+     * It cannot undo a decision: a committed transaction yields
+     * FAILED_PRECONDITION (XTX_FINISHED).
+     * @param \Scriva\V1\RollbackXTxRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function RollbackXTx(\Scriva\V1\RollbackXTxRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/RollbackXTx',
+        $argument,
+        ['\Scriva\V1\RollbackXTxResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
+     * XTxStatus reports the outcome of a transaction by coordinator tx_id,
+     * idempotency key or xtx_id. It is the only safe way to resolve an
+     * XTX_OUTCOME_UNKNOWN commit or a lost commit response. Read-only.
+     * @param \Scriva\V1\XTxStatusRequest $argument input argument
+     * @param array $metadata metadata
+     * @param array $options call options
+     * @return \Grpc\UnaryCall
+     */
+    public function XTxStatus(\Scriva\V1\XTxStatusRequest $argument,
+      $metadata = [], $options = []) {
+        return $this->_simpleRequest('/scriva.v1.Scriva/XTxStatus',
+        $argument,
+        ['\Scriva\V1\XTxStatusResponse', 'decode'],
+        $metadata, $options);
+    }
+
+    /**
      * --- Watch (server-streaming change feed) ---
      *
      * @param \Scriva\V1\WatchRequest $argument input argument

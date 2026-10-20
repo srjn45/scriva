@@ -1,4 +1,5 @@
 use futures::{Stream, StreamExt};
+use prost::Message;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Certificate};
 use tonic::Request;
@@ -43,6 +44,47 @@ impl ScrivaDbError {
             | ScrivaDbError::AlreadyExists(s)
             | ScrivaDbError::Rpc(s) => s,
         }
+    }
+
+    /// Decode the `scriva.xtx` ErrorInfo trailer when present, including
+    /// `status_ref` used to resolve an ambiguous commit. Call this after an
+    /// UNKNOWN commit and query status; never repeat the commit blindly.
+    pub fn xtx_error_info(&self) -> Option<XTxErrorInfo> { decode_xtx_error_info(self.status().details()) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XTxErrorInfo { pub reason: String, pub metadata: std::collections::HashMap<String, String> }
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcStatusDetails { #[prost(int32, tag="1")] code: i32, #[prost(string, tag="2")] message: String, #[prost(message, repeated, tag="3")] details: Vec<RpcAny> }
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcAny { #[prost(string, tag="1")] type_url: String, #[prost(bytes="vec", tag="2")] value: Vec<u8> }
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcErrorInfo { #[prost(string, tag="1")] reason: String, #[prost(string, tag="2")] domain: String, #[prost(map="string, string", tag="3")] metadata: std::collections::HashMap<String, String> }
+fn decode_xtx_error_info(bytes: &[u8]) -> Option<XTxErrorInfo> {
+    let status = RpcStatusDetails::decode(bytes).ok()?;
+    for any in status.details {
+        if any.type_url.ends_with("google.rpc.ErrorInfo") {
+            let info = RpcErrorInfo::decode(any.value.as_slice()).ok()?;
+            if info.domain == "scriva.xtx" { return Some(XTxErrorInfo { reason: info.reason, metadata: info.metadata }); }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod xtx_error_tests {
+    use super::*;
+    #[test]
+    fn decodes_error_info_status_reference_from_unknown_commit_status() {
+        let info = RpcErrorInfo { reason: "XTX_OUTCOME_UNKNOWN".into(), domain: "scriva.xtx".into(), metadata: [("status_ref".into(), "idem-9".into()), ("retry_safe".into(), "false".into())].into() };
+        let any = RpcAny { type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(), value: info.encode_to_vec() };
+        let wire = RpcStatusDetails { code: 2, message: "unknown".into(), details: vec![any] }.encode_to_vec();
+        let error = ScrivaDbError::Rpc(tonic::Status::with_details(tonic::Code::Unknown, "unknown", wire.into()));
+        let parsed = error.xtx_error_info().unwrap();
+        assert_eq!(parsed.reason, "XTX_OUTCOME_UNKNOWN");
+        assert_eq!(parsed.metadata["status_ref"], "idem-9");
+        assert_eq!(parsed.metadata["retry_safe"], "false");
     }
 }
 
@@ -89,6 +131,20 @@ pub struct Record {
     pub date_added: Option<String>,
     pub date_modified: Option<String>,
 }
+
+/// Options supplied when opening a cross-collection transaction.
+#[derive(Debug, Clone, Default)]
+pub struct BeginXTxOptions { pub idempotency_key: String, pub idle_timeout_ms: i64, pub max_lifetime_ms: i64 }
+#[derive(Debug, Clone)]
+pub struct BeginXTxResult { pub xtx_id: String, pub collections: Vec<String>, pub idempotency_key: String }
+#[derive(Debug, Clone)]
+pub struct XTxOperation { pub collection: String, pub op: pb::XTxOpKind, pub id: u64, pub data: serde_json::Value, pub expected_rev: u64 }
+#[derive(Debug, Clone)]
+pub struct XTxOpResult { pub collection: String, pub id: u64, pub rev: u64, pub op: pb::XTxOpKind }
+#[derive(Debug, Clone)]
+pub struct CommitXTxResult { pub tx_id: String, pub ops: Vec<XTxOpResult>, pub replayed: bool }
+#[derive(Debug, Clone)]
+pub struct XTxStatusResult { pub status: pb::XTxState, pub tx_id: String }
 
 /// One sort key and its direction, for the multi-field ordering of a `find`.
 ///
@@ -1082,6 +1138,38 @@ impl ScrivaDB {
             .await?
             .into_inner();
         Ok(resp.ok)
+    }
+
+    /// Begin an atomic transaction across the explicit participant collections.
+    pub async fn begin_xtx(&mut self, collections: Vec<String>, options: BeginXTxOptions) -> Result<BeginXTxResult, ScrivaDbError> {
+        let r = self.client.begin_x_tx(self.req(pb::BeginXTxRequest { collections, idempotency_key: options.idempotency_key, idle_timeout_ms: options.idle_timeout_ms, max_lifetime_ms: options.max_lifetime_ms })).await?.into_inner();
+        Ok(BeginXTxResult { xtx_id: r.xtx_id, collections: r.collections, idempotency_key: r.idempotency_key })
+    }
+
+    pub async fn stage_xtx(&mut self, xtx_id: &str, operation: XTxOperation) -> Result<u64, ScrivaDbError> {
+        let data = if operation.op == pb::XTxOpKind::XtxOpDelete { None } else { Some(json_to_struct(operation.data)) };
+        let r = self.client.stage_x_tx(self.req(pb::StageXTxRequest { xtx_id: xtx_id.into(), collection: operation.collection, op: operation.op as i32, id: operation.id, data, expected_rev: operation.expected_rev })).await?.into_inner();
+        Ok(r.id)
+    }
+
+    pub async fn get_xtx(&mut self, xtx_id: &str, collection: &str, id: u64) -> Result<Record, ScrivaDbError> {
+        let r = self.client.get_x_tx(self.req(pb::GetXTxRequest { xtx_id: xtx_id.into(), collection: collection.into(), id })).await?.into_inner();
+        Ok(proto_record_to_record(r.record.expect("GetXTx returned no record")))
+    }
+
+    /// Commit once. For UNKNOWN/UNAVAILABLE, use `xtx_status`; never blind-retry commit.
+    pub async fn commit_xtx(&mut self, xtx_id: &str, lock_timeout_ms: i64) -> Result<CommitXTxResult, ScrivaDbError> {
+        let r = self.client.commit_x_tx(self.req(pb::CommitXTxRequest { xtx_id: xtx_id.into(), lock_timeout_ms })).await?.into_inner();
+        Ok(CommitXTxResult { tx_id: r.tx_id, replayed: r.replayed, ops: r.ops.into_iter().map(|x| XTxOpResult { collection: x.collection, id: x.id, rev: x.rev, op: pb::XTxOpKind::try_from(x.op).unwrap_or(pb::XTxOpKind::XtxOpUnspecified) }).collect() })
+    }
+
+    pub async fn rollback_xtx(&mut self, xtx_id: &str) -> Result<bool, ScrivaDbError> {
+        Ok(self.client.rollback_x_tx(self.req(pb::RollbackXTxRequest { xtx_id: xtx_id.into() })).await?.into_inner().ok)
+    }
+
+    pub async fn xtx_status(&mut self, reference: &str) -> Result<XTxStatusResult, ScrivaDbError> {
+        let r = self.client.x_tx_status(self.req(pb::XTxStatusRequest { r#ref: reference.into() })).await?.into_inner();
+        Ok(XTxStatusResult { status: pb::XTxState::try_from(r.status).unwrap_or(pb::XTxState::XtxStatusUnspecified), tx_id: r.tx_id })
     }
 
     // -------------------------------------------------------------------------

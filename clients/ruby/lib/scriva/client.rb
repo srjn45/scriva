@@ -16,6 +16,15 @@ module Scriva
   # (gRPC ALREADY_EXISTS).
   class AlreadyExistsError < Error; end
 
+  class XTxError < Error
+    attr_reader :original, :reason, :error_metadata
+    def initialize(original)
+      @original = original
+      @reason, @error_metadata = Client.decode_xtx_error_info(original.metadata && original.metadata["grpc-status-details-bin"])
+      super(original.details)
+    end
+  end
+
   # Synchronous gRPC client for ScrivaDB.
   #
   # Example:
@@ -28,6 +37,39 @@ module Scriva
   #   db.drop_collection("users")
   #   db.close
   class Client
+    def self.decode_xtx_error_info(bytes)
+      return [nil, {}] unless bytes
+      fields = lambda do |data|
+        i = 0; result = []
+        varint = lambda do
+          n = 0; shift = 0
+          loop do
+            raise ArgumentError if i >= data.bytesize
+            b = data.getbyte(i); i += 1; n |= (b & 127) << shift
+            break if (b & 128).zero?
+            shift += 7
+          end; n
+        end
+        while i < data.bytesize
+          tag = varint.call; no = tag >> 3; wire = tag & 7
+          if wire == 0 then value = varint.call
+          elsif wire == 2 then size = varint.call; value = data.byteslice(i, size); i += size
+          else raise ArgumentError
+          end
+          result << [no, value]
+        end; result
+      end
+      fields.call(bytes).select { |n, _| n == 3 }.each do |_, data|
+        any = fields.call(data); next unless any.assoc(1)&.last.to_s.end_with?("google.rpc.ErrorInfo")
+        info = fields.call(any.assoc(2)&.last || ""); reason = info.assoc(1)&.last.to_s
+        next unless info.assoc(2)&.last == "scriva.xtx"
+        meta = {}; info.select { |n, _| n == 3 }.each { |_, pair| p = fields.call(pair); meta[p.assoc(1)&.last.to_s] = p.assoc(2)&.last.to_s }
+        return [reason, meta]
+      end
+      [nil, {}]
+    rescue StandardError
+      [nil, {}]
+    end
     OP_MAP = {
       "eq"       => :EQ,
       "neq"      => :NEQ,
@@ -362,6 +404,45 @@ module Scriva
       resp.ok
     end
 
+    # Cross-collection transactions. Keep the idempotency key so a lost commit
+    # response can be resolved with +xtx_status+, never by blindly retrying.
+    def begin_xtx(collections, idempotency_key: '', idle_timeout_ms: 0, max_lifetime_ms: 0)
+      req = Scriva::V1::BeginXTxRequest.new(collections: collections, idempotency_key: idempotency_key,
+                                             idle_timeout_ms: idle_timeout_ms, max_lifetime_ms: max_lifetime_ms)
+      r = with_xtx_errors { @stub.begin_x_tx(req, metadata: metadata) }
+      { xtx_id: r.xtx_id, collections: r.collections.to_a, idempotency_key: r.idempotency_key }
+    end
+
+    def stage_xtx(xtx_id, operation)
+      ops = { insert: :XTX_OP_INSERT, update: :XTX_OP_UPDATE, delete: :XTX_OP_DELETE }
+      req = Scriva::V1::StageXTxRequest.new(xtx_id: xtx_id, collection: operation.fetch(:collection),
+        op: ops.fetch(operation.fetch(:op).to_sym), id: operation.fetch(:id, 0),
+        expected_rev: operation.fetch(:expected_rev, 0))
+      req.data = hash_to_struct(operation[:data]) if operation[:op].to_sym != :delete && operation.key?(:data)
+      with_xtx_errors { @stub.stage_x_tx(req, metadata: metadata).id }
+    end
+
+    def get_xtx(xtx_id, collection, id)
+      record = with_xtx_errors { @stub.get_x_tx(Scriva::V1::GetXTxRequest.new(xtx_id: xtx_id, collection: collection, id: id), metadata: metadata) }.record
+      out = record_to_hash(record)
+      out["rev"] = record.rev # staged insert revision is explicitly zero
+      out
+    end
+
+    def commit_xtx(xtx_id, lock_timeout_ms: 0)
+      r = with_xtx_errors { @stub.commit_x_tx(Scriva::V1::CommitXTxRequest.new(xtx_id: xtx_id, lock_timeout_ms: lock_timeout_ms), metadata: metadata) }
+      { tx_id: r.tx_id, replayed: r.replayed, ops: r.ops.map { |x| { collection: x.collection, id: x.id, rev: x.rev, op: x.op } } }
+    end
+
+    def rollback_xtx(xtx_id)
+      with_xtx_errors { @stub.rollback_x_tx(Scriva::V1::RollbackXTxRequest.new(xtx_id: xtx_id), metadata: metadata) }.ok
+    end
+
+    def xtx_status(ref)
+      r = with_xtx_errors { @stub.x_tx_status(Scriva::V1::XTxStatusRequest.new(ref: ref), metadata: metadata) }
+      { status: r.status, tx_id: r.tx_id }
+    end
+
     # -- watch ---------------------------------------------------------------
 
     # Subscribe to change events on a collection.
@@ -520,6 +601,12 @@ module Scriva
 
     def metadata
       { "x-api-key" => @api_key }
+    end
+
+    def with_xtx_errors
+      yield
+    rescue GRPC::BadStatus => e
+      raise XTxError.new(e)
     end
 
     # Map gRPC NOT_FOUND / ALREADY_EXISTS onto typed exceptions; other status

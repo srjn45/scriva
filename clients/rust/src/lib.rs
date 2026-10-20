@@ -40,6 +40,6 @@ mod client;
 
 pub use client::{
     AggregateGroup, AggregateOp, AggregateOptions, CasResult, CollectionStats, Error, ScrivaDB,
-    ScrivaDbError, FilterInput, FilterOp, FindOptions, OrderBy, Record, UpdateResult, WatchEvent,
+    ScrivaDbError, FilterInput, FilterOp, FindOptions, OrderBy, Record, UpdateResult, WatchEvent, BeginXTxOptions, BeginXTxResult, XTxOperation, XTxOpResult, CommitXTxResult, XTxStatusResult, XTxErrorInfo,
     WatchOp,
 };
