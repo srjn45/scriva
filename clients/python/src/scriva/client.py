@@ -363,7 +363,7 @@ class ScrivaDB:
         already held by a live record raises :class:`AlreadyExistsError`. A keyed
         insert does not participate in transactions or per-record TTL.
         """
-        with _translate_xtx_errors():
+        with _translate_errors():
             resp = self._stub.Insert(
                 pb.InsertRequest(
                     collection=collection,
@@ -576,7 +576,7 @@ class ScrivaDB:
         ``fields`` projects ``data`` to those top-level fields (``id``/``key``/
         ``rev`` always returned).
         """
-        with _translate_xtx_errors():
+        with _translate_errors():
             resp = self._stub.FindByKey(
                 pb.FindByKeyRequest(
                     collection=collection,
@@ -596,7 +596,7 @@ class ScrivaDB:
         a dict with ``id``, ``key``, ``rev`` (after the write) and
         ``date_modified``.
         """
-        with _translate_xtx_errors():
+        with _translate_errors():
             resp = self._stub.UpdateByKey(
                 pb.UpdateByKeyRequest(
                     collection=collection, key=key, data=_dict_to_struct(data)
@@ -617,7 +617,7 @@ class ScrivaDB:
 
         Raises :class:`NotFoundError` if no live record carries ``key``.
         """
-        with _translate_xtx_errors():
+        with _translate_errors():
             resp = self._stub.DeleteByKey(
                 pb.DeleteByKeyRequest(collection=collection, key=key),
                 metadata=self._metadata(),
@@ -722,22 +722,22 @@ class ScrivaDB:
         return str(r.id)
 
     def get_xtx(self, xtx_id: str, collection: str, record_id: Union[int, str]) -> Dict[str, Any]:
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.GetXTx(pb.GetXTxRequest(xtx_id=xtx_id, collection=collection, id=int(record_id)), metadata=self._metadata())
         return _record_to_dict(r.record)
 
     def commit_xtx(self, xtx_id: str, *, lock_timeout_ms: int = 0) -> Dict[str, Any]:
         """Commit once. On UNKNOWN/UNAVAILABLE resolve with :meth:`xtx_status`, never retry blindly."""
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.CommitXTx(pb.CommitXTxRequest(xtx_id=xtx_id, lock_timeout_ms=lock_timeout_ms), metadata=self._metadata())
         return {"tx_id": r.tx_id, "replayed": r.replayed, "ops": [{"collection": x.collection, "id": str(x.id), "rev": str(x.rev), "op": pb.XTxOpKind.Name(x.op)} for x in r.ops]}
 
     def rollback_xtx(self, xtx_id: str) -> bool:
-        with _translate_errors():
+        with _translate_xtx_errors():
             return self._stub.RollbackXTx(pb.RollbackXTxRequest(xtx_id=xtx_id), metadata=self._metadata()).ok
 
     def xtx_status(self, ref: str) -> Dict[str, str]:
-        with _translate_errors():
+        with _translate_xtx_errors():
             r = self._stub.XTxStatus(pb.XTxStatusRequest(ref=ref), metadata=self._metadata())
         return {"status": pb.XTxState.Name(r.status), "tx_id": r.tx_id}
 
