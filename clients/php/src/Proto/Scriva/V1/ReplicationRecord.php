@@ -11,6 +11,10 @@ use Google\Protobuf\Internal\GPBUtil;
 /**
  * ReplicationRecord is one committed entry, shipped verbatim so the follower can
  * reproduce the leader's primary and secondary indexes identically.
+ * A record with record_version == 0 (or 1) is a legacy single-entry record
+ * described by fields 2-8. A record with record_version == 2 is a transaction
+ * envelope: lsn (field 1) is the transaction's single global LSN, fields 2-8
+ * are unset and tx carries the operations.
  *
  * Generated from protobuf message <code>scriva.v1.ReplicationRecord</code>
  */
@@ -56,6 +60,18 @@ class ReplicationRecord extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>.google.protobuf.Timestamp ts = 8 [json_name = "ts"];</code>
      */
     protected $ts = null;
+    /**
+     * 0/1 = legacy entry, 2 = transaction envelope
+     *
+     * Generated from protobuf field <code>uint32 record_version = 9 [json_name = "recordVersion"];</code>
+     */
+    protected $record_version = 0;
+    /**
+     * set iff record_version == 2
+     *
+     * Generated from protobuf field <code>.scriva.v1.ReplicationTx tx = 10 [json_name = "tx"];</code>
+     */
+    protected $tx = null;
 
     /**
      * Constructor.
@@ -75,6 +91,10 @@ class ReplicationRecord extends \Google\Protobuf\Internal\Message
      *           Unix-nano TTL deadline (0 = never)
      *     @type \Google\Protobuf\Timestamp $ts
      *           the entry's commit timestamp
+     *     @type int $record_version
+     *           0/1 = legacy entry, 2 = transaction envelope
+     *     @type \Scriva\V1\ReplicationTx $tx
+     *           set iff record_version == 2
      * }
      */
     public function __construct($data = NULL) {
@@ -290,6 +310,68 @@ class ReplicationRecord extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkMessage($var, \Google\Protobuf\Timestamp::class);
         $this->ts = $var;
+
+        return $this;
+    }
+
+    /**
+     * 0/1 = legacy entry, 2 = transaction envelope
+     *
+     * Generated from protobuf field <code>uint32 record_version = 9 [json_name = "recordVersion"];</code>
+     * @return int
+     */
+    public function getRecordVersion()
+    {
+        return $this->record_version;
+    }
+
+    /**
+     * 0/1 = legacy entry, 2 = transaction envelope
+     *
+     * Generated from protobuf field <code>uint32 record_version = 9 [json_name = "recordVersion"];</code>
+     * @param int $var
+     * @return $this
+     */
+    public function setRecordVersion($var)
+    {
+        GPBUtil::checkUint32($var);
+        $this->record_version = $var;
+
+        return $this;
+    }
+
+    /**
+     * set iff record_version == 2
+     *
+     * Generated from protobuf field <code>.scriva.v1.ReplicationTx tx = 10 [json_name = "tx"];</code>
+     * @return \Scriva\V1\ReplicationTx|null
+     */
+    public function getTx()
+    {
+        return $this->tx;
+    }
+
+    public function hasTx()
+    {
+        return isset($this->tx);
+    }
+
+    public function clearTx()
+    {
+        unset($this->tx);
+    }
+
+    /**
+     * set iff record_version == 2
+     *
+     * Generated from protobuf field <code>.scriva.v1.ReplicationTx tx = 10 [json_name = "tx"];</code>
+     * @param \Scriva\V1\ReplicationTx $var
+     * @return $this
+     */
+    public function setTx($var)
+    {
+        GPBUtil::checkMessage($var, \Scriva\V1\ReplicationTx::class);
+        $this->tx = $var;
 
         return $this;
     }

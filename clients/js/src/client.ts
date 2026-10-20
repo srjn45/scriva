@@ -16,6 +16,7 @@ import {
   StatsResult,
   WatchEvent,
   WriteResult,
+  BeginXTxOptions, BeginXTxResult, XTxOperation, CommitXTxResult, XTxStatusResult,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -684,6 +685,45 @@ export class ScrivaDB {
       this.meta(),
     );
     return resp.ok as boolean;
+  }
+
+  /** Start a cross-collection transaction. Preserve the idempotency key for status recovery. */
+  async beginXTx(collections: string[], options: BeginXTxOptions = {}): Promise<BeginXTxResult> {
+    const r: any = await callUnary(this.stub.BeginXTx.bind(this.stub), {
+      collections, idempotency_key: options.idempotencyKey ?? '', idle_timeout_ms: options.idleTimeoutMs ?? 0,
+      max_lifetime_ms: options.maxLifetimeMs ?? 0,
+    }, this.meta());
+    return { xtxId: r.xtx_id, collections: r.collections ?? [], idempotencyKey: r.idempotency_key };
+  }
+
+  async stageXTx(xtxId: string, operation: XTxOperation): Promise<string> {
+    const op = { insert: 'XTX_OP_INSERT', update: 'XTX_OP_UPDATE', delete: 'XTX_OP_DELETE' }[operation.op];
+    const r: any = await callUnary(this.stub.StageXTx.bind(this.stub), {
+      xtx_id: xtxId, collection: operation.collection, op, id: operation.id ?? '0',
+      data: structToProto(operation.data ?? {}), expected_rev: operation.expectedRev ?? '0',
+    }, this.meta());
+    return String(r.id);
+  }
+
+  async getXTx(xtxId: string, collection: string, id: string): Promise<DBRecord> {
+    const r: any = await callUnary(this.stub.GetXTx.bind(this.stub), { xtx_id: xtxId, collection, id }, this.meta());
+    return toRecord(r.record);
+  }
+
+  /** Do not retry a rejected UNKNOWN/UNAVAILABLE commit; call xTxStatus instead. */
+  async commitXTx(xtxId: string, options: { lockTimeoutMs?: number } = {}): Promise<CommitXTxResult> {
+    const r: any = await callUnary(this.stub.CommitXTx.bind(this.stub), { xtx_id: xtxId, lock_timeout_ms: options.lockTimeoutMs ?? 0 }, this.meta());
+    return { txId: r.tx_id, replayed: r.replayed, ops: (r.ops ?? []).map((x: any) => ({ collection: x.collection, id: String(x.id), rev: String(x.rev), op: x.op })) };
+  }
+
+  async rollbackXTx(xtxId: string): Promise<boolean> {
+    const r: any = await callUnary(this.stub.RollbackXTx.bind(this.stub), { xtx_id: xtxId }, this.meta());
+    return r.ok;
+  }
+
+  async xTxStatus(ref: string): Promise<XTxStatusResult> {
+    const r: any = await callUnary(this.stub.XTxStatus.bind(this.stub), { ref }, this.meta());
+    return { status: r.status, txId: r.tx_id };
   }
 
   // -------------------------------------------------------------------------

@@ -16,4 +16,9 @@ export type {
   AggregateOptions,
   AggregateResult,
   StatsResult,
+  BeginXTxOptions,
+  BeginXTxResult,
+  XTxOperation,
+  CommitXTxResult,
+  XTxStatusResult,
 } from './types';

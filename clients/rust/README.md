@@ -2,6 +2,11 @@
 
 Async Rust gRPC client for [ScrivaDB](https://github.com/srjn45/scriva).
 
+```rust
+let x = db.begin_xtx(vec!["orders".into(), "inventory".into()], Default::default()).await?;
+let committed = db.commit_xtx(&x.xtx_id, 0).await?; // unknown: xtx_status, not a retry
+```
+
 Built on [tonic](https://github.com/hyperium/tonic) + [prost](https://github.com/tokio-rs/prost), using Tokio for async I/O.
 
 ## Prerequisites
