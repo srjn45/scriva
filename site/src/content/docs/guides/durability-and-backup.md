@@ -95,6 +95,8 @@ scriva-cli compact users --api-key dev-key
 
 ## Next
 
+- [Atomic batches & upgrading roots](/scriva/guides/atomic-batches/) — make
+  multi-record writes crash-atomic and safely convert legacy data.
 - [Replication & failover](/scriva/guides/replication/) — scale reads and
   survive a leader loss.
 - [Configuration](/scriva/reference/configuration/) — every server flag.
