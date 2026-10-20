@@ -67,6 +67,8 @@ The handle ID is process-local and does not survive a restart. A handle idle pas
 
 ## Further reading
 
+- [Atomic batches & upgrading roots](/scriva/guides/atomic-batches/) for the
+  single-collection boundary and legacy-root conversion.
 - [API & OpenAPI](/scriva/reference/api/) for generated-client and protocol references.
 - [Client SDKs](/scriva/guides/clients/) for the distinction between hand-written SDKs and generated stubs.
 - [XTx operational runbook](https://github.com/srjn45/scriva/blob/main/docs/operations.md#cross-collection-transactions-xtx) for metrics, upgrade, recovery, and incident handling.

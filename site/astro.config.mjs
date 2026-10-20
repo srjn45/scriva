@@ -49,6 +49,7 @@ export default defineConfig({
         { label: 'Guides', items: [
           { label: 'Data model', slug: 'guides/data-model' },
           { label: 'Queries & indexes', slug: 'guides/queries' },
+          { label: 'Atomic batches & upgrading roots', slug: 'guides/atomic-batches' },
           { label: 'Durability & backup', slug: 'guides/durability-and-backup' },
           { label: 'Encryption at rest', slug: 'guides/encryption' },
           { label: 'Replication & failover', slug: 'guides/replication' },
