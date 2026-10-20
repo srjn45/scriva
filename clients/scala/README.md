@@ -183,6 +183,14 @@ db.snapshotToFile("backup.tar.gz")
 
 ## Filters
 
+## Cross-collection transactions
+
+```scala
+val tx = Await.result(db.beginXTx(Seq("accounts", "ledger"), XTxBeginOptions(idempotencyKey = "transfer-42")), timeout)
+db.stageXTx(tx.xtxId, XTxOperation("accounts", XTxOp.Update, 7, Some(Map("balance" -> 90)), expectedRev = 3))
+val result = db.commitXTx(tx.xtxId) // resolve an ambiguous outcome with db.xTxStatus("transfer-42"), never retry commit blindly
+```
+
 ```scala
 Filter.field("age", FilterOp.Gt, 30)
 

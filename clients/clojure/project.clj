@@ -6,6 +6,8 @@
 
   :dependencies [[org.clojure/clojure "1.11.1"]
                  [com.google.protobuf/protobuf-java "3.25.3"]
+                 ;; ErrorInfo is needed to decode structured XTx error details.
+                 [com.google.api.grpc/proto-google-common-protos "2.37.1"]
                  [io.grpc/grpc-netty-shaded "1.64.0"]
                  ;; Exclude proto-google-common-protos: we generate our own
                  ;; com.google.api.* classes from the vendored google/api protos,

@@ -51,11 +51,59 @@
       (.onNext resp (-> (scriva.v1.ScrivaOuterClass$WatchEvent/newBuilder)
                         (.setOp scriva.v1.ScrivaOuterClass$WatchOp/DELETED)
                         (.setCollection (.getCollection req)) (.build)))
-      (.onCompleted resp))))
+      (.onCompleted resp))
+    (beginXTx [req resp]
+      (.onNext resp (-> (scriva.v1.ScrivaOuterClass$BeginXTxResponse/newBuilder)
+                        (.setXtxId "xtx-1") (.addAllCollections (sort (.getCollectionsList req)))
+                        (.setIdempotencyKey (.getIdempotencyKey req)) (.build)))
+      (.onCompleted resp))
+    (stageXTx [req resp]
+      (reset! (:last-stage st) req)
+      (let [response (-> (scriva.v1.ScrivaOuterClass$StageXTxResponse/newBuilder)
+                         (.setId (.getId req)) (.build))]
+        (.onNext resp response)
+        (.onCompleted resp)))
+    (getXTx [req resp]
+      (let [record (-> (scriva.v1.ScrivaOuterClass$Record/newBuilder)
+                       (.setId (.getId req)) (.setRev 3) (.build))
+            response (-> (scriva.v1.ScrivaOuterClass$GetXTxResponse/newBuilder)
+                         (.setRecord record) (.build))]
+        (.onNext resp response)
+        (.onCompleted resp)))
+    (commitXTx [req resp]
+      (swap! (:commit-calls st) inc)
+      (if @(:commit-error st)
+        (let [info (-> (com.google.rpc.ErrorInfo/newBuilder) (.setDomain "scriva.xtx")
+                       (.setReason "XTX_OUTCOME_UNKNOWN") (.putMetadata "status_ref" "idem-unknown")
+                       (.putMetadata "retry_safe" "false") (.build))
+              status (-> (com.google.rpc.Status/newBuilder) (.setCode (.value io.grpc.Status$Code/UNKNOWN))
+                         (.addDetails (com.google.protobuf.Any/pack info)) (.build))]
+          (reset! (:commit-error st) false)
+          (.onError resp (io.grpc.protobuf.StatusProto/toStatusRuntimeException status)))
+        (let [op (-> (scriva.v1.ScrivaOuterClass$XTxOpResult/newBuilder)
+                     (.setCollection "accounts") (.setId 8) (.setRev 4)
+                     (.setOp scriva.v1.ScrivaOuterClass$XTxOpKind/XTX_OP_UPDATE) (.build))
+              response (-> (scriva.v1.ScrivaOuterClass$CommitXTxResponse/newBuilder)
+                           (.setTxId "decision-1") (.addOps op) (.build))]
+          (.onNext resp response)
+          (.onCompleted resp))))
+    (rollbackXTx [req resp]
+      (let [response (-> (scriva.v1.ScrivaOuterClass$RollbackXTxResponse/newBuilder) (.setOk true) (.build))]
+        (.onNext resp response)
+        (.onCompleted resp)))
+    (xTxStatus [req resp]
+      (swap! (:status-calls st) inc)
+      (reset! (:status-ref st) (.getRef req))
+      (let [response (-> (scriva.v1.ScrivaOuterClass$XTxStatusResponse/newBuilder)
+                         (.setStatus scriva.v1.ScrivaOuterClass$XTxState/XTX_STATUS_COMMITTED)
+                         (.setTxId "decision-1") (.build))]
+        (.onNext resp response)
+        (.onCompleted resp)))))
 
 (use-fixtures :once
   (fn [f]
-    (let [st {:ids (atom 0) :store (atom {}) :last-filter (atom nil)}
+    (let [st {:ids (atom 0) :store (atom {}) :last-filter (atom nil) :last-stage (atom nil) :commit-calls (atom 0)
+              :commit-error (atom false) :status-calls (atom 0) :status-ref (atom nil)}
           nm (str (gensym "scriva-test"))
           srv (-> (InProcessServerBuilder/forName nm) (.directExecutor)
                   (.addService (make-fake st)) (.build) (.start))
@@ -115,3 +163,30 @@
       (is (some? ex))
       (is (= :not-found (:type (ex-data ex))))
       (is (re-find #"no such key" (.getMessage ex))))))
+
+(deftest xtx-wrappers-preserve-wire-fields-and-commit-once
+  (let [before @(:commit-calls @state)
+        tx (scriva/begin-xtx @db ["ledger" "accounts"] :idempotency-key "key-1" :idle-timeout-ms 20 :max-lifetime-ms 40)]
+    (is (= {:xtx-id "xtx-1" :collections ["accounts" "ledger"] :idempotency-key "key-1"} tx))
+    (is (= 8 (scriva/stage-xtx @db (:xtx-id tx) {:collection "accounts" :op :update :id 8 :data {"balance" 9} :expected-rev 3})))
+    (is (= 3 (:rev (scriva/get-xtx @db (:xtx-id tx) "accounts" 8))))
+    (is (= "decision-1" (:tx-id (scriva/commit-xtx @db (:xtx-id tx) :lock-timeout-ms 50))))
+    (is (scriva/rollback-xtx @db (:xtx-id tx)))
+    (is (= {:status :xtx_status_committed :tx-id "decision-1"} (scriva/xtx-status @db "key-1")))
+    (is (= (inc before) @(:commit-calls @state)) "no blind commit retry")))
+
+(deftest unknown-commit-outcome-decodes-errorinfo-and-resolves-status
+  (let [before-commits @(:commit-calls @state)
+        before-status @(:status-calls @state)
+        tx (scriva/begin-xtx @db ["a" "b"] :idempotency-key "idem-unknown")]
+    (reset! (:commit-error @state) true)
+    (let [error (try (scriva/commit-xtx @db (:xtx-id tx)) nil
+                     (catch clojure.lang.ExceptionInfo e e))
+          detail (scriva/xtx-error-detail error)]
+      (is (= "XTX_OUTCOME_UNKNOWN" (:reason detail)))
+      (is (= "idem-unknown" (get-in detail [:metadata "status_ref"])))
+      (is (= "false" (get-in detail [:metadata "retry_safe"])))
+      (is (= :xtx_status_committed (:status (scriva/xtx-status @db (get-in detail [:metadata "status_ref"])))))
+      (is (= (inc before-commits) @(:commit-calls @state)))
+      (is (= (inc before-status) @(:status-calls @state)))
+      (is (= "idem-unknown" @(:status-ref @state))))))
