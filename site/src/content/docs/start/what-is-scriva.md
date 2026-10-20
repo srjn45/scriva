@@ -22,7 +22,7 @@ $ tail -1 data/users/000001.ndjson      # your data is just text
 ScrivaDB ships as **two binaries built from one repo**:
 
 - **`scriva`** — the server. Serves a dual **gRPC + REST** API from a single
-  process, on `:5433` (gRPC) and `:8080` (REST) by default.
+  process, on `127.0.0.1:5433` (gRPC) and `127.0.0.1:8080` (REST) by default.
 - **`scriva-cli`** — the client. Subcommands plus an interactive REPL; talks to
   a local server over a Unix domain socket.
 

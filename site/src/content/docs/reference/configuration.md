@@ -12,8 +12,8 @@ variables. **CLI flags always win** over the config file.
 scriva serve \
   --data ./data \
   --api-key my-secret-key \
-  --grpc-addr :5433 \
-  --rest-addr :8080
+  --grpc-addr 127.0.0.1:5433 \
+  --rest-addr 127.0.0.1:8080
 ```
 
 Or via a config file:
@@ -30,11 +30,12 @@ See the fully commented
 | Flag | Default | Description |
 |---|---|---|
 | `--data` | `./data` | Data directory. |
-| `--grpc-addr` | `:5433` | TCP gRPC listen address. |
-| `--rest-addr` | `:8080` | REST gateway listen address. |
+| `--grpc-addr` | `127.0.0.1:5433` | TCP gRPC listen address. |
+| `--rest-addr` | `127.0.0.1:8080` | REST gateway listen address. |
 | `--socket` | `/tmp/scriva.sock` | Unix domain socket path. |
-| `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth). |
-| `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled). |
+| `--api-key` | `$SCRIVA_API_KEY` | API key (empty = no auth; allowed only on loopback listeners). |
+| `--insecure-allow-remote` | `false` | Allow non-loopback listeners with no API key and no TLS (INSECURE; logs a warning). |
+| `--metrics-addr` | `127.0.0.1:9090` | Prometheus metrics address (empty = disabled). |
 | `--segment-size` | `4194304` | Max segment file size in bytes (4 MiB). |
 | `--compact-interval` | `5m` | Compaction interval. |
 | `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction. |
@@ -47,6 +48,10 @@ See the fully commented
 | `--watch-buffer` | `64` | Per-subscriber Watch buffer; overflow signals a slow subscriber. |
 
 ## Security
+
+Listeners default to loopback. Binding a non-loopback address (for example
+`0.0.0.0:5433`) makes the server refuse to start unless an API key or TLS is
+configured, or `--insecure-allow-remote` is set explicitly.
 
 | Flag | Description |
 |---|---|

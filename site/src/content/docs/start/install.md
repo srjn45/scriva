@@ -24,8 +24,13 @@ docker run -d \
   -p 5433:5433 -p 8080:8080 \
   -v $(pwd)/data:/data \
   -e SCRIVA_API_KEY=my-secret-key \
-  ghcr.io/srjn45/scriva:latest serve --data /data
+  ghcr.io/srjn45/scriva:latest
 ```
+
+The image entrypoint is `scriva serve --data /data --grpc-addr 0.0.0.0:5433
+--rest-addr 0.0.0.0:8080`, so extra arguments are appended to that command (do
+not repeat `serve`). Because it binds all interfaces, the server refuses to start
+unless an API key or TLS is configured.
 
 Or with Compose:
 

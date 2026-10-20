@@ -17,8 +17,8 @@ brew install --cask srjn45/scriva/scriva
 # Go
 go install github.com/srjn45/scriva/cmd/scriva@latest
 
-# Docker
-docker run ghcr.io/srjn45/scriva
+# Docker (the image binds 0.0.0.0, so an API key or TLS is required)
+docker run -p 5433:5433 -p 8080:8080 -e SCRIVA_API_KEY=dev-key ghcr.io/srjn45/scriva
 ```
 
 See [Getting Started](docs/getting-started.md) for Scoop, apt/rpm, and AUR channels.

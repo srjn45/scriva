@@ -5,8 +5,12 @@ description: Idiomatic, hand-written client libraries for ten languages — plus
 
 Idiomatic, **hand-written** client libraries are available for ten languages.
 Each wraps the same gRPC API, takes the same connection config (`host`, `port`,
-`api_key`, optional TLS CA cert), and exposes every RPC — including the streaming
-`Find` and `Watch` calls.
+`api_key`, optional TLS CA cert), and wraps the core collection, record, index,
+single-collection transaction and streaming `Find`/`Watch` calls. The
+cross-collection transaction RPCs (`BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`,
+`RollbackXTx`, `XTxStatus`) have no hand-written SDK methods; use the generated
+gRPC stubs directly. `Snapshot` and `Replicate` are gRPC-only (no REST route) and
+not every SDK wraps them.
 
 | Language | Install | Reference |
 |---|---|---|

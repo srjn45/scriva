@@ -3,8 +3,8 @@ title: API & OpenAPI
 description: The dual gRPC + REST API, the proto source of truth, the generated OpenAPI spec, and health endpoints.
 ---
 
-ScrivaDB serves a **dual API from one binary**: gRPC on `:5433` and a
-grpc-gateway REST bridge on `:8080`. The CLI prefers the Unix socket when it's
+ScrivaDB serves a **dual API from one binary**: gRPC (default `127.0.0.1:5433`) and a
+grpc-gateway REST bridge (default `127.0.0.1:8080`). The CLI prefers the Unix socket when it's
 talking to a local server.
 
 ## Source of truth
@@ -17,12 +17,18 @@ The gRPC stubs, the REST gateway, and the OpenAPI spec are all generated from it
 
 | Group | RPCs |
 |---|---|
-| CRUD | `Insert`, `Update`, `Delete`, `FindById` |
-| Keyed | `InsertWithKey`, `FindByKey`, `UpdateByKey`, `DeleteByKey`, `Upsert`, `UpdateIfRev` |
+| Collections | `CreateCollection`, `DropCollection`, `ListCollections`, `CollectionStats` |
+| CRUD | `Insert`, `InsertMany`, `Update`, `Delete`, `FindById` |
+| Keyed | `FindByKey`, `UpdateByKey`, `DeleteByKey`, `Upsert`, `UpdateIfRev` (a caller key is set on `Insert`; there is no `InsertWithKey` RPC) |
 | Query | `Find` (streaming), `Aggregate` (streaming), `Watch` (streaming) |
-| Transactions | `BeginTx`, `CommitTx`, `RollbackTx` |
-| Admin | `Compact`, `Backup`, `Promote`, `ReplicationStatus` |
+| Indexes | `EnsureIndex`, `DropIndex`, `ListIndexes` |
+| Transactions | `BeginTx`, `CommitTx`, `RollbackTx` (gRPC only) |
+| Cross-collection transactions | `BeginXTx`, `StageXTx`, `GetXTx`, `CommitXTx`, `RollbackXTx`, `XTxStatus` |
+| Admin | `Compact`, `ReplicationStatus`, `Promote` |
+| Backup / replication | `Snapshot` (streaming), `Replicate` (streaming) — **gRPC only**, no REST route |
 | Health | `grpc.health.v1.Health` |
+
+Online backup is the `Snapshot` RPC (`scriva-cli backup`); there is no `Backup` RPC.
 
 Errors use standard gRPC status codes — e.g. a duplicate key is `AlreadyExists`,
 a missing record is `NotFound`, a write to a read replica is
