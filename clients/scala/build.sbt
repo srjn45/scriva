@@ -2,10 +2,10 @@
 //
 // Generates idiomatic Scala message classes and gRPC stubs from the single
 // source of truth, proto/scriva.proto, at compile time via ScalaPB.
-// Coordinates: io.github.srjn45:scriva-client-scala_2.13:1.2.1
+// Coordinates: io.github.srjn45:scriva-client-scala_2.13:1.3.0
 
 ThisBuild / organization := "io.github.srjn45"
-ThisBuild / version := "1.2.1"
+ThisBuild / version := "1.3.0"
 ThisBuild / scalaVersion := "2.13.14"
 
 lazy val root = (project in file("."))

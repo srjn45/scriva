@@ -2,7 +2,7 @@
 
 Java 11+ gRPC client for [ScrivaDB](../../README.md).
 
-**Maven coordinates:** `io.github.srjn45:scriva-client:1.2.1`
+**Maven coordinates:** `io.github.srjn45:scriva-client:1.3.0`
 
 ---
 
@@ -32,7 +32,7 @@ Proto stubs are generated automatically by the `com.google.protobuf` Gradle plug
 
 ```kotlin
 dependencies {
-    implementation("io.github.srjn45:scriva-client:1.2.1")
+    implementation("io.github.srjn45:scriva-client:1.3.0")
 }
 ```
 
@@ -42,7 +42,7 @@ dependencies {
 <dependency>
   <groupId>io.github.srjn45</groupId>
   <artifactId>scriva-client</artifactId>
-  <version>1.2.1</version>
+  <version>1.3.0</version>
 </dependency>
 ```
 

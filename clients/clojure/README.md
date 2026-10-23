@@ -4,7 +4,7 @@ Idiomatic Clojure gRPC client for [ScrivaDB](../../README.md). Functions take an
 return plain Clojure maps; the streaming `find`, `watch`, `aggregate` and
 `snapshot` RPCs return lazy seqs. It wraps the generated Java gRPC stubs.
 
-**Clojars coordinates:** `io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}`
+**Clojars coordinates:** `io.github.srjn45/scriva-client-clojure {:mvn/version "1.3.0"}`
 
 ---
 
@@ -37,13 +37,13 @@ lein install      # build + install the jar into ~/.m2
 ### Leiningen (`project.clj`)
 
 ```clojure
-[io.github.srjn45/scriva-client-clojure "1.2.1"]
+[io.github.srjn45/scriva-client-clojure "1.3.0"]
 ```
 
 ### deps.edn
 
 ```clojure
-io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}
+io.github.srjn45/scriva-client-clojure {:mvn/version "1.3.0"}
 ```
 
 ---

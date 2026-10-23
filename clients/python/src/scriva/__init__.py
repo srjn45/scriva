@@ -10,4 +10,4 @@ The public surface is the :class:`ScrivaDB` client class::
 from .client import AlreadyExistsError, ScrivaDB, ScrivaDBError, NotFoundError, XTxError
 
 __all__ = ["ScrivaDB", "ScrivaDBError", "NotFoundError", "AlreadyExistsError", "XTxError"]
-__version__ = "1.2.1"
+__version__ = "1.3.0"

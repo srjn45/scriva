@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "io.github.srjn45"
-version = "1.2.1"
+version = "1.3.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -91,7 +91,7 @@ tasks.withType<Javadoc>().configureEach {
 // ---------------------------------------------------------------------------
 // Maven Central publishing (Sonatype Central Portal, namespace `io.github.srjn45`)
 // ---------------------------------------------------------------------------
-// Coordinates: io.github.srjn45:scriva-client:1.2.1
+// Coordinates: io.github.srjn45:scriva-client:1.3.0
 //
 // The publish-clients.yml workflow supplies credentials + the GPG signing key
 // as ORG_GRADLE_PROJECT_* environment variables, which the vanniktech plugin
@@ -108,7 +108,7 @@ mavenPublishing {
     // Signs every publication (required by Central). Skipped for publishToMavenLocal.
     signAllPublications()
 
-    coordinates("io.github.srjn45", "scriva-client", "1.2.1")
+    coordinates("io.github.srjn45", "scriva-client", "1.3.0")
 
     // Enables the sources + javadoc jars Central Portal requires.
     configure(
