@@ -4,7 +4,7 @@ Kotlin gRPC client for [ScrivaDB](../../README.md), built on `grpc-kotlin` +
 coroutines. Unary calls are `suspend` functions; the streaming `Find`, `Watch`,
 `Aggregate` and `Snapshot` RPCs return a `Flow`.
 
-**Maven coordinates:** `io.github.srjn45:scriva-client-kotlin:1.2.1`
+**Maven coordinates:** `io.github.srjn45:scriva-client-kotlin:1.3.0`
 
 ---
 
@@ -35,7 +35,7 @@ Proto stubs are generated automatically from `../../proto/scriva.proto` by the
 
 ```kotlin
 dependencies {
-    implementation("io.github.srjn45:scriva-client-kotlin:1.2.1")
+    implementation("io.github.srjn45:scriva-client-kotlin:1.3.0")
 }
 ```
 
@@ -45,7 +45,7 @@ dependencies {
 <dependency>
   <groupId>io.github.srjn45</groupId>
   <artifactId>scriva-client-kotlin</artifactId>
-  <version>1.2.1</version>
+  <version>1.3.0</version>
 </dependency>
 ```
 

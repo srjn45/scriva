@@ -6,7 +6,7 @@ Scala gRPC client for [ScrivaDB](../../README.md), built on
 (`find`) and lazily (`findStream: Iterator`), and `Watch` uses a cancellable
 callback.
 
-**Coordinates:** `io.github.srjn45:scriva-client-scala_2.13:1.2.1`
+**Coordinates:** `io.github.srjn45:scriva-client-scala_2.13:1.3.0`
 
 ---
 
@@ -37,7 +37,7 @@ by ScalaPB during compilation — no manual `protoc`.
 ### sbt
 
 ```scala
-libraryDependencies += "io.github.srjn45" %% "scriva-client-scala" % "1.2.1"
+libraryDependencies += "io.github.srjn45" %% "scriva-client-scala" % "1.3.0"
 ```
 
 ### Maven
@@ -46,7 +46,7 @@ libraryDependencies += "io.github.srjn45" %% "scriva-client-scala" % "1.2.1"
 <dependency>
   <groupId>io.github.srjn45</groupId>
   <artifactId>scriva-client-scala_2.13</artifactId>
-  <version>1.2.1</version>
+  <version>1.3.0</version>
 </dependency>
 ```
 

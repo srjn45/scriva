@@ -14,7 +14,7 @@ plugins {
 }
 
 group = "io.github.srjn45"
-version = "1.2.1"
+version = "1.3.0"
 
 repositories {
     mavenCentral()
@@ -108,7 +108,7 @@ tasks.test {
 // ---------------------------------------------------------------------------
 // Maven Central publishing (Sonatype Central Portal, namespace `io.github.srjn45`)
 // ---------------------------------------------------------------------------
-// Coordinates: io.github.srjn45:scriva-client-kotlin:1.2.1
+// Coordinates: io.github.srjn45:scriva-client-kotlin:1.3.0
 //
 // The publish-clients.yml workflow supplies credentials + the GPG signing key
 // as ORG_GRADLE_PROJECT_* environment variables, which the vanniktech plugin
@@ -124,7 +124,7 @@ mavenPublishing {
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()
 
-    coordinates("io.github.srjn45", "scriva-client-kotlin", "1.2.1")
+    coordinates("io.github.srjn45", "scriva-client-kotlin", "1.3.0")
 
     // Central requires a javadoc jar; an empty one satisfies the gate without
     // pulling in Dokka. Sources jar is enabled.

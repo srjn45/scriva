@@ -1,4 +1,4 @@
-(defproject io.github.srjn45/scriva-client-clojure "1.2.1"
+(defproject io.github.srjn45/scriva-client-clojure "1.3.0"
   :description "Official Clojure gRPC client for ScrivaDB — idiomatic maps and lazy seqs over the Java gRPC stubs."
   :url "https://github.com/srjn45/scriva"
   :license {:name "MIT License"
