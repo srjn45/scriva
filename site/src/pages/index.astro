@@ -17,13 +17,24 @@ const layers = [
   ['#3fb950', 'compactor', 'goroutine per collection merges & dedups'],
 ];
 
-const api = ['insert', 'find', 'update', 'delete', 'upsert', 'update-if-rev', 'aggregate', 'watch', 'begin-tx', 'backup'];
+const rel = `${gh}/releases/tag/v1.6.0`;
+
+const whatsNew = [
+  ['🔀', 'Cross-collection transactions', 'Stage writes across collections and commit atomically (<code>BeginXTx</code>/<code>StageXTx</code>/<code>CommitXTx</code>, REST + gRPC).', 'guides/cross-collection-transactions'],
+  ['⚛️', 'Atomic batches', 'A batch is fully present or fully absent after a crash. New data directories get this by default; legacy roots convert only with the one-way <code>enable_atomic_batches</code> option.', 'guides/atomic-batches'],
+  ['🔒', 'Secure by default', 'Listeners bind <code>127.0.0.1</code>; a non-loopback listener needs an API key or TLS.', 'guides/operations-security'],
+  ['🩺', 'Verified recovery', '<code>scriva verify</code> and <code>repair</code> inspect and fix a database; snapshot extraction is validated before install.', 'guides/operations-security'],
+];
+
+const api = ['insert', 'find', 'update', 'delete', 'upsert', 'update-if-rev', 'aggregate', 'watch', 'begin-tx', 'begin-xtx', 'backup'];
 
 const features = [
   ['Data model & keys', 'guides/data-model'],
   ['Queries & indexes', 'guides/queries'],
   ['Aggregations', 'guides/queries'],
-  ['Transactions & CAS', 'guides/data-model'],
+  ['Transactions & CAS', 'guides/cross-collection-transactions'],
+  ['Atomic batches', 'guides/atomic-batches'],
+  ['Operations & security', 'guides/operations-security'],
   ['Durability & backup', 'guides/durability-and-backup'],
   ['Encryption at rest', 'guides/encryption'],
   ['Replication & failover', 'guides/replication'],
@@ -34,7 +45,7 @@ const features = [
 const deploys = [
   ['🖥️', 'Standalone server', 'Run <code>scriva serve</code> and get gRPC on :5433 and REST on :8080 from one binary. Talk to it from any language, or from the CLI over a Unix socket.'],
   ['📚', 'Embedded library', 'Skip the server entirely — <code>go get</code> the engine and run the database in-process. Keyed CRUD, CAS, secondary indexes, and in-process <code>Watch</code>.'],
-  ['🐳', 'Docker & Compose', 'Pull <code>ghcr.io/srjn45/scriva</code> or <code>docker compose up</code>. Data persists in a named volume; REST and gRPC ports exposed and ready.'],
+  ['🐳', 'Docker & Compose', 'Pull <code>ghcr.io/srjn45/scriva</code> or <code>docker compose up</code>. Data persists in a named volume; REST and gRPC ports exposed. The image binds <code>0.0.0.0</code> and refuses to start without <code>SCRIVA_API_KEY</code> or TLS; compose sets <code>SCRIVA_API_KEY</code>.'],
 ];
 ---
 <html lang="en">
@@ -68,7 +79,7 @@ const deploys = [
     <!-- ===== hero ===== -->
     <header class="section hero">
       <div class="wrap">
-        <span class="pill"><span class="dot"></span> Open source · MIT · v1.0 API frozen</span>
+        <span class="pill"><span class="dot"></span> Open source · v1.6.0 · MIT · API frozen since v1.0</span>
         <h1>A file-based<br /><span class="grad">document database.</span></h1>
         <p class="lede">ScrivaDB stores each collection as append-only NDJSON — human-readable, one
           JSON object per line. Get a durable document store with gRPC + REST from a single Go
@@ -76,6 +87,7 @@ const deploys = [
           hidden state.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href={`${base}start/quickstart/`}>Get started →</a>
+          <a class="btn btn-ghost" href={rel}>Release notes →</a>
           <a class="btn btn-ghost" href={gh}>★ Star on GitHub</a>
         </div>
 
@@ -110,6 +122,23 @@ const deploys = [
             <div class="card">
               <span class="ico">{ico}</span>
               <h3>{title}</h3>
+              <p set:html={body}></p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== what's new ===== -->
+    <section class="section" id="whats-new">
+      <div class="wrap">
+        <p class="eyebrow">Latest release</p>
+        <h2>What's new in v1.6</h2>
+        <div class="grid cols-4" style="margin-top:28px">
+          {whatsNew.map(([ico, title, body, slug]) => (
+            <div class="card">
+              <span class="ico">{ico}</span>
+              <h3><a href={`${base}${slug}/`}>{title}</a></h3>
               <p set:html={body}></p>
             </div>
           ))}
@@ -159,6 +188,7 @@ const deploys = [
             </div>
             <p class="metric-sub" style="margin-top:14px">Plus a generated <code>OpenAPI</code> spec
               for any other language.</p>
+            <p class="metric-sub" style="margin-top:10px">The ten handwritten SDKs have cross-collection transaction (<code>XTx</code>) methods in source on <code>main</code>, but not in a released SDK yet — SDK packages are still 1.2.1 and the <code>XTx</code> methods ship in the next SDK release. Python, PHP, Rust and C# are not yet verified.</p>
           </div>
 
           <!-- durability modes -->
@@ -184,7 +214,7 @@ const deploys = [
             </div>
             <p class="metric-sub" style="margin-top:14px">A follower bootstraps from a snapshot then
               tails the leader's committed writes by global <code>LSN</code> — resumable, no gaps or
-              dupes. Bound staleness by diffing applied vs leader LSN.</p>
+              dupes. Replication is asynchronous and lag is <em>not</em> bounded by default — monitor <code>ReplicationStatus</code> (applied vs leader LSN). See the <a href={`${base}guides/replication/`}>replication guide</a>.</p>
           </div>
 
           <!-- encryption at rest -->
@@ -234,7 +264,7 @@ const deploys = [
         <h2>More than a key-value store</h2>
         <p class="lede">Keyed CRUD with caller-supplied string keys, insert-or-replace upsert, and
           revision-checked compare-and-swap — plus streaming queries, aggregations, TTL, optimistic
-          transactions, and live <code>Watch</code> subscriptions.</p>
+          and cross-collection transactions, and live <code>Watch</code> subscriptions.</p>
         <div class="chips" style="margin-top:22px">
           {api.map((t) => (<span class="chip"><span class="k">{t}</span></span>))}
         </div>
@@ -270,6 +300,7 @@ scriva-cli find   users <span class="str">'&#123;"field":"age","op":"gt","value"
 go get github.com/srjn45/scriva</pre>
         <div class="cta-row" style="justify-content:flex-start;margin-top:24px">
           <a class="btn btn-primary" href={`${base}start/install/`}>Install guide →</a>
+          <a class="btn btn-primary" href={`${base}guides/operations-security/`}>Production deployment guide →</a>
           <a class="btn btn-ghost" href={`${base}start/what-is-scriva/`}>Read the docs</a>
         </div>
       </div>
@@ -281,6 +312,7 @@ go get github.com/srjn45/scriva</pre>
         <a href={`${base}start/what-is-scriva/`}>Docs</a> ·
         <a href={`${base}blog/`}>Blog</a> ·
         <a href={gh}>GitHub</a> ·
+        <a href={rel}>Release notes</a> ·
         <a href={`${base}reference/api/`}>API</a> ·
         MIT
         <p class="fine">ScrivaDB is an independent open-source project. It is the right tool for
