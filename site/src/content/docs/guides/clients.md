@@ -39,10 +39,9 @@ cross-collection transaction support as unverified until CI or a maintainer runs
 | Scala | yes | Verified — `sbt test` passes (7 tests) |
 | Clojure | yes | Verified — `lein test` passes (7 tests, 30 assertions) |
 
-**Versions.** The SDKs are versioned independently of the server (currently `1.2.1`, unchanged by
-the XTx additions, which are additive: existing `BeginTx`/`CommitTx`/`RollbackTx` are unchanged). The
-next SDK release should be a minor bump (`1.3.0`) per SemVer once the unverified SDKs are run; the
-XTx methods need a server that supports `BeginXTx` (v1.6.0+).
+**Versions.** The SDKs are versioned independently of the server (currently `1.3.0`, which adds the
+additive XTx methods; existing `BeginTx`/`CommitTx`/`RollbackTx` are unchanged). The XTx methods
+need a server that supports `BeginXTx` (v1.6.0+).
 
 | Language | Install | Reference |
 |---|---|---|
@@ -51,8 +50,8 @@ XTx methods need a server that supports `BeginXTx` (v1.6.0+).
 | PHP | `composer require srjn45/scriva` | [clients/php](https://github.com/srjn45/scriva/tree/main/clients/php) |
 | Java | `io.github.srjn45:scriva-client` (Maven Central) | [clients/java](https://github.com/srjn45/scriva/tree/main/clients/java) |
 | Kotlin | `io.github.srjn45:scriva-client-kotlin` (Gradle / Maven Central) | [clients/kotlin](https://github.com/srjn45/scriva/tree/main/clients/kotlin) |
-| Scala | `"io.github.srjn45" %% "scriva-client-scala" % "1.2.1"` (sbt) | [clients/scala](https://github.com/srjn45/scriva/tree/main/clients/scala) |
-| Clojure | `io.github.srjn45/scriva-client-clojure {:mvn/version "1.2.1"}` (deps.edn / Clojars) | [clients/clojure](https://github.com/srjn45/scriva/tree/main/clients/clojure) |
+| Scala | `"io.github.srjn45" %% "scriva-client-scala" % "1.3.0"` (sbt) | [clients/scala](https://github.com/srjn45/scriva/tree/main/clients/scala) |
+| Clojure | `io.github.srjn45/scriva-client-clojure {:mvn/version "1.3.0"}` (deps.edn / Clojars) | [clients/clojure](https://github.com/srjn45/scriva/tree/main/clients/clojure) |
 | Ruby | `gem install scriva` | [clients/ruby](https://github.com/srjn45/scriva/tree/main/clients/ruby) |
 | Rust | `cargo add scriva` | [clients/rust](https://github.com/srjn45/scriva/tree/main/clients/rust) |
 | C# / .NET | `dotnet add package Scriva.Client` | [clients/csharp](https://github.com/srjn45/scriva/tree/main/clients/csharp/Scriva.Client) |
